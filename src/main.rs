@@ -104,6 +104,7 @@ async fn chat(
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    dotenvy::dotenv().ok(); // load .env if present; real env vars still win
     let state = Harness::from_env();
     let app = Router::new()
         .route("/models", get(models))
