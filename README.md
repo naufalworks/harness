@@ -17,11 +17,11 @@ An OpenAI-compatible AI harness in Rust (axum) that proxies to the LongCat API a
 `POST /chat` with `{"prompt": "...", "session_id": "..."}` runs:
 
 1. **Raw store** — the untouched prompt and agent response are logged to the artifacts hub.
-2. **Recall** — a keyword prefilter (`search_memories`: OR'd `key LIKE`/`value LIKE` over up to 8 prompt words, top-confidence fallback) narrows 750+ stored memories to ~40 candidates; an LLM filter agent picks the 1–3 strictly relevant ones. Injected as `[Retrieved User Context & Preferences]`; response field `recalled_context_applied` reports whether this fired.
+2. **Recall** — a keyword prefilter (`search_memories`: OR'd `key LIKE`/`value LIKE` over up to 8 prompt words, top-confidence fallback) narrows stored memories to up to 40 candidates (20 via fallback); an LLM filter agent picks the 1–3 strictly relevant ones. Injected as `[Retrieved User Context & Preferences]`; response field `recalled_context_applied` reports whether this fired.
 3. **Gatekeeper** — an LLM agent checks the exchange for durable facts (preferences, credentials, project decisions). If found, a confirmation is created and the response asks you to `confirm <id>` / `reject <id>`; confirmed items are upserted into `memories` (keyed, so re-confirming updates in place).
 4. **Graph linker** (background) — extracts entity relations from the exchange into `graph_edges`.
 
-Response includes `recalled_context_applied` and `background_status` (`graph_syncing_in_background` while the linker runs).
+Replying `confirm <id>` or `reject <id>` directly as the next chat prompt resolves the pending confirmation — same as `POST /memory/confirm`.
 
 ## Session ingestion
 
