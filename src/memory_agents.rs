@@ -64,10 +64,20 @@ impl MemoryAgents {
         Ok(body)
     }
 
-    async fn call_llm(&self, system_prompt: &str, user_prompt: &str) -> Result<String> {
+    /// Role-keyed model override: settings["model.<role>"] wins over the default model. pub for /chat's main role.
+    pub fn role_model(&self, role: &str) -> String {
+        self.store
+            .get_setting(&format!("model.{role}"))
+            .ok()
+            .flatten()
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| self.model.clone())
+    }
+
+    async fn call_llm(&self, role: &str, system_prompt: &str, user_prompt: &str) -> Result<String> {
         let url = format!("{}/chat/completions", self.base_url);
         let payload = json!({
-            "model": self.model,
+            "model": self.role_model(role),
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
@@ -121,7 +131,7 @@ impl MemoryAgents {
         let system_prompt = "You are a context filter agent. Given a user query and a list of stored memories, output ONLY the 1 to 3 memories that are strictly relevant to the current query. Format as short bullet points. If none are relevant, output 'NONE'. Do not add conversational text.";
         let user_input = format!("Stored memories:\n{}\n\nUser Query: {}", memory_str, user_prompt);
 
-        let filtered = self.call_llm(system_prompt, &user_input).await.unwrap_or_default();
+        let filtered = self.call_llm("recall", system_prompt, &user_input).await.unwrap_or_default();
         if filtered.trim() == "NONE" || filtered.is_empty() {
             Ok(String::new())
         } else {
@@ -146,7 +156,7 @@ If YES, output ONLY a JSON object:
 If NO, output NONE."#;
 
         let input = format!("User: {}\nAssistant: {}", user_prompt, agent_response);
-        let resp = self.call_llm(system, &input).await.ok()?;
+        let resp = self.call_llm("gatekeeper", system, &input).await.ok()?;
         let clean = resp.trim().trim_matches('`').trim_start_matches("json").trim();
         if clean == "NONE" || clean.is_empty() {
             return None;
@@ -196,7 +206,7 @@ Output ONLY a JSON array, each item:
 {"key": "short_snake_key", "value": "concise fact", "category": "preference|fact|credential"}
 Max 10 items, most important first. If nothing durable found, output []"#;
 
-        let resp = self.call_llm(system, &transcript).await?;
+        let resp = self.call_llm("extraction", system, &transcript).await?;
         let clean = resp.trim().trim_matches('`').trim_start_matches("json").trim();
         let items: Vec<Value> = match serde_json::from_str(clean) {
             Ok(v) => v,

@@ -28,7 +28,12 @@
 </style>
 </head>
 <body>
-<header><h1>harness</h1><span id="sid"></span></header>
+<header><h1>harness</h1><span id="sid"></span><button type="button" id="cfgbtn" title="model settings" style="margin-left:auto;padding:2px 10px;border-radius:8px;border:1px solid #3a4150;background:#1b1f26;color:#8b93a1;cursor:pointer;font-size:13px">⚙</button></header>
+<div id="cfg" style="display:none;padding:14px 18px;border-bottom:1px solid #262a31;background:#171a20;gap:10px;flex-direction:column;font-size:13px">
+  <div style="color:#8b93a1">Model per role — empty = default. Options load from <code>/models</code>.</div>
+  <div id="cfgrows" style="display:flex;flex-direction:column;gap:8px"></div>
+  <div style="display:flex;gap:8px"><button type="button" id="cfgsave" style="padding:6px 14px;border-radius:8px;border:none;background:#2b5c8f;color:#fff;cursor:pointer">Save</button><span id="cfgmsg" style="color:#8b93a1;align-self:center"></span></div>
+</div>
 <div id="log"></div>
 <form id="f"><input id="p" placeholder="ask anything…" autocomplete="off" autofocus><button class="send">Send</button></form>
 <script>
@@ -79,8 +84,56 @@ async function send(prompt) {
   } catch (e) { add('bot', 'network error: ' + e); }
   finally { btn.disabled = false; input.focus(); }
 }
-
 document.getElementById('f').onsubmit = e => { e.preventDefault(); const v = document.getElementById('p').value.trim(); if (v) send(v); };
+
+
+
+// ---- settings panel ----
+const ROLES = [['main', 'Main agent'], ['recall', 'Context filter'], ['gatekeeper', 'Gatekeeper'], ['extraction', 'Ingest extraction']];
+const cfgPanel = document.getElementById('cfg');
+document.getElementById('cfgbtn').onclick = async () => {
+  cfgPanel.style.display = cfgPanel.style.display === 'none' ? 'flex' : 'none';
+  if (cfgPanel.style.display !== 'none') await loadCfg();
+};
+
+async function loadCfg() {
+  const [cfg, models] = await Promise.all([
+    fetch('/config').then(r => r.json()).catch(() => ({})),
+    fetch('/models').then(r => r.json()).then(j => (j.data || []).map(m => m.id)).catch(() => [])
+  ]);
+  const rows = document.getElementById('cfgrows');
+  rows.innerHTML = '';
+  for (const [role, label] of ROLES) {
+    const cur = cfg[role] || '';
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:10px';
+    const lab = document.createElement('span');
+    lab.textContent = label; lab.style.cssText = 'width:140px;color:#8b93a1';
+    const sel = document.createElement('select');
+    sel.style.cssText = 'flex:1;padding:6px;border-radius:8px;border:1px solid #3a4150;background:#1b1f26;color:#e6e6e6';
+    sel.innerHTML = '<option value="">(default)</option>' +
+      models.map(m => `<option value="${m}"${m === cur ? ' selected' : ''}>${m}</option>`).join('');
+    if (cur && !models.includes(cur)) {
+      sel.innerHTML += `<option value="${cur}" selected>${cur} (unavailable)</option>`;
+    }
+    sel.dataset.role = role;
+    row.append(lab, sel);
+    rows.appendChild(row);
+  }
+}
+
+document.getElementById('cfgsave').onclick = async () => {
+  const body = {};
+  document.querySelectorAll('#cfgrows select').forEach(s => body[s.dataset.role] = s.value);
+  const msg = document.getElementById('cfgmsg');
+  const r = await fetch('/config', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  msg.textContent = r.ok ? 'saved ✓' : 'save failed';
+  setTimeout(() => msg.textContent = '', 2000);
+};
 </script>
 </body>
 </html>

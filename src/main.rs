@@ -21,7 +21,6 @@ use storage::DbStore;
 
 #[derive(Clone)]
 struct Harness {
-    default_model: String,
     store: DbStore,
     agents: MemoryAgents,
 }
@@ -40,12 +39,57 @@ impl Harness {
         let store = DbStore::init(&db_path).expect("Failed to initialize SQLite storage");
         let agents = MemoryAgents::new(&base_url, &api_key, &default_model, store.clone());
 
-        Self {
-            default_model,
-            store,
-            agents,
+        Self { store, agents }
+    }
+}
+
+/// GET /config — per-role model overrides (empty value = use default).
+async fn get_config(State(h): State<Harness>) -> Response {
+    let mut roles = serde_json::Map::new();
+    for role in ["main", "recall", "gatekeeper", "extraction"] {
+        let v = h
+            .store
+            .get_setting(&format!("model.{role}"))
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        roles.insert(role.into(), serde_json::Value::String(v));
+    }
+    (StatusCode::OK, Json(serde_json::Value::Object(roles))).into_response()
+}
+
+/// POST /config — {"main": "LongCat-2.0", "recall": "", ...}; empty string clears the override.
+async fn set_config(
+    State(h): State<Harness>,
+    Json(body): Json<serde_json::Map<String, Value>>,
+) -> Response {
+    for (role, model) in &body {
+        if !["main", "recall", "gatekeeper", "extraction"].contains(&role.as_str()) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": format!("unknown role: {role}")})),
+            )
+                .into_response();
+        }
+        let Some(v) = model.as_str() else {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "model must be a string"})),
+            )
+                .into_response();
+        };
+        let v = v.trim();
+        if v.is_empty() {
+            let _ = h.store.set_setting(&format!("model.{role}"), "");
+        } else {
+            let _ = h.store.set_setting(&format!("model.{role}"), v);
         }
     }
+    (
+        StatusCode::OK,
+        Json(json!({"status": "saved"})),
+    )
+        .into_response()
 }
 
 #[derive(Deserialize)]
@@ -358,7 +402,7 @@ async fn chat(
 ) -> Response {
     let session_id = req.session_id.unwrap_or_else(|| Uuid::new_v4().to_string());
     let prompt = req.prompt.trim().to_string();
-    let model = req.model.unwrap_or_else(|| h.default_model.clone());
+    let model = req.model.unwrap_or_else(|| h.agents.role_model("main"));
 
     // 0. Check if user is replying to a Gatekeeper confirmation (e.g. "confirm <id>" or "reject <id>")
     if prompt.starts_with("confirm ") || prompt.starts_with("reject ") {
@@ -450,6 +494,7 @@ async fn main() -> Result<()> {
     let state = Harness::from_env();
     let app = Router::new()
         .route("/", get(index))
+        .route("/config", get(get_config).post(set_config))
         .route("/models", get(models))
         .route("/chat", post(chat))
         .route("/memory/status", get(memory_status))
