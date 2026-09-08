@@ -13,3 +13,9 @@ __pycache__/
 node_modules/
 package-lock.json
 .DS_Store
+docs/qa/
+docs/previous-delivery/
+docs/changes.patch
+docs/INPUTS.json
+reference/source-archives/
+*.bak*
