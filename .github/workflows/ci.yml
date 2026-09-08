@@ -1,0 +1,16 @@
+name: harness-checks
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --locked
+      - run: cargo clippy --locked --all-targets
+      - run: cargo build --locked
+      - run: python3 -m unittest discover -s tests -p 'test_*.py' -v
+      - run: python3 tests/integration_smoke.py
+      - run: node --check static/app.js

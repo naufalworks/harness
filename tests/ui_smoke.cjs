@@ -1,0 +1,59 @@
+// Browser UI tests against a mocked API. Does NOT test the Rust server.
+const {chromium}=require('playwright');
+const fs=require('fs');const path=require('path');const assert=require('assert');
+const root=path.resolve(__dirname,'..');const out=process.env.QA_DIR || path.join(root,'docs','qa');fs.mkdirSync(out,{recursive:true});
+(async()=>{
+ const browser=await chromium.launch({headless:true,executablePath:process.env.CHROMIUM_PATH||'/usr/local/bin/chromium',args:['--no-sandbox']});
+ try{
+  const page=await browser.newPage({viewport:{width:1120,height:900},colorScheme:'light'});const errors=[];page.on('pageerror',e=>errors.push(String(e)));
+  let candidate=true,failConfirm=false,chatHistory=[],importCalls=0,retryCalls=0;
+  const malicious='<img src=x onerror="window.INJECTED=1">';
+  const data={id:'synthetic-proposal',scope:'global',key:'preferred_language',value:'Rust for local tools. '+malicious,old_value:'Python for prototypes.',category:'preference',expected_revision:1,evidence:{quote:'I prefer Rust for local tools.'}};
+  await page.route('http://127.0.0.1:8080/**',async route=>{
+   const req=route.request();const u=new URL(req.url());const p=u.pathname;
+   const staticFiles={'/':'index.html','/style.css':'style.css','/app.js':'app.js'};
+   if(staticFiles[p]){return route.fulfill({contentType:p.endsWith('.css')?'text/css':p.endsWith('.js')?'text/javascript':'text/html',body:fs.readFileSync(path.join(root,'static',staticFiles[p]),'utf8')});}
+   if(req.headers().authorization!=='Bearer test-token'){return route.fulfill({status:401,json:{error:'Bearer token required'}});}
+   let result={};
+   if(p==='/memory/status')result={active_memories:candidate?1:2,pending_confirmations:candidate?1:0,queued_jobs:0,failed_jobs:1};
+   else if(p.startsWith('/sessions/'))result={scope:'global',messages:chatHistory};
+   else if(p==='/memory/candidates')result={candidates:candidate?[data]:[]};
+   else if(p==='/memory/confirm'){
+    if(failConfirm)return route.fulfill({status:409,json:{error:'Proposal conflicts with a newer revision; reload the inbox'}});
+    candidate=false;result={status:JSON.parse(req.postData()).confirm?'approved':'rejected'};
+   }else if(p==='/chat'){
+    const body=JSON.parse(req.postData());chatHistory=[{role:'user',content:body.prompt,status:'complete'},{role:'assistant',content:'Use a small Rust service with SQLite. Keep capture separate from extraction.',status:'complete'}];
+    result={response:chatHistory[1].content,recalled:[{...data,revision:2}],redacted:false};
+   }else if(p==='/jobs')result={jobs:[{id:'failed-job',status:retryCalls?'pending':'failed',scope:'global',attempts:3,error:'Extraction failed; check provider configuration.'}]};
+   else if(p==='/jobs/failed-job/retry'){retryCalls++;result={status:'queued'};}
+   else if(p==='/memory/ingest'){importCalls++;result={duplicate:false,chunks_queued:2,warnings:[]};}
+   else if(p==='/config')result=req.method()==='GET'?{main:'synthetic-main',extraction:'synthetic-small'}:{status:'saved'};
+   else if(p==='/models')result={data:[{id:malicious},{id:'synthetic-main'}]};
+   else return route.fulfill({status:404,json:{error:'Unexpected mock route'}});
+   await route.fulfill({json:result});
+  });
+  const shot=async name=>{await page.screenshot({path:path.join(out,name+'.png'),fullPage:true});assert(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),'horizontal overflow: '+name);};
+  await page.goto('http://127.0.0.1:8080');await page.fill('#token','test-token');await page.click('#authform button');await page.waitForFunction(()=>!document.getElementById('workspace').hidden);
+  assert.strictEqual(await page.locator('#token').inputValue(),'');assert(!await page.evaluate(()=>JSON.stringify({...localStorage,...sessionStorage}).includes('test-token')));
+  await page.fill('#prompt','Help me choose the next implementation step.');await page.click('#send');await page.waitForFunction(()=>document.getElementById('notice').textContent.startsWith('Answer saved'));
+  await shot('conversation-desktop');
+  await page.click('[data-view="memory"]');await page.waitForSelector('.candidate h3');
+  assert.strictEqual(await page.locator('#candidates img').count(),0);assert.strictEqual(await page.evaluate(()=>window.INJECTED),undefined);
+  await shot('memory-desktop');
+  failConfirm=true;await page.locator('#candidates button').first().click();await page.waitForFunction(()=>document.getElementById('notice').textContent.includes('conflicts'));
+  assert(await page.locator('#candidates button').first().isEnabled());
+  await page.setViewportSize({width:390,height:844});await shot('memory-conflict-mobile');
+  await page.emulateMedia({colorScheme:'dark'});await shot('memory-conflict-dark-mobile');await page.emulateMedia({colorScheme:'light'});await page.setViewportSize({width:1120,height:900});
+  failConfirm=false;await page.locator('#candidates button').first().click();await page.waitForSelector('#candidates .empty');
+  await page.click('[data-view="imports"]');await page.waitForSelector('.job');await shot('imports-desktop');
+  await page.locator('#jobs button').click();assert.strictEqual(retryCalls,1);
+  await page.setInputFiles('#file',{name:'sample.jsonl',mimeType:'application/json',buffer:Buffer.from('{"type":"message","message":{"role":"user","content":"I prefer Rust"}}')});
+  await page.check('#consent');await page.click('#importbutton');await page.waitForFunction(()=>document.getElementById('notice').textContent.includes('Queued 2'));assert.strictEqual(importCalls,1);
+  await page.click('[data-view="settings"]');await page.waitForFunction(()=>document.getElementById('mainmodel').value==='synthetic-main');await page.click('#loadmodels');await page.waitForFunction(()=>document.getElementById('modelnames').textContent.includes('onerror'));
+  assert.strictEqual(await page.locator('#modelnames img').count(),0);await shot('settings-desktop');
+  await page.click('#lock');assert(await page.locator('#workspace').isHidden());assert.strictEqual(await page.locator('#candidates').innerText(),'');
+  assert.deepStrictEqual(errors,[]);
+  const result={status:'passed',scope:'Mocked API browser checks; Rust server not executed',checks:['connect','token_not_persisted','conversation','memory_evidence','html_injection_rendered_as_text','failed_approval_recoverable','approval','import','job_retry','model_settings','mobile_overflow','dark_mode','lock','no_javascript_exceptions']};
+  fs.writeFileSync(path.join(out,'ui-results.json'),JSON.stringify(result,null,2));console.log(JSON.stringify(result));
+ }finally{await browser.close();}
+})().then(()=>process.exit(0)).catch(e=>{console.error(e);process.exit(1)});

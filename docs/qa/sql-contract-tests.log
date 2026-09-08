@@ -1,0 +1,21 @@
+test_approval_and_repeat_resolution (test_sql_contracts.Contracts.test_approval_and_repeat_resolution) ... ok
+test_candidate_dedup_constraint (test_sql_contracts.Contracts.test_candidate_dedup_constraint) ... ok
+test_candidates_do_not_become_active (test_sql_contracts.Contracts.test_candidates_do_not_become_active) ... ok
+test_failure_rolls_back_memory_and_approval (test_sql_contracts.Contracts.test_failure_rolls_back_memory_and_approval) ... ok
+test_foreign_key_requires_candidate (test_sql_contracts.Contracts.test_foreign_key_requires_candidate) ... ok
+test_job_key_is_idempotent (test_sql_contracts.Contracts.test_job_key_is_idempotent) ... ok
+test_legacy_migration_is_quarantined_and_filters_secrets (test_sql_contracts.Contracts.test_legacy_migration_is_quarantined_and_filters_secrets) ... ok
+test_new_revision_updates_fts_and_keeps_history (test_sql_contracts.Contracts.test_new_revision_updates_fts_and_keeps_history) ... ok
+test_online_backup_reads_wal_and_refuses_overwrite (test_sql_contracts.Contracts.test_online_backup_reads_wal_and_refuses_overwrite) ... ok
+test_reject_does_not_write_memory (test_sql_contracts.Contracts.test_reject_does_not_write_memory) ... ok
+test_schema_version_and_integrity (test_sql_contracts.Contracts.test_schema_version_and_integrity) ... ok
+test_scope_and_global_override (test_sql_contracts.Contracts.test_scope_and_global_override) ... ok
+test_sensitive_category_is_rejected_by_schema (test_sql_contracts.Contracts.test_sensitive_category_is_rejected_by_schema) ... ok
+test_short_terms_are_indexed (test_sql_contracts.Contracts.test_short_terms_are_indexed) ... ok
+test_stale_proposal_cannot_overwrite (test_sql_contracts.Contracts.test_stale_proposal_cannot_overwrite) ... ok
+test_wrong_scope_cannot_resolve (test_sql_contracts.Contracts.test_wrong_scope_cannot_resolve) ... ok
+
+----------------------------------------------------------------------
+Ran 16 tests in 0.030s
+
+OK
