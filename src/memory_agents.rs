@@ -1,5 +1,6 @@
 use crate::storage::DbStore;
 use anyhow::Result;
+use futures_util::{Stream, StreamExt};
 use reqwest::Client;
 use serde_json::{json, Value};
 
@@ -229,5 +230,53 @@ Max 10 items, most important first. If nothing durable found, output []"#;
             }
         }
         Ok(stored)
+    }
+
+    /// Streaming chat completion (for the /chat/stream endpoint).
+    /// Yields text deltas as they arrive from the upstream OpenAI-compatible SSE stream.
+    pub async fn chat_stream(
+        &self,
+        model: &str,
+        system: &str,
+        prompt: &str,
+    ) -> Result<impl Stream<Item = Result<String>>> {
+        let mut messages = Vec::new();
+        if !system.is_empty() {
+            messages.push(json!({"role": "system", "content": system}));
+        }
+        messages.push(json!({"role": "user", "content": prompt}));
+        let resp = self
+            .http
+            .post(format!("{}/chat/completions", self.base_url))
+            .bearer_auth(&self.api_key)
+            .json(&json!({"model": model, "messages": messages, "stream": true}))
+            .send()
+            .await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await?;
+            anyhow::bail!("upstream /chat stream failed ({status}): {body}");
+        }
+        let stream = async_stream::try_stream! {
+            let mut buf = String::new();
+            let mut bytes = resp.bytes_stream();
+            while let Some(chunk) = bytes.next().await {
+                let chunk = chunk.map_err(|e| anyhow::anyhow!("{e}"))?;
+                buf.push_str(&String::from_utf8_lossy(&chunk));
+                while let Some(pos) = buf.find('\n') {
+                    let line: String = buf.drain(..=pos).collect();
+                    let line = line.trim_end();
+                    let Some(data) = line.strip_prefix("data:") else { continue };
+                    let data = data.trim();
+                    if data == "[DONE]" { return; }
+                    if let Ok(v) = serde_json::from_str::<Value>(data) {
+                        if let Some(t) = v["choices"][0]["delta"]["content"].as_str() {
+                            yield t.to_string();
+                        }
+                    }
+                }
+            }
+        };
+        Ok(stream)
     }
 }

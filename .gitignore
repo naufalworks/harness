@@ -9,3 +9,4 @@ __pycache__/
 bench.py
 bench_retry.py
 benchmark_report.json
+.DS_Store

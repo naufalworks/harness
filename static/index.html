@@ -4,136 +4,1176 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>harness</title>
+<script>
+/* anti-flash theme init */
+(function(){var t=window.__THEME__||localStorage.harness_theme||'dark';document.documentElement.dataset.theme=t;})();
+</script>
 <style>
-  :root { color-scheme: dark; }
-  * { box-sizing: border-box; }
-  body { margin: 0; font: 15px/1.5 system-ui, sans-serif; background: #14161a; color: #e6e6e6; display: flex; flex-direction: column; height: 100vh; }
-  header { padding: 12px 18px; border-bottom: 1px solid #262a31; display: flex; align-items: baseline; gap: 10px; }
-  header h1 { font-size: 16px; margin: 0; letter-spacing: .5px; }
-  header span { font-size: 11px; color: #8b93a1; }
-  #log { flex: 1; overflow-y: auto; padding: 18px; display: flex; flex-direction: column; gap: 12px; }
-  .msg { max-width: 72%; padding: 10px 14px; border-radius: 12px; white-space: pre-wrap; word-break: break-word; }
-  .user { align-self: flex-end; background: #2b5c8f; }
-  .bot { align-self: flex-start; background: #232830; }
-  .meta { font-size: 11px; color: #8b93a1; margin-top: 4px; }
-  .gate { margin-top: 8px; display: flex; gap: 8px; }
-  .gate button { padding: 4px 12px; border: 1px solid #3a4150; border-radius: 8px; background: #2a3140; color: #e6e6e6; cursor: pointer; font-size: 13px; }
-  .gate button.ok:hover { background: #2f5d3a; }
-  .gate button.no:hover { background: #6b3535; }
-  form { display: flex; gap: 8px; padding: 12px 18px; border-top: 1px solid #262a31; }
-  input { flex: 1; padding: 11px 14px; border-radius: 10px; border: 1px solid #3a4150; background: #1b1f26; color: #e6e6e6; font: inherit; }
-  input:focus { outline: 1px solid #2b5c8f; }
-  button.send { padding: 11px 18px; border-radius: 10px; border: none; background: #2b5c8f; color: #fff; font: inherit; cursor: pointer; }
-  button.send:disabled { opacity: .5; cursor: wait; }
+:root, :root[data-theme="dark"] {
+  color-scheme: dark;
+  --canvas: #191919;
+  --surface: #202020;
+  --raised: #262625;
+  --hover: #2e2e2c;
+  --border: rgba(255,255,255,.09);
+  --border-strong: rgba(255,255,255,.16);
+  --text: #ffffff;
+  --text-2: rgba(255,255,255,.65);
+  --text-3: rgba(255,255,255,.42);
+  --accent: #5E9FE8;
+  --accent-soft: rgba(94,159,232,.13);
+  --accent-strong: #3b7fd4;
+  --green: #72BC8F;
+  --green-soft: rgba(114,188,143,.13);
+  --red: #E97366;
+  --red-soft: rgba(233,115,102,.12);
+  --orange: #DE9255;
+  --orange-soft: rgba(222,146,85,.13);
+  --code-bg: rgba(0,0,0,.35);
+  --tok-k: #c792ea;
+  --tok-s: #a5d6a7;
+  --tok-c: rgba(255,255,255,.38);
+  --tok-n: #f78c6c;
+  --shadow: 0 16px 48px rgba(0,0,0,.5);
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+  --canvas: #FFFFFF;
+  --surface: #F9F8F7;
+  --raised: #FFFFFF;
+  --hover: #F0EFED;
+  --border: #E6E5E3;
+  --border-strong: #D9D7D4;
+  --text: #2C2C2B;
+  --text-2: #7D7A75;
+  --text-3: #A3A09B;
+  --accent: #2783DE;
+  --accent-soft: #E5F2FC;
+  --accent-strong: #1D6FCB;
+  --green: #46A171;
+  --green-soft: #E8F1EC;
+  --red: #E56458;
+  --red-soft: #FCE9E7;
+  --orange: #D5803B;
+  --orange-soft: #FBEBDE;
+  --code-bg: rgba(0,0,0,.05);
+  --tok-k: #7c3aed;
+  --tok-s: #22863a;
+  --tok-c: #8b8b87;
+  --tok-n: #b35c00;
+  --shadow: 0 16px 48px rgba(0,0,0,.14);
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, "Helvetica Neue", Arial, sans-serif;
+  background: var(--canvas);
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  -webkit-font-smoothing: antialiased;
+}
+button { font: inherit; color: inherit; }
+.mono { font-family: ui-monospace, Menlo, Consolas, monospace; }
+
+/* ---------- header ---------- */
+header {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--canvas);
+  flex-shrink: 0;
+}
+.brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.brand .mark {
+  width: 28px; height: 28px; border-radius: 8px;
+  background: linear-gradient(135deg, var(--accent) 0%, #8e6fe8 100%);
+  display: grid; place-items: center;
+  font-weight: 700; font-size: 14px; color: #fff; flex-shrink: 0;
+}
+.brand h1 { font-size: 15px; margin: 0; font-weight: 650; letter-spacing: .2px; }
+.brand .tag { font-size: 11.5px; color: var(--text-3); margin-left: 2px; }
+header .spacer { flex: 1; }
+.chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 10px;
+  border: 1px solid var(--border); border-radius: 999px;
+  background: var(--surface); color: var(--text-2);
+  font-size: 12px; cursor: pointer; white-space: nowrap;
+  transition: background .12s, border-color .12s;
+}
+.chip:hover { background: var(--hover); border-color: var(--border-strong); }
+.chip .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); flex-shrink: 0; }
+.iconbtn {
+  width: 32px; height: 32px; display: grid; place-items: center;
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--surface); color: var(--text-2); cursor: pointer; flex-shrink: 0;
+  transition: background .12s, border-color .12s, color .12s;
+}
+.iconbtn:hover { background: var(--hover); border-color: var(--border-strong); color: var(--text); }
+.iconbtn:focus-visible, .chip:focus-visible, .btn:focus-visible, .hint:focus-visible, .sendbtn:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+}
+#panelbtn { display: none; }
+
+/* theme toggle icons */
+#themebtn .sun { display: none; }
+:root[data-theme="light"] #themebtn .sun { display: block; }
+:root[data-theme="light"] #themebtn .moon { display: none; }
+
+/* ---------- layout ---------- */
+main {
+  flex: 1; display: flex; min-height: 0;
+}
+
+/* ---------- sidebar ---------- */
+aside {
+  width: 300px; flex-shrink: 0;
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  padding: 16px 14px;
+  display: flex; flex-direction: column; gap: 14px;
+  background: var(--canvas);
+}
+.card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  padding: 14px;
+}
+.card .cardhead {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 10px;
+}
+.card h2 {
+  margin: 0; font-size: 12px; font-weight: 650;
+  text-transform: uppercase; letter-spacing: .6px;
+  color: var(--text-3);
+}
+.minibtn {
+  border: none; background: transparent; color: var(--text-3);
+  cursor: pointer; padding: 4px; border-radius: 6px;
+  display: grid; place-items: center;
+  transition: background .12s, color .12s;
+}
+.minibtn:hover { background: var(--hover); color: var(--text); }
+
+.stats { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+.stat {
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 8px 10px; background: var(--canvas);
+}
+.stat .n { font-size: 19px; font-weight: 700; line-height: 1.2; }
+.stat .l { font-size: 10.5px; color: var(--text-3); margin-top: 2px; line-height: 1.25; }
+.stat.warn .n { color: var(--orange); }
+.stat.warn { border-color: rgba(222,146,85,.4); background: var(--orange-soft); }
+.card .foot { margin-top: 10px; font-size: 11.5px; color: var(--text-3); }
+
+.rolelist { display: flex; flex-direction: column; gap: 2px; }
+.role {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; padding: 6px 8px; border-radius: 7px; font-size: 13px;
+}
+.role:hover { background: var(--hover); }
+.role .rname { color: var(--text-2); }
+.role .rmodel {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 11.5px; color: var(--text);
+  max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.role .rmodel.default { color: var(--text-3); font-style: italic; }
+.card .widebtn {
+  margin-top: 10px; width: 100%;
+  padding: 7px 0; border-radius: 8px;
+  border: 1px solid var(--border-strong); background: transparent;
+  color: var(--text-2); font-size: 13px; cursor: pointer;
+  transition: background .12s, color .12s;
+}
+.card .widebtn:hover { background: var(--hover); color: var(--text); }
+
+.ingest label { display: block; font-size: 12px; color: var(--text-2); margin: 8px 0 4px; }
+.ingest input, .ingest select {
+  width: 100%; padding: 8px 10px;
+  border-radius: 8px; border: 1px solid var(--border-strong);
+  background: var(--canvas); color: var(--text);
+  font: inherit; font-size: 13px; outline: none;
+}
+.ingest input:focus, .ingest select:focus { border-color: var(--accent-strong); }
+.ingest input { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; }
+.ingest .result { margin-top: 10px; font-size: 12.5px; color: var(--text-2); display: none; }
+.ingest .result.show { display: block; }
+.ingest .result .ok { color: var(--green); }
+.ingest .result .err { color: var(--red); }
+
+/* ---------- chat ---------- */
+.chat { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+#scroll { flex: 1; overflow-y: auto; scroll-behavior: smooth; }
+#col {
+  max-width: 760px; margin: 0 auto;
+  padding: 24px 20px 16px;
+  display: flex; flex-direction: column; gap: 18px;
+  min-height: 100%;
+}
+
+#empty { margin: auto; text-align: center; max-width: 420px; padding: 40px 16px; }
+#empty .mark {
+  width: 52px; height: 52px; border-radius: 14px;
+  background: linear-gradient(135deg, var(--accent) 0%, #8e6fe8 100%);
+  display: grid; place-items: center;
+  font-weight: 700; font-size: 24px; color: #fff; margin: 0 auto 18px;
+}
+#empty h2 { margin: 0 0 8px; font-size: 20px; font-weight: 650; }
+#empty p { margin: 0 0 20px; color: var(--text-2); font-size: 14px; }
+.hints { display: flex; flex-direction: column; gap: 8px; }
+.hint {
+  padding: 10px 14px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--surface); color: var(--text-2); font-size: 13.5px;
+  cursor: pointer; text-align: left;
+  transition: background .12s, border-color .12s, color .12s;
+}
+.hint:hover { background: var(--hover); border-color: var(--border-strong); color: var(--text); }
+
+.row { display: flex; flex-direction: column; }
+.row.user { align-items: flex-end; }
+.row.bot { align-items: flex-start; }
+.msg {
+  max-width: 85%;
+  padding: 10px 14px;
+  border-radius: 12px;
+  word-break: break-word; overflow-wrap: anywhere;
+  animation: pop .18s ease-out;
+  font-size: 14.5px;
+}
+@keyframes pop { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .msg { animation: none; } #scroll { scroll-behavior: auto; } }
+.row.user .msg {
+  background: var(--accent-soft);
+  border: 1px solid rgba(94,159,232,.28);
+  border-bottom-right-radius: 4px;
+}
+:root[data-theme="light"] .row.user .msg { border-color: rgba(39,131,222,.3); }
+.row.bot .msg {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-bottom-left-radius: 4px;
+}
+.row.error .msg {
+  background: var(--red-soft);
+  border: 1px solid rgba(233,115,102,.35);
+  color: var(--red);
+}
+
+/* markdown inside bubbles */
+.msg p { margin: 0 0 8px; }
+.msg p:last-child { margin-bottom: 0; }
+.msg h3, .msg h4 { margin: 12px 0 6px; font-weight: 650; line-height: 1.3; }
+.msg h3:first-child, .msg h4:first-child { margin-top: 0; }
+.msg h3 { font-size: 17px; } .msg h4 { font-size: 15px; }
+.msg ul, .msg ol { margin: 6px 0; padding-left: 22px; }
+.msg li { margin: 3px 0; }
+.msg a { color: var(--accent); }
+.msg pre {
+  margin: 8px 0 4px; padding: 10px 12px;
+  background: var(--code-bg);
+  border: 1px solid var(--border); border-radius: 8px;
+  overflow-x: auto;
+  font: 13px/1.55 ui-monospace, Menlo, Consolas, monospace;
+}
+.msg pre code { background: none; border: none; padding: 0; }
+.msg code {
+  font-family: ui-monospace, Menlo, Consolas, monospace; font-size: .92em;
+  background: var(--code-bg); border: 1px solid var(--border);
+  border-radius: 5px; padding: 1px 5px;
+}
+.msg .tok-k { color: var(--tok-k); }
+.msg .tok-s { color: var(--tok-s); }
+.msg .tok-c { color: var(--tok-c); font-style: italic; }
+.msg .tok-n { color: var(--tok-n); }
+
+.meta { display: flex; align-items: center; gap: 8px; margin-top: 5px; padding: 0 4px; font-size: 11.5px; color: var(--text-3); }
+.badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 8px; border-radius: 999px;
+  background: var(--green-soft); color: var(--green);
+  border: 1px solid rgba(114,188,143,.3); font-size: 11px;
+}
+
+.gate {
+  margin-top: 10px; padding-top: 10px;
+  border-top: 1px dashed var(--border-strong);
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+}
+.gate .q { font-size: 12.5px; color: var(--text-2); margin-right: auto; }
+.gate button {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 14px; border-radius: 8px; font-size: 13px; cursor: pointer;
+  transition: background .12s, border-color .12s;
+}
+.gate button.ok { border: 1px solid rgba(114,188,143,.45); background: var(--green-soft); color: var(--green); }
+.gate button.ok:hover { background: rgba(114,188,143,.22); }
+.gate button.no { border: 1px solid var(--border); background: transparent; color: var(--text-2); }
+.gate button.no:hover { background: var(--red-soft); border-color: rgba(233,115,102,.4); color: var(--red); }
+
+.typing { display: inline-flex; gap: 4px; padding: 4px 2px; }
+.typing i { width: 7px; height: 7px; border-radius: 50%; background: var(--text-3); animation: blink 1.2s infinite; }
+.typing i:nth-child(2) { animation-delay: .2s; }
+.typing i:nth-child(3) { animation-delay: .4s; }
+@keyframes blink { 0%, 60%, 100% { opacity: .25; } 30% { opacity: 1; } }
+.cursor { display: inline-block; width: 8px; height: 1.1em; background: var(--accent); vertical-align: text-bottom; animation: blink 1s infinite; border-radius: 1px; }
+
+#jump {
+  position: fixed; right: 20px; bottom: 92px;
+  width: 36px; height: 36px; border-radius: 50%;
+  border: 1px solid var(--border-strong); background: var(--raised);
+  color: var(--text-2); cursor: pointer;
+  display: none; place-items: center;
+  box-shadow: 0 4px 14px rgba(0,0,0,.25); z-index: 5;
+}
+#jump.show { display: grid; }
+#jump:hover { color: var(--text); background: var(--hover); }
+
+.composer { flex-shrink: 0; border-top: 1px solid var(--border); background: var(--canvas); padding: 12px 16px 14px; }
+.composer .inner { max-width: 760px; margin: 0 auto; }
+.composer form {
+  display: flex; align-items: flex-end; gap: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong); border-radius: 14px;
+  padding: 6px 6px 6px 14px;
+  transition: border-color .12s, box-shadow .12s;
+}
+.composer form:focus-within { border-color: var(--accent-strong); box-shadow: 0 0 0 3px rgba(94,159,232,.15); }
+textarea {
+  flex: 1; border: none; background: transparent; color: var(--text);
+  font: inherit; resize: none; padding: 6px 0; max-height: 160px; outline: none;
+}
+textarea::placeholder { color: var(--text-3); }
+.sendbtn {
+  width: 36px; height: 36px; border: none; border-radius: 10px;
+  background: var(--accent); color: #fff; cursor: pointer;
+  display: grid; place-items: center; flex-shrink: 0;
+  transition: background .12s, opacity .12s;
+}
+.sendbtn:hover:not(:disabled) { background: var(--accent-strong); }
+.sendbtn:disabled { opacity: .35; cursor: default; }
+.composer .foot { margin-top: 7px; text-align: center; font-size: 11.5px; color: var(--text-3); }
+.composer .foot .stream-on { color: var(--green); }
+
+/* ---------- settings modal ---------- */
+#overlay {
+  position: fixed; inset: 0; z-index: 30;
+  background: rgba(0,0,0,.55); backdrop-filter: blur(2px);
+  display: none; align-items: center; justify-content: center; padding: 20px;
+}
+#overlay.open { display: flex; }
+.modal {
+  width: 100%; max-width: 460px;
+  background: var(--raised); border: 1px solid var(--border-strong);
+  border-radius: 14px; box-shadow: var(--shadow); overflow: hidden;
+}
+.modal .head { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid var(--border); }
+.modal .head h3 { margin: 0; font-size: 15px; font-weight: 650; }
+.modal .body { padding: 16px 18px; display: flex; flex-direction: column; gap: 14px; }
+.modal .note { font-size: 12.5px; color: var(--text-2); margin: 0; }
+.modal .note code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11.5px; background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field label { font-size: 12.5px; color: var(--text-2); font-weight: 550; }
+.field select {
+  width: 100%; padding: 8px 10px; border-radius: 8px;
+  border: 1px solid var(--border-strong); background: var(--surface); color: var(--text);
+  font: inherit; font-size: 13.5px; outline: none;
+}
+.field select:focus { border-color: var(--accent-strong); }
+.modal .actions { display: flex; align-items: center; gap: 10px; padding: 14px 18px; border-top: 1px solid var(--border); }
+.btn { padding: 8px 16px; border-radius: 8px; font-size: 13.5px; font-weight: 550; cursor: pointer; transition: background .12s, border-color .12s; }
+.btn.primary { border: none; background: var(--accent); color: #fff; }
+.btn.primary:hover { background: var(--accent-strong); }
+.btn.ghost { border: 1px solid var(--border-strong); background: transparent; color: var(--text-2); }
+.btn.ghost:hover { background: var(--hover); color: var(--text); }
+#cfgmsg { font-size: 12.5px; color: var(--green); }
+#cfgmsg.err { color: var(--red); }
+
+/* drawer + toast */
+#drawerbg { position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 19; display: none; }
+#toast {
+  position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%) translateY(8px);
+  background: var(--raised); border: 1px solid var(--border-strong); color: var(--text);
+  padding: 8px 16px; border-radius: 999px; font-size: 13px;
+  opacity: 0; pointer-events: none;
+  transition: opacity .18s, transform .18s;
+  box-shadow: 0 6px 20px rgba(0,0,0,.25); z-index: 40;
+}
+#toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+@media (max-width: 1000px) {
+  #panelbtn { display: grid; }
+  aside {
+    position: fixed; top: 0; left: 0; bottom: 0; z-index: 20;
+    width: 300px; max-width: 85vw;
+    transform: translateX(-105%);
+    transition: transform .2s ease-out;
+    border-right: 1px solid var(--border-strong);
+    box-shadow: var(--shadow);
+  }
+  aside.open { transform: none; }
+  #drawerbg.show { display: block; }
+}
+@media (max-width: 560px) {
+  .brand .tag, .brand h1 { display: none; }
+  .msg { max-width: 94%; }
+  #col { padding: 16px 12px 12px; gap: 14px; }
+  .composer { padding: 10px 12px 12px; }
+  .composer .foot { display: none; }
+  #jump { right: 12px; bottom: 84px; }
+}
 </style>
 </head>
 <body>
-<header><h1>harness</h1><span id="sid"></span><button type="button" id="cfgbtn" title="model settings" style="margin-left:auto;padding:2px 10px;border-radius:8px;border:1px solid #3a4150;background:#1b1f26;color:#8b93a1;cursor:pointer;font-size:13px">⚙</button></header>
-<div id="cfg" style="display:none;padding:14px 18px;border-bottom:1px solid #262a31;background:#171a20;gap:10px;flex-direction:column;font-size:13px">
-  <div style="color:#8b93a1">Model per role — empty = default. Options load from <code>/models</code>.</div>
-  <div id="cfgrows" style="display:flex;flex-direction:column;gap:8px"></div>
-  <div style="display:flex;gap:8px"><button type="button" id="cfgsave" style="padding:6px 14px;border-radius:8px;border:none;background:#2b5c8f;color:#fff;cursor:pointer">Save</button><span id="cfgmsg" style="color:#8b93a1;align-self:center"></span></div>
+
+<header>
+  <button class="iconbtn" id="panelbtn" title="Toggle details panel">
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M2 4h12M2 8h12M2 12h12"/></svg>
+  </button>
+  <div class="brand">
+    <div class="mark">h</div>
+    <h1>harness</h1>
+    <span class="tag">memory chat</span>
+  </div>
+  <div class="spacer"></div>
+  <button class="chip" id="sidchip" title="Click to copy full session ID">
+    <span class="dot"></span>
+    <span id="sid"></span>
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="5.5" y="5.5" width="8" height="8" rx="2"/><path d="M10.5 5.5V4a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v4.5a2 2 0 0 0 2 2h1.5"/></svg>
+  </button>
+  <button class="iconbtn" id="themebtn" title="Toggle light / dark theme">
+    <svg class="moon" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13.5 9.5A5.5 5.5 0 0 1 6.5 2.5a5.5 5.5 0 1 0 7 7z"/></svg>
+    <svg class="sun" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="8" cy="8" r="3"/><path d="M8 1.5v1.5M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1 1M11.6 11.6l1 1M12.6 3.4l-1 1M4.4 11.6l-1 1"/></svg>
+  </button>
+  <button class="iconbtn" id="newsession" title="Start a new session">
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg>
+  </button>
+  <button class="iconbtn" id="cfgbtn" title="Model settings">
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.8v1.6M8 12.6v1.6M1.8 8h1.6M12.6 8h1.6M3.6 3.6l1.1 1.1M11.3 11.3l1.1 1.1M12.4 3.6l-1.1 1.1M4.7 11.3l-1.1 1.1"/></svg>
+  </button>
+</header>
+
+<main>
+  <aside id="side">
+    <div class="card">
+      <div class="cardhead">
+        <h2>Memory</h2>
+        <button class="minibtn" id="memrefresh" title="Refresh stats">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2.5v2.6h-2.6"/></svg>
+        </button>
+      </div>
+      <div class="stats">
+        <div class="stat"><div class="n" id="st-mem">–</div><div class="l">active memories</div></div>
+        <div class="stat" id="st-pend-tile"><div class="n" id="st-pend">–</div><div class="l">pending</div></div>
+        <div class="stat"><div class="n" id="st-art">–</div><div class="l">artifacts</div></div>
+      </div>
+      <div class="foot" id="memfoot">Stats from /memory/status</div>
+    </div>
+
+    <div class="card">
+      <div class="cardhead"><h2>Models</h2></div>
+      <div class="rolelist" id="rolelist">
+        <div class="role"><span class="rname">Loading…</span></div>
+      </div>
+      <button class="widebtn" id="editcfg">Edit model settings</button>
+    </div>
+
+    <div class="card ingest">
+      <div class="cardhead"><h2>Ingest sessions</h2></div>
+      <label for="ingpath">Path on server</label>
+      <input id="ingpath" placeholder="~/.claude/projects" spellcheck="false">
+      <label for="ingfmt">Format</label>
+      <select id="ingfmt">
+        <option value="">Auto-detect</option>
+        <option value="omp">omp</option>
+        <option value="claude">Claude Code</option>
+        <option value="codex">Codex</option>
+        <option value="junie">Junie</option>
+      </select>
+      <button class="widebtn" id="ingbtn" style="margin-top:12px">Ingest into memory</button>
+      <div class="result" id="ingresult"></div>
+    </div>
+  </aside>
+  <div id="drawerbg"></div>
+
+  <section class="chat">
+    <div id="scroll">
+      <div id="col">
+        <div id="empty">
+          <div class="mark">h</div>
+          <h2>Ask anything</h2>
+          <p>harness remembers what you tell it. Facts worth keeping are gated — you approve what gets stored.</p>
+          <div class="hints">
+            <button class="hint">What do you remember about me?</button>
+            <button class="hint">Remember that my favorite language is Rust</button>
+            <button class="hint">Summarize what we discussed last time</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <button id="jump" title="Scroll to latest">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v10M4 9l4 4 4-4"/></svg>
+    </button>
+
+    <div class="composer">
+      <div class="inner">
+        <form id="f">
+          <textarea id="p" rows="1" placeholder="Ask anything…" autofocus></textarea>
+          <button class="sendbtn" id="sendbtn" title="Send" disabled>
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 13V3M4 7l4-4 4 4"/></svg>
+          </button>
+        </form>
+        <div class="foot">Enter to send · Shift + Enter for a new line <span id="streamtag"></span></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div id="overlay">
+  <div class="modal" role="dialog" aria-modal="true" aria-label="Model settings">
+    <div class="head">
+      <h3>Model settings</h3>
+      <button class="iconbtn" id="cfgclose" title="Close">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 3l10 10M13 3L3 13"/></svg>
+      </button>
+    </div>
+    <div class="body">
+      <p class="note">Pick a model per role — leave empty to use the server default. Options load from <code>/models</code>.</p>
+      <div id="cfgrows" style="display:flex;flex-direction:column;gap:12px"></div>
+    </div>
+    <div class="actions">
+      <button class="btn primary" id="cfgsave">Save changes</button>
+      <button class="btn ghost" id="cfgcancel">Cancel</button>
+      <span id="cfgmsg"></span>
+    </div>
+  </div>
 </div>
-<div id="log"></div>
-<form id="f"><input id="p" placeholder="ask anything…" autocomplete="off" autofocus><button class="send">Send</button></form>
+
+<div id="toast"></div>
+
 <script>
-const sid = localStorage.harness_sid || (localStorage.harness_sid = crypto.randomUUID());
-document.getElementById('sid').textContent = 'session ' + sid.slice(0, 8);
-const log = document.getElementById('log');
+'use strict';
 
-function add(cls, text) {
-  const d = document.createElement('div');
-  d.className = 'msg ' + cls;
-  d.textContent = text;
-  log.appendChild(d);
-  log.scrollTop = log.scrollHeight;
-  return d;
+/* Optional demo mode: open with ?demo to preview the UI with a mocked backend. */
+const DEMO = window.__DEMO__ === true || location.search.includes('demo');
+if (DEMO) installDemoMock();
+
+function sseResponse(events) {
+  const enc = new TextEncoder();
+  const stream = new ReadableStream(async (ctrl) => {
+    for (const ev of events) {
+      await new Promise(r => setTimeout(r, ev.delay || 90));
+      ctrl.enqueue(enc.encode('data: ' + JSON.stringify(ev.data) + '\n\n'));
+    }
+    ctrl.close();
+  });
+  return new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream' } });
 }
 
-async function send(prompt) {
-  add('user', prompt);
-  const input = document.getElementById('p');
-  const btn = document.querySelector('.send');
-  input.value = ''; btn.disabled = true;
-  try {
-    const r = await fetch('/chat', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ prompt, session_id: sid })
-    });
-    const j = await r.json();
-    if (j.error) { add('bot', 'error: ' + j.error); return; }
-    const b = add('bot', j.response);
-    if (j.recalled_context_applied) {
-      const m = document.createElement('div');
-      m.className = 'meta'; m.textContent = '🧠 recalled from memory';
-      b.appendChild(m);
+function installDemoMock() {
+  const realFetch = window.fetch.bind(window);
+  let mem = { artifacts_stored: 48, active_memories: 12, pending_confirmations: 0 };
+  window.fetch = async (url, opts) => {
+    if (url === '/models') return Response.json({ data: [{ id: 'LongCat-2.0' }, { id: 'gpt-5.2' }, { id: 'claude-opus-4.8' }] });
+    if (url === '/config' && (!opts || opts.method !== 'POST')) return Response.json({ main: 'gpt-5.2', recall: '', gatekeeper: '', extraction: '' });
+    if (url === '/config') return Response.json({ status: 'saved' });
+    if (url === '/memory/status') return Response.json(mem);
+    if (url === '/memory/ingest') {
+      await new Promise(r => setTimeout(r, 700));
+      mem.artifacts_stored += 3; mem.active_memories += 5;
+      return Response.json({ files_ingested: 3, exchanges: 14, memories_extracted: 5, errors: [] });
     }
-    const id = (j.confirmation_prompt || '').match(/confirm\s+([0-9a-f-]{36})/i);
-    if (id) {
-      const g = document.createElement('div');
-      g.className = 'gate';
-      for (const [label, word, cls] of [['Remember', 'confirm', 'ok'], ['Skip', 'reject', 'no']]) {
-        const btn2 = document.createElement('button');
-        btn2.className = cls; btn2.textContent = label;
-        btn2.onclick = () => { g.remove(); send(word + ' ' + id[1]); };
-        g.appendChild(btn2);
+    const chatAnswer = (prompt) => {
+      if (/^(confirm|reject)\s+[0-9a-f-]{36}/i.test(prompt)) {
+        mem.pending_confirmations = Math.max(0, mem.pending_confirmations - 1);
+        if (prompt.startsWith('confirm')) mem.active_memories++;
+        return { response: prompt.startsWith('confirm') ? 'Memory confirmed and retained in long-term memory.' : 'Memory rejected.', confirmation_prompt: null, recalled_context_applied: false };
       }
-      b.appendChild(g);
+      if (/remember/i.test(prompt)) {
+        mem.pending_confirmations++;
+        const id = '3f6c2f6a-9b2d-4c6e-8a1c-2d5f0a1b9c7e';
+        const q = "Should I remember that your favorite language is Rust for future sessions?";
+        return {
+          response: 'Got it — noted.\n\n[Memory Gatekeeper]: ' + q + " (Reply 'confirm " + id + "' or 'reject " + id + "')",
+          confirmation_prompt: '\n\n[Memory Gatekeeper]: ' + q + " (Reply 'confirm " + id + "' or 'reject " + id + "')",
+          recalled_context_applied: false
+        };
+      }
+      return {
+        response: '## What I recall\n\nYou prefer **concise answers** and *dark UIs*. Quick example:\n\n```rust\nfn main() {\n    // hello from harness\n    let name = "harness";\n    println!("hello, {name}");\n}\n```\n\n- Fast\n- Memory-aware\n\nAnything else you want to dig into?',
+        confirmation_prompt: null,
+        recalled_context_applied: true
+      };
+    };
+    if (url === '/chat/stream') {
+      const { prompt } = JSON.parse(opts.body);
+      mem.artifacts_stored += 2;
+      const a = chatAnswer(prompt);
+      const events = [];
+      const parts = a.response.match(/[\s\S]{1,24}/g) || [];
+      for (const p of parts) events.push({ data: { type: 'token', text: p } });
+      events.push({ delay: 200, data: { type: 'done', session_id: 'demo', confirmation_prompt: a.confirmation_prompt, recalled_context_applied: a.recalled_context_applied, background_status: 'synced' } });
+      return sseResponse(events);
     }
-  } catch (e) { add('bot', 'network error: ' + e); }
-  finally { btn.disabled = false; input.focus(); }
+    if (url === '/chat') {
+      const { prompt } = JSON.parse(opts.body);
+      await new Promise(r => setTimeout(r, 900));
+      mem.artifacts_stored += 2;
+      const a = chatAnswer(prompt);
+      return Response.json({ ...a, session_id: 'demo', background_status: 'synced' });
+    }
+    return realFetch(url, opts);
+  };
 }
-document.getElementById('f').onsubmit = e => { e.preventDefault(); const v = document.getElementById('p').value.trim(); if (v) send(v); };
 
+/* ---------- session ---------- */
+let sid = localStorage.harness_sid || (localStorage.harness_sid = crypto.randomUUID());
+const sidLabel = document.getElementById('sid');
+const col = document.getElementById('col');
+const scrollBox = document.getElementById('scroll');
+const emptyState = document.getElementById('empty');
+const jumpBtn = document.getElementById('jump');
+const input = document.getElementById('p');
+const sendBtn = document.getElementById('sendbtn');
 
+function renderSid() { sidLabel.textContent = 'session ' + sid.slice(0, 8); }
+renderSid();
 
-// ---- settings panel ----
-const ROLES = [['main', 'Main agent'], ['recall', 'Context filter'], ['gatekeeper', 'Gatekeeper'], ['extraction', 'Ingest extraction']];
-const cfgPanel = document.getElementById('cfg');
-document.getElementById('cfgbtn').onclick = async () => {
-  cfgPanel.style.display = cfgPanel.style.display === 'none' ? 'flex' : 'none';
-  if (cfgPanel.style.display !== 'none') await loadCfg();
+/* ---------- toast ---------- */
+let toastTimer;
+function toast(text) {
+  const t = document.getElementById('toast');
+  t.textContent = text;
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 1800);
+}
+
+document.getElementById('sidchip').onclick = () => {
+  navigator.clipboard?.writeText(sid).then(() => toast('Session ID copied'), () => toast('Copy failed'));
 };
 
+document.getElementById('newsession').onclick = () => {
+  sid = crypto.randomUUID();
+  localStorage.harness_sid = sid;
+  renderSid();
+  transcript = [];
+  persistLog();
+  col.querySelectorAll('.row').forEach(n => n.remove());
+  emptyState.style.display = '';
+  input.focus();
+  toast('New session started');
+};
+
+/* ---------- theme ---------- */
+document.getElementById('themebtn').onclick = () => {
+  const cur = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
+  document.documentElement.dataset.theme = cur;
+  localStorage.harness_theme = cur;
+};
+
+/* ---------- sidebar drawer (mobile) ---------- */
+const side = document.getElementById('side');
+const drawerbg = document.getElementById('drawerbg');
+document.getElementById('panelbtn').onclick = () => {
+  side.classList.toggle('open');
+  drawerbg.classList.toggle('show', side.classList.contains('open'));
+};
+drawerbg.onclick = () => { side.classList.remove('open'); drawerbg.classList.remove('show'); };
+
+/* ---------- memory stats ---------- */
+async function refreshStats() {
+  const foot = document.getElementById('memfoot');
+  try {
+    const s = await fetch('/memory/status').then(r => r.json());
+    if (s.error) throw new Error(s.error);
+    document.getElementById('st-mem').textContent = s.active_memories ?? '0';
+    document.getElementById('st-art').textContent = s.artifacts_stored ?? '0';
+    document.getElementById('st-pend').textContent = s.pending_confirmations ?? '0';
+    document.getElementById('st-pend-tile').classList.toggle('warn', (s.pending_confirmations || 0) > 0);
+    foot.textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  } catch (e) {
+    foot.textContent = 'Server unreachable';
+  }
+}
+document.getElementById('memrefresh').onclick = refreshStats;
+refreshStats();
+
+/* ---------- model roles card ---------- */
+const ROLES = [['main', 'Main agent'], ['recall', 'Context filter'], ['gatekeeper', 'Gatekeeper'], ['extraction', 'Ingest extraction']];
+async function refreshRoles() {
+  const list = document.getElementById('rolelist');
+  try {
+    const cfg = await fetch('/config').then(r => r.json());
+    list.innerHTML = '';
+    for (const [role, label] of ROLES) {
+      const v = (cfg[role] || '').trim();
+      const row = document.createElement('div');
+      row.className = 'role';
+      const name = document.createElement('span');
+      name.className = 'rname'; name.textContent = label;
+      const model = document.createElement('span');
+      model.className = 'rmodel' + (v ? '' : ' default');
+      model.textContent = v || 'default';
+      model.title = v || 'server default';
+      row.append(name, model);
+      list.appendChild(row);
+    }
+  } catch (e) {
+    list.innerHTML = '<div class="role"><span class="rname">Server unreachable</span></div>';
+  }
+}
+refreshRoles();
+document.getElementById('editcfg').onclick = () => document.getElementById('cfgbtn').click();
+
+/* ---------- ingest ---------- */
+document.getElementById('ingbtn').onclick = async () => {
+  const path = document.getElementById('ingpath').value.trim();
+  const format = document.getElementById('ingfmt').value;
+  const out = document.getElementById('ingresult');
+  if (!path) { toast('Enter a path first'); return; }
+  const btn = document.getElementById('ingbtn');
+  btn.disabled = true; btn.textContent = 'Ingesting…';
+  out.className = 'result';
+  try {
+    const body = { path };
+    if (format) body.format = format;
+    const r = await fetch('/memory/ingest', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    const j = await r.json();
+    if (j.error) throw new Error(j.error);
+    const errs = (j.errors || []).length;
+    out.innerHTML = '<span class="ok">✓</span> ' + j.files_ingested + ' files · ' +
+      j.exchanges + ' exchanges · <b>' + j.memories_extracted + ' memories</b>' +
+      (errs ? ' · <span class="err">' + errs + ' errors</span>' : '');
+    out.classList.add('show');
+    refreshStats();
+  } catch (e) {
+    out.innerHTML = '<span class="err">Ingest failed: ' + esc(e.message) + '</span>';
+    out.classList.add('show');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Ingest into memory';
+  }
+};
+
+/* ---------- local transcript (cosmetic cache, per session) ---------- */
+const logKey = () => 'harness_log_' + sid;
+let transcript = (() => { try { return JSON.parse(localStorage[logKey()] || '[]'); } catch (e) { return []; } })();
+function persistLog() {
+  try { localStorage[logKey()] = JSON.stringify(transcript.slice(-200)); } catch (e) {}
+}
+
+/* ---------- markdown-lite rendering ---------- */
+function esc(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+const KW = {
+  rust: 'fn let mut impl pub struct enum match use mod const static async await where for in if else return self Self trait dyn ref move loop while break continue crate super unsafe extern type as',
+  js: 'function const let var return if else for while class extends new async await import export from default try catch throw typeof instanceof of in switch case break continue this null undefined true false',
+  ts: 'function const let var return if else for while class extends new async await import export from default try catch throw typeof instanceof of in switch case break continue this null undefined true false interface type implements readonly keyof',
+  python: 'def class return if elif else for while import from as with try except finally raise pass lambda None True False async await in is not and or global nonlocal yield',
+  py: 'def class return if elif else for while import from as with try except finally raise pass lambda None True False async await in is not and or global nonlocal yield',
+  json: 'true false null',
+  bash: 'if then else fi for while do done case esac function in echo cd export local return exit',
+  sh: 'if then else fi for while do done case esac function in echo cd export local return exit'
+};
+const KW_GENERIC = 'fn function def class const let var return if else for while import from as async await pub struct enum match use true false null None'
+
+function highlight(code, lang) {
+  const words = KW[lang] || KW_GENERIC;
+  const re = new RegExp(
+    '(\\/\\/[^\\n]*|\\/\\*[\\s\\S]*?\\*\\/|#[^\\n]*)' +
+    '|("(?:[^"\\\\\\n]|\\\\.)*"|\'(?:[^\'\\\\\\n]|\\\\.)*\'|`(?:[^`\\\\\\n]|\\\\.)*`)' +
+    '|\\b(' + words.split(' ').join('|') + ')\\b' +
+    '|\\b(\\d+(?:\\.\\d+)?)\\b',
+    'g');
+  let out = '', last = 0, m;
+  while ((m = re.exec(code))) {
+    out += esc(code.slice(last, m.index));
+    const cls = m[1] ? 'tok-c' : m[2] ? 'tok-s' : m[3] ? 'tok-k' : 'tok-n';
+    out += '<span class="' + cls + '">' + esc(m[0]) + '</span>';
+    last = m.index + m[0].length;
+  }
+  out += esc(code.slice(last));
+  return out;
+}
+
+function inlineMd(text) {
+  let out = esc(text);
+  out = out.replace(/`([^`\n]+)`/g, '<code>$1</code>');
+  out = out.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  out = out.replace(/(^|[^*\w])\*([^*\n]+)\*/g, '$1<em>$2</em>');
+  out = out.replace(/\[([^\]]+)\]\((https?:[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  return out;
+}
+
+function md(src) {
+  const lines = src.split('\n');
+  let html = '', inCode = false, codeLang = '', codeBuf = [], listType = null, para = [];
+  const flushPara = () => { if (para.length) { html += '<p>' + para.map(inlineMd).join('<br>') + '</p>'; para = []; } };
+  const closeList = () => { if (listType) { html += listType === 'ul' ? '</ul>' : '</ol>'; listType = null; } };
+  for (const line of lines) {
+    const fence = line.match(/^```(\w*)\s*$/);
+    if (fence) {
+      if (inCode) {
+        html += '<pre><code>' + highlight(codeBuf.join('\n'), codeLang) + '</code></pre>';
+        codeBuf = []; inCode = false;
+      } else { flushPara(); closeList(); inCode = true; codeLang = fence[1]; }
+      continue;
+    }
+    if (inCode) { codeBuf.push(line); continue; }
+    if (!line.trim()) { flushPara(); closeList(); continue; }
+    const h = line.match(/^(#{1,4})\s+(.*)/);
+    if (h) { flushPara(); closeList(); const lvl = Math.min(h[1].length + 1, 4); html += '<h' + lvl + '>' + inlineMd(h[2]) + '</h' + lvl + '>'; continue; }
+    const ul = line.match(/^[-*]\s+(.*)/);
+    if (ul) { flushPara(); if (listType !== 'ul') { closeList(); html += '<ul>'; listType = 'ul'; } html += '<li>' + inlineMd(ul[1]) + '</li>'; continue; }
+    const ol = line.match(/^\d+\.\s+(.*)/);
+    if (ol) { flushPara(); if (listType !== 'ol') { closeList(); html += '<ol>'; listType = 'ol'; } html += '<li>' + inlineMd(ol[1]) + '</li>'; continue; }
+    para.push(line);
+  }
+  if (inCode) html += '<pre><code>' + highlight(codeBuf.join('\n'), codeLang) + '</code></pre>';
+  flushPara(); closeList();
+  return html;
+}
+
+/* strip the gatekeeper trailer from a displayed response */
+function stripGateTrailer(response, confirmationPrompt) {
+  if (confirmationPrompt && response.endsWith(confirmationPrompt)) {
+    return response.slice(0, response.length - confirmationPrompt.length);
+  }
+  return response;
+}
+
+function gateInfo(confirmationPrompt) {
+  if (!confirmationPrompt) return null;
+  const idm = confirmationPrompt.match(/confirm\s+([0-9a-f-]{36})/i);
+  if (!idm) return null;
+  const qm = confirmationPrompt.match(/\[Memory Gatekeeper\]:\s*(.*?)\s*\(Reply/);
+  return { id: idm[1], question: qm ? qm[1] : 'Save this to memory?' };
+}
+
+/* ---------- scroll ---------- */
+function nearBottom() {
+  return scrollBox.scrollHeight - scrollBox.scrollTop - scrollBox.clientHeight < 80;
+}
+function scrollToBottom(force) {
+  if (force || nearBottom()) scrollBox.scrollTop = scrollBox.scrollHeight;
+  updateJump();
+}
+function updateJump() {
+  jumpBtn.classList.toggle('show', !nearBottom() && scrollBox.scrollHeight > scrollBox.clientHeight + 200);
+}
+scrollBox.addEventListener('scroll', updateJump);
+jumpBtn.onclick = () => { scrollBox.scrollTop = scrollBox.scrollHeight; updateJump(); };
+
+function timeNow() {
+  return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+/* ---------- message rows ---------- */
+function addRow(cls, text, opts = {}) {
+  emptyState.style.display = 'none';
+  const row = document.createElement('div');
+  row.className = 'row ' + cls;
+  const bubble = document.createElement('div');
+  bubble.className = 'msg';
+  bubble.innerHTML = cls === 'user' ? esc(text).replace(/\n/g, '<br>') : md(text);
+  row.appendChild(bubble);
+
+  const meta = document.createElement('div');
+  meta.className = 'meta';
+  const t = document.createElement('span');
+  t.textContent = opts.time || timeNow();
+  meta.appendChild(t);
+  if (opts.recalled) {
+    const b = document.createElement('span');
+    b.className = 'badge';
+    b.innerHTML = '<svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4" y="4" width="8" height="8" rx="2"/><path d="M6 1v2M10 1v2M6 13v2M10 13v2M1 6h2M1 10h2M13 6h2M13 10h2"/></svg><span>recalled from memory</span>';
+    meta.appendChild(b);
+  }
+  row.appendChild(meta);
+  col.appendChild(row);
+  scrollToBottom(opts.stick);
+  return { row, bubble, meta };
+}
+
+function addTyping() {
+  emptyState.style.display = 'none';
+  const row = document.createElement('div');
+  row.className = 'row bot';
+  row.innerHTML = '<div class="msg"><span class="typing"><i></i><i></i><i></i></span></div>';
+  col.appendChild(row);
+  scrollToBottom(true);
+  return row;
+}
+
+function attachGate(bubble, info) {
+  const g = document.createElement('div');
+  g.className = 'gate';
+  const q = document.createElement('span');
+  q.className = 'q';
+  q.textContent = info.question;
+  g.appendChild(q);
+  for (const [label, word, cls] of [['Remember', 'confirm', 'ok'], ['Skip', 'reject', 'no']]) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = cls;
+    b.textContent = label;
+    b.onclick = () => { g.remove(); send(word + ' ' + info.id); };
+    g.appendChild(b);
+  }
+  bubble.appendChild(g);
+  scrollToBottom();
+}
+
+/* ---------- chat send (streaming with JSON fallback) ---------- */
+let busy = false;
+let streamingWorks = true; // flipped off after a 404 so we stop trying
+
+async function send(prompt) {
+  if (busy) return;
+  busy = true;
+  addRow('user', prompt, { stick: true });
+  transcript.push({ cls: 'user', text: prompt, time: timeNow() });
+  persistLog();
+  input.value = '';
+  autosize();
+  sendBtn.disabled = true;
+  const typing = addTyping();
+  try {
+    if (streamingWorks) {
+      const ok = await sendStreaming(prompt, typing);
+      if (!ok) await sendJson(prompt, typing);
+    } else {
+      await sendJson(prompt, typing);
+    }
+  } catch (e) {
+    typing.remove();
+    addRow('error', 'Network error — is the harness server running? (' + e.message + ')', { stick: true });
+  } finally {
+    busy = false;
+    sendBtn.disabled = input.value.trim() === '';
+    input.focus();
+    refreshStats();
+  }
+}
+
+function finishBot(typing, text, meta) {
+  typing.remove();
+  const { bubble } = addRow('bot', text, { recalled: !!meta.recalled, stick: true });
+  transcript.push({ cls: 'bot', text, time: timeNow(), recalled: !!meta.recalled });
+  persistLog();
+  const gi = gateInfo(meta.confirmation_prompt);
+  if (gi) attachGate(bubble, gi);
+}
+
+/* returns false if the endpoint doesn't exist (fallback to JSON) */
+async function sendStreaming(prompt, typing) {
+  const r = await fetch('/chat/stream', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ prompt, session_id: sid })
+  });
+  const ct = r.headers.get('content-type') || '';
+  if (r.status === 404 || !ct.includes('text/event-stream') || !r.body) {
+    streamingWorks = false;
+    document.getElementById('streamtag').textContent = '';
+    return false;
+  }
+  document.getElementById('streamtag').innerHTML = '· <span class="stream-on">streaming</span>';
+
+  const reader = r.body.getReader();
+  const dec = new TextDecoder();
+  let buf = '', answer = '', done = null, errMsg = null;
+  let streamRow = null, streamBubble = null, streamText = '';
+
+  const ensureRow = () => {
+    if (!streamRow) {
+      typing.remove();
+      emptyState.style.display = 'none';
+      streamRow = document.createElement('div');
+      streamRow.className = 'row bot';
+      streamBubble = document.createElement('div');
+      streamBubble.className = 'msg';
+      streamRow.appendChild(streamBubble);
+      col.appendChild(streamRow);
+    }
+  };
+
+  let renderQueued = false;
+  const renderStream = () => {
+    if (renderQueued) return;
+    renderQueued = true;
+    requestAnimationFrame(() => {
+      renderQueued = false;
+      if (streamBubble) {
+        streamBubble.innerHTML = md(streamText) + '<span class="cursor"></span>';
+        scrollToBottom();
+      }
+    });
+  };
+
+  for (;;) {
+    const { value, done: rd } = await reader.read();
+    if (rd) break;
+    buf += dec.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf('\n\n')) >= 0) {
+      const raw = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      const line = raw.split('\n').find(l => l.startsWith('data:'));
+      if (!line) continue;
+      let ev;
+      try { ev = JSON.parse(line.slice(5).trim()); } catch (e) { continue; }
+      if (ev.type === 'token') {
+        ensureRow();
+        streamText += ev.text;
+        renderStream();
+      } else if (ev.type === 'done') {
+        done = ev;
+      } else if (ev.type === 'error') {
+        errMsg = ev.message || 'stream error';
+      }
+    }
+  }
+
+  if (streamRow) streamRow.remove();
+  if (errMsg) {
+    typing.remove();
+    addRow('error', 'Error: ' + errMsg, { stick: true });
+    return true;
+  }
+  if (!done) throw new Error('stream ended unexpectedly');
+  answer = stripGateTrailer(streamText || done.response || '', done.confirmation_prompt);
+  finishBot(typing, answer, done);
+  return true;
+}
+
+async function sendJson(prompt, typing) {
+  const r = await fetch('/chat', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ prompt, session_id: sid })
+  });
+  const j = await r.json();
+  if (j.error) {
+    typing.remove();
+    addRow('error', 'Error: ' + j.error, { stick: true });
+    return;
+  }
+  const text = stripGateTrailer(j.response || '', j.confirmation_prompt);
+  finishBot(typing, text, j);
+}
+
+document.getElementById('f').onsubmit = e => {
+  e.preventDefault();
+  const v = input.value.trim();
+  if (v && !busy) send(v);
+};
+input.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    const v = input.value.trim();
+    if (v && !busy) send(v);
+  }
+});
+
+function autosize() {
+  input.style.height = 'auto';
+  input.style.height = Math.min(input.scrollHeight, 160) + 'px';
+  sendBtn.disabled = busy || input.value.trim() === '';
+}
+input.addEventListener('input', autosize);
+
+document.querySelectorAll('.hint').forEach(h => {
+  h.onclick = () => { if (!busy) send(h.textContent); };
+});
+
+/* restore cached transcript */
+if (transcript.length) {
+  for (const m of transcript) addRow(m.cls, m.text, { time: m.time, recalled: m.recalled });
+  scrollToBottom(true);
+}
+
+/* ---------- settings modal ---------- */
+const overlay = document.getElementById('overlay');
+const cfgMsg = document.getElementById('cfgmsg');
+
+function openCfg() {
+  overlay.classList.add('open');
+  cfgMsg.textContent = '';
+  cfgMsg.className = '';
+  loadCfg();
+}
+function closeCfg() { overlay.classList.remove('open'); }
+
+document.getElementById('cfgbtn').onclick = openCfg;
+document.getElementById('cfgclose').onclick = closeCfg;
+document.getElementById('cfgcancel').onclick = closeCfg;
+overlay.addEventListener('click', e => { if (e.target === overlay) closeCfg(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeCfg(); });
+
 async function loadCfg() {
+  const rows = document.getElementById('cfgrows');
+  rows.innerHTML = '<p class="note">Loading…</p>';
   const [cfg, models] = await Promise.all([
     fetch('/config').then(r => r.json()).catch(() => ({})),
     fetch('/models').then(r => r.json()).then(j => (j.data || []).map(m => m.id)).catch(() => [])
   ]);
-  const rows = document.getElementById('cfgrows');
   rows.innerHTML = '';
   for (const [role, label] of ROLES) {
     const cur = cfg[role] || '';
-    const row = document.createElement('div');
-    row.style.cssText = 'display:flex;align-items:center;gap:10px';
-    const lab = document.createElement('span');
-    lab.textContent = label; lab.style.cssText = 'width:140px;color:#8b93a1';
+    const field = document.createElement('div');
+    field.className = 'field';
+    const lab = document.createElement('label');
+    lab.textContent = label;
     const sel = document.createElement('select');
-    sel.style.cssText = 'flex:1;padding:6px;border-radius:8px;border:1px solid #3a4150;background:#1b1f26;color:#e6e6e6';
-    sel.innerHTML = '<option value="">(default)</option>' +
-      models.map(m => `<option value="${m}"${m === cur ? ' selected' : ''}>${m}</option>`).join('');
+    sel.innerHTML = '<option value="">(server default)</option>' +
+      models.map(m => `<option value="${esc(m)}"${m === cur ? ' selected' : ''}>${esc(m)}</option>`).join('');
     if (cur && !models.includes(cur)) {
-      sel.innerHTML += `<option value="${cur}" selected>${cur} (unavailable)</option>`;
+      sel.innerHTML += `<option value="${esc(cur)}" selected>${esc(cur)} (unavailable)</option>`;
     }
     sel.dataset.role = role;
-    row.append(lab, sel);
-    rows.appendChild(row);
+    field.append(lab, sel);
+    rows.appendChild(field);
   }
 }
 
 document.getElementById('cfgsave').onclick = async () => {
   const body = {};
   document.querySelectorAll('#cfgrows select').forEach(s => body[s.dataset.role] = s.value);
-  const msg = document.getElementById('cfgmsg');
-  const r = await fetch('/config', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body)
-  });
-  msg.textContent = r.ok ? 'saved ✓' : 'save failed';
-  setTimeout(() => msg.textContent = '', 2000);
+  try {
+    const r = await fetch('/config', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    if (r.ok) {
+      cfgMsg.textContent = 'Saved ✓';
+      cfgMsg.className = '';
+      refreshRoles();
+      setTimeout(() => { if (cfgMsg.textContent === 'Saved ✓') cfgMsg.textContent = ''; }, 2500);
+    } else {
+      cfgMsg.textContent = 'Save failed';
+      cfgMsg.className = 'err';
+    }
+  } catch (e) {
+    cfgMsg.textContent = 'Save failed — server unreachable';
+    cfgMsg.className = 'err';
+  }
 };
+
+autosize();
 </script>
 </body>
 </html>

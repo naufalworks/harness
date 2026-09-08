@@ -8,6 +8,9 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use axum::response::sse::{Event, KeepAlive, Sse};
+use futures_util::StreamExt as _;
+use std::convert::Infallible;
 use std::env;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
@@ -489,6 +492,94 @@ async fn chat(
         .into_response()
 }
 
+/// SSE event wrapper: JSON value -> Ok(Event) for streaming yields.
+fn sse(v: Value) -> Result<Event, Infallible> {
+    Ok(Event::default().data(serde_json::to_string(&v).unwrap()))
+}
+/// answer is streamed as Server-Sent Events:
+///   {"type":"token","text":"..."}   per upstream delta
+///   {"type":"error","message":"..."} on failure
+///   {"type":"done", ...}             final event with the same metadata /chat returns
+async fn chat_stream(
+    State(h): State<Harness>,
+    Json(req): Json<ChatRequest>,
+) -> Response {
+    let session_id = req.session_id.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
+    let prompt = req.prompt.trim().to_string();
+    let model = req.model.clone().unwrap_or_else(|| h.agents.role_model("main"));
+
+    let stream = async_stream::stream! {
+        // 0. Gatekeeper confirm/reject short-circuit (same behavior as /chat)
+        if prompt.starts_with("confirm ") || prompt.starts_with("reject ") {
+            let parts: Vec<&str> = prompt.split_whitespace().collect();
+            if parts.len() >= 2 {
+                let is_confirm = parts[0].eq_ignore_ascii_case("confirm");
+                if let Ok(true) = h.store.resolve_confirmation(parts[1], is_confirm) {
+                    let msg = if is_confirm {
+                        format!("Memory [{}] confirmed and retained in long-term memory.", parts[1])
+                    } else {
+                        format!("Memory [{}] rejected.", parts[1])
+                    };
+                    yield sse(json!({"type":"done","session_id":session_id,"response":msg,"confirmation_prompt":null,"recalled_context_applied":false,"background_status":"synced"}));
+                    return;
+                }
+            }
+        }
+
+        // 1. RAW STORE: log untouched user prompt
+        let _ = h.store.insert_artifact(&session_id, "user_prompt", &prompt);
+
+        // 2. AGENT 1: recall context
+        let recalled_context = h.agents.recall_context(&prompt).await.unwrap_or_default();
+        let context_applied = !recalled_context.is_empty();
+        let system_prompt = if context_applied {
+            format!(
+                "You are a helpful, capable assistant. Tailor your behavior to user preferences.\n{}",
+                recalled_context
+            )
+        } else {
+            "You are a helpful, capable assistant.".to_string()
+        };
+
+        // 3. MAIN AGENT: stream tokens from upstream
+        let mut answer = String::new();
+        match h.agents.chat_stream(&model, &system_prompt, &prompt).await {
+            Ok(tokens) => {
+                let mut tokens = Box::pin(tokens);
+                while let Some(delta) = tokens.next().await {
+                    match delta {
+                        Ok(text) => {
+                            answer.push_str(&text);
+                            yield sse(json!({"type":"token","text":text}));
+                        }
+                        Err(e) => {
+                            yield sse(json!({"type":"error","message":e.to_string()}));
+                            return;
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                yield sse(json!({"type":"error","message":e.to_string()}));
+                return;
+            }
+        }
+
+        // 4. RAW STORE + 5. AGENT 3: Gatekeeper (runs after the stream completes)
+        let _ = h.store.insert_artifact(&session_id, "agent_response", &answer);
+        let gatekeeper_prompt = h
+            .agents
+            .evaluate_gatekeeper(&session_id, &prompt, &answer)
+            .await;
+
+        yield sse(json!({"type":"done","session_id":session_id,"confirmation_prompt":gatekeeper_prompt,"recalled_context_applied":context_applied,"background_status":"synced"}));
+    };
+
+    Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response()
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let state = Harness::from_env();
@@ -497,6 +588,7 @@ async fn main() -> Result<()> {
         .route("/config", get(get_config).post(set_config))
         .route("/models", get(models))
         .route("/chat", post(chat))
+        .route("/chat/stream", post(chat_stream))
         .route("/memory/status", get(memory_status))
         .route("/memory/confirm", post(confirm_memory))
         .route("/memory/ingest", post(ingest_memory))
