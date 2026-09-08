@@ -21,9 +21,6 @@ use storage::DbStore;
 
 #[derive(Clone)]
 struct Harness {
-    http: reqwest::Client,
-    base_url: String,
-    api_key: String,
     default_model: String,
     store: DbStore,
     agents: MemoryAgents,
@@ -44,60 +41,10 @@ impl Harness {
         let agents = MemoryAgents::new(&base_url, &api_key, &default_model, store.clone());
 
         Self {
-            http: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(300))
-                .build()
-                .expect("reqwest client"),
-            base_url,
-            api_key,
             default_model,
             store,
             agents,
         }
-    }
-
-    async fn list_models(&self) -> Result<Value> {
-        let url = format!("{}/models", self.base_url);
-        let resp = self
-            .http
-            .get(&url)
-            .bearer_auth(&self.api_key)
-            .send()
-            .await?;
-        let status = resp.status();
-        let body: Value = resp.json().await?;
-        if !status.is_success() {
-            anyhow::bail!("upstream /models failed ({status}): {body}");
-        }
-        Ok(body)
-    }
-
-    async fn chat_raw(&self, model: &str, system: &str, prompt: &str) -> Result<Value> {
-        let url = format!("{}/chat/completions", self.base_url);
-        let mut messages = Vec::new();
-        if !system.is_empty() {
-            messages.push(json!({"role": "system", "content": system}));
-        }
-        messages.push(json!({"role": "user", "content": prompt}));
-
-        let payload = json!({
-            "model": model,
-            "messages": messages,
-        });
-
-        let resp = self
-            .http
-            .post(&url)
-            .bearer_auth(&self.api_key)
-            .json(&payload)
-            .send()
-            .await?;
-        let status = resp.status();
-        let body: Value = resp.json().await?;
-        if !status.is_success() {
-            anyhow::bail!("upstream /chat failed ({status}): {body}");
-        }
-        Ok(body)
     }
 }
 
@@ -125,16 +72,6 @@ struct ConfirmRequest {
     confirm: bool,
 }
 
-async fn models(State(h): State<Harness>) -> Response {
-    match h.list_models().await {
-        Ok(v) => (StatusCode::OK, Json(v)).into_response(),
-        Err(e) => (
-            StatusCode::BAD_GATEWAY,
-            Json(json!({"error": e.to_string()})),
-        )
-            .into_response(),
-    }
-}
 
 async fn memory_status(State(h): State<Harness>) -> Response {
     match h.store.get_stats() {
@@ -182,31 +119,23 @@ struct IngestRequest {
     format: Option<String>,
 }
 
+async fn models(State(h): State<Harness>) -> Response {
+    match h.agents.list_models().await {
+        Ok(v) => (StatusCode::OK, Json(v)).into_response(),
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
 fn parse_message(v: &Value, format: &str) -> Option<(String, String)> {
     let (role, content) = match format {
-        // omp: {"type":"message","message":{"role":"user","content":[{"type":"text","text":...}]}}
-        "omp" => {
-            if v.get("type")?.as_str()? != "message" {
-                return None;
-            }
-            let m = v.get("message")?;
-            let role = m.get("role")?.as_str()?.to_string();
-            let content = match m.get("content")? {
-                Value::String(s) => Some(s.clone()),
-                Value::Array(a) => Some(
-                    a.iter()
-                        .filter_map(|c| c.get("text").and_then(|t| t.as_str()))
-                        .collect::<Vec<_>>()
-                        .join(" "),
-                ),
-                _ => None,
-            }?;
-            (role, content)
-        }
-        // claude: {"type":"user"/"assistant","message":{"role":..,"content":str|[blocks]}}
-        "claude" => {
-            let t = v.get("type")?.as_str()?;
-            if t != "user" && t != "assistant" {
+        // omp / claude: {"type":"message"|"user"|"assistant","message":{"role":..,"content":str|[blocks]}}
+        "omp" | "claude" => {
+            let t = v.get("type").and_then(|t| t.as_str())?;
+            if !matches!(t, "message" | "user" | "assistant") {
                 return None;
             }
             let m = v.get("message")?;
@@ -256,43 +185,49 @@ fn extract_exchanges(path: &Path, format: &str) -> Result<Vec<(String, String)>>
         return parse_junie_file(path);
     }
     let file = std::fs::File::open(path)?;
-    let mut out: Vec<(String, String)> = Vec::new();
-    let mut pending_user: Option<String> = None;
-
+    let mut pairs = Pairing::default();
     for line in std::io::BufReader::new(file).lines() {
         let line = line?;
-        let v: Value = match serde_json::from_str(&line) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-
-        let Some((role, content)) = parse_message(&v, format) else {
+        let Ok(v) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
+        if let Some((role, content)) = parse_message(&v, format) {
+            pairs.push(role, content);
+        }
+    }
+    Ok(pairs.finish())
+}
 
+/// Streams (role, content) into user→assistant pairs; unanswered users are dropped.
+#[derive(Default)]
+struct Pairing {
+    out: Vec<(String, String)>,
+    pending_user: Option<String>,
+}
+
+impl Pairing {
+    fn push(&mut self, role: String, content: String) {
         if role == "user" {
-            if let Some(u) = pending_user.take() {
-                out.push((u, String::new()));
+            if let Some(u) = self.pending_user.take() {
+                self.out.push((u, String::new()));
             }
-            pending_user = Some(content);
+            self.pending_user = Some(content);
         } else if role == "assistant" {
-            if let Some(u) = pending_user.take() {
-                out.push((u, content));
+            if let Some(u) = self.pending_user.take() {
+                self.out.push((u, content));
             }
         }
     }
-    if let Some(u) = pending_user.take() {
-        out.push((u, String::new()));
+    fn finish(mut self) -> Vec<(String, String)> {
+        // Drop exchanges with no answer (tool noise etc.)
+        self.out.retain(|(_, a)| !a.is_empty());
+        self.out
     }
-    // Drop exchanges with no answer (tool noise etc.)
-    out.retain(|(_, a)| !a.is_empty());
-    Ok(out)
 }
 
 fn parse_junie_file(path: &Path) -> Result<Vec<(String, String)>> {
     let content = std::fs::read_to_string(path)?;
-    let mut out: Vec<(String, String)> = Vec::new();
-    let mut pending_user: Option<String> = None;
+    let mut pairs = Pairing::default();
     let mut role = "";
     let mut buf = String::new();
 
@@ -301,17 +236,8 @@ fn parse_junie_file(path: &Path) -> Result<Vec<(String, String)>> {
             let text = buf.trim().to_string();
             if !text.is_empty() {
                 match role {
-                    "User" => {
-                        if let Some(u) = pending_user.take() {
-                            out.push((u, String::new()));
-                        }
-                        pending_user = Some(text);
-                    }
-                    "Assistant" => {
-                        if let Some(u) = pending_user.take() {
-                            out.push((u, text));
-                        }
-                    }
+                    "User" => pairs.push("user".into(), text),
+                    "Assistant" => pairs.push("assistant".into(), text),
                     _ => {}
                 }
             }
@@ -322,21 +248,18 @@ fn parse_junie_file(path: &Path) -> Result<Vec<(String, String)>> {
             buf.push('\n');
         }
     }
-    if let Some(u) = pending_user.take() {
-        out.push((u, String::new()));
-    }
-    // Drop exchanges with no answer (tool noise etc.)
-    out.retain(|(_, a)| !a.is_empty());
-    Ok(out)
+    Ok(pairs.finish())
 }
 
 fn detect_format(path: &Path) -> Option<String> {
     if path.file_name().is_some_and(|n| n == "transcript.md") {
         return Some("junie".into());
     }
-    let content = std::fs::read_to_string(path).ok()?;
-    let first = content.lines().next()?;
-    let v: Value = serde_json::from_str(first).ok()?;
+    let mut first = String::new();
+    std::io::BufReader::new(std::fs::File::open(path).ok()?)
+        .read_line(&mut first)
+        .ok()?;
+    let v: Value = serde_json::from_str(first.trim()).ok()?;
     match v.get("type").and_then(|t| t.as_str()) {
         Some("session_meta") | Some("response_item") | Some("turn_context") => {
             Some("codex".into())
@@ -392,9 +315,11 @@ async fn ingest_memory(State(h): State<Harness>, Json(req): Json<IngestRequest>)
         match extract_exchanges(f, &format) {
             Ok(exchanges) if !exchanges.is_empty() => {
                 let src = f.display().to_string();
-                let _ = h
-                    .store
-                    .insert_artifact(&src, "session_ingest", &format!("format={format} exchanges={}", exchanges.len()), "{}");
+                let _ = h.store.insert_artifact(
+                    &src,
+                    "session_ingest",
+                    &format!("format={format} exchanges={}", exchanges.len()),
+                );
                 total_files += 1;
                 total_exchanges += exchanges.len();
                 match h.agents.extract_from_history(&exchanges).await {
@@ -455,7 +380,7 @@ async fn chat(
     }
 
     // 1. RAW STORE: Log untouched user prompt into Artifact Hub
-    let _ = h.store.insert_artifact(&session_id, "user_prompt", &prompt, "{}");
+    let _ = h.store.insert_artifact(&session_id, "user_prompt", &prompt);
 
     // 2. AGENT 1: Recall context (distills relevant memories, zero bloated prompt)
     let recalled_context = h.agents.recall_context(&prompt).await.unwrap_or_default();
@@ -471,7 +396,7 @@ async fn chat(
     };
 
     // 3. MAIN AGENT: Call LLM with lean context
-    let llm_res = match h.chat_raw(&model, &system_prompt, &prompt).await {
+    let llm_res = match h.agents.chat(&model, &system_prompt, &prompt).await {
         Ok(v) => v,
         Err(e) => {
             return (
@@ -488,20 +413,12 @@ async fn chat(
         .to_string();
 
     // 4. RAW STORE: Log untouched agent response into Artifact Hub
-    let _ = h.store.insert_artifact(&session_id, "agent_response", &answer, "{}");
+    let _ = h.store.insert_artifact(&session_id, "agent_response", &answer);
     // 5. AGENT 3: Gatekeeper check (sync evaluation for interactive Option A)
     let gatekeeper_prompt = h
         .agents
         .evaluate_gatekeeper(&session_id, &prompt, &answer)
         .await;
-
-    // 6. AGENT 2: Async background Graph Linker (tokio::spawn)
-    let agents_clone = h.agents.clone();
-    let prompt_bg = prompt.clone();
-    let answer_bg = answer.clone();
-    tokio::spawn(async move {
-        agents_clone.link_graph(&prompt_bg, &answer_bg).await;
-    });
 
     let mut full_response = answer;
     if let Some(ask) = &gatekeeper_prompt {
@@ -514,7 +431,7 @@ async fn chat(
             session_id,
             confirmation_prompt: gatekeeper_prompt,
             recalled_context_applied: context_applied,
-            background_status: "graph_syncing_in_background".to_string(),
+            background_status: "synced".to_string(),
         }),
     )
         .into_response()
@@ -522,7 +439,6 @@ async fn chat(
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    dotenvy::dotenv().ok();
     let state = Harness::from_env();
     let app = Router::new()
         .route("/models", get(models))

@@ -26,6 +26,44 @@ impl MemoryAgents {
         }
     }
 
+    /// Raw GET /models passthrough (for the /models endpoint).
+    pub async fn list_models(&self) -> Result<Value> {
+        let resp = self
+            .http
+            .get(format!("{}/models", self.base_url))
+            .bearer_auth(&self.api_key)
+            .send()
+            .await?;
+        let status = resp.status();
+        let body: Value = resp.json().await?;
+        if !status.is_success() {
+            anyhow::bail!("upstream /models failed ({status}): {body}");
+        }
+        Ok(body)
+    }
+
+    /// Chat completion returning the raw response JSON (for the /chat endpoint).
+    pub async fn chat(&self, model: &str, system: &str, prompt: &str) -> Result<Value> {
+        let mut messages = Vec::new();
+        if !system.is_empty() {
+            messages.push(json!({"role": "system", "content": system}));
+        }
+        messages.push(json!({"role": "user", "content": prompt}));
+        let resp = self
+            .http
+            .post(format!("{}/chat/completions", self.base_url))
+            .bearer_auth(&self.api_key)
+            .json(&json!({"model": model, "messages": messages}))
+            .send()
+            .await?;
+        let status = resp.status();
+        let body: Value = resp.json().await?;
+        if !status.is_success() {
+            anyhow::bail!("upstream /chat failed ({status}): {body}");
+        }
+        Ok(body)
+    }
+
     async fn call_llm(&self, system_prompt: &str, user_prompt: &str) -> Result<String> {
         let url = format!("{}/chat/completions", self.base_url);
         let payload = json!({
@@ -91,32 +129,6 @@ impl MemoryAgents {
         }
     }
 
-    /// AGENT 2: Graph / Connection Linker (Runs in background)
-    /// Examines user prompt and agent response, extracts entity relations, and adds graph edges.
-    pub async fn link_graph(&self, user_prompt: &str, agent_response: &str) {
-        let system = r#"You are a knowledge graph builder.
-Extract key entity relationships from this interaction.
-Output valid JSON array of objects with fields: source, target, relation.
-Example: [{"source": "User", "target": "Rust", "relation": "uses"}, {"source": "myharness", "target": "SQLite", "relation": "stores_data"}]
-If no clear relations, return []"#;
-
-        let input = format!("User: {}\nAssistant: {}", user_prompt, agent_response);
-        if let Ok(json_str) = self.call_llm(system, &input).await {
-            // Best effort parse
-            let clean = json_str.trim().trim_matches('`').trim_start_matches("json").trim();
-            if let Ok(items) = serde_json::from_str::<Vec<Value>>(clean) {
-                for item in items {
-                    if let (Some(s), Some(t), Some(r)) = (
-                        item.get("source").and_then(|v| v.as_str()),
-                        item.get("target").and_then(|v| v.as_str()),
-                        item.get("relation").and_then(|v| v.as_str()),
-                    ) {
-                        let _ = self.store.insert_graph_edge(s, t, r, 1.0);
-                    }
-                }
-            }
-        }
-    }
 
     /// AGENT 3: Gatekeeper / Memory Evaluator (Option A Interactive Confirmation)
     /// Asks: "Does this contain important preferences, rules, credentials, or durable facts to remember?"
