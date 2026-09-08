@@ -1,0 +1,20 @@
+{
+  "status": "passed",
+  "scope": "Mocked API browser checks; Rust server not executed",
+  "checks": [
+    "connect",
+    "token_not_persisted",
+    "conversation",
+    "memory_evidence",
+    "html_injection_rendered_as_text",
+    "failed_approval_recoverable",
+    "approval",
+    "import",
+    "job_retry",
+    "model_settings",
+    "mobile_overflow",
+    "dark_mode",
+    "lock",
+    "no_javascript_exceptions"
+  ]
+}

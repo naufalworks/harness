@@ -13,4 +13,5 @@ jobs:
       - run: cargo build --locked
       - run: python3 -m unittest discover -s tests -p 'test_*.py' -v
       - run: python3 tests/integration_smoke.py
+      - run: python3 tests/recording_integration.py
       - run: node --check static/app.js

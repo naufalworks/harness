@@ -1,14 +1,61 @@
 {
-  "status": "passed",
-  "inspected": [
-    "auth desktop",
-    "auth mobile",
-    "conversation desktop",
-    "memory desktop",
-    "memory conflict mobile",
-    "memory conflict dark mobile",
-    "imports desktop",
-    "settings desktop"
+  "scope": "Synthetic fixtures; current recording UI, not the full renewed UI merge",
+  "status": "passed_after_refinement",
+  "checks": [
+    {
+      "image": "conversation-desktop.png",
+      "result": "pass",
+      "observation": "Saved status and collapsed receipt are readable and contained; composer and answer separated."
+    },
+    {
+      "image": "receipt-desktop-reviewed.png",
+      "result": "pass",
+      "observation": "Expanded receipt no longer clipped inside chat scroll region; timestamp labels align; context and source quote remain distinct."
+    },
+    {
+      "image": "receipt-dark-mobile-reviewed.png",
+      "result": "pass",
+      "observation": "390px dark layout wraps evidence and controls without horizontal overflow; no overlapping elements."
+    },
+    {
+      "image": "recording-unknown-mobile-reviewed.png",
+      "result": "pass",
+      "observation": "Unknown save status is explicit; draft remains visible; redundant Send action hidden; three spaced recovery choices."
+    },
+    {
+      "image": "history-desktop-reviewed.png",
+      "result": "pass",
+      "observation": "Saved-session labels wrap within two-column controls and interrupted-state message is clear."
+    },
+    {
+      "image": "memory-desktop.png",
+      "result": "pass",
+      "observation": "Old/new values and quoted evidence separated; hostile markup displayed as plain text."
+    },
+    {
+      "image": "memory-conflict-mobile.png",
+      "result": "pass",
+      "observation": "Conflict warning, evidence and approval controls fit within the mobile viewport."
+    },
+    {
+      "image": "memory-conflict-dark-mobile.png",
+      "result": "pass",
+      "observation": "Dark conflict text and action labels are readable; nothing overlaps or spills horizontally."
+    },
+    {
+      "image": "imports-desktop.png",
+      "result": "pass",
+      "observation": "Upload consent and processing failure controls have clear grouping and adequate space."
+    },
+    {
+      "image": "settings-desktop.png",
+      "result": "pass",
+      "observation": "Main/extraction model fields and safe literal model names are visually distinct."
+    }
   ],
-  "observations": "No observed overlap or horizontal clipping. Controls, evidence, errors, and literal hostile-markup fixtures remain readable. Screenshots contain synthetic data only."
+  "design_notes": [
+    "No imagery necessary for this functional recording UI.",
+    "Existing spacious baseline retained; full renewed sidebar/chat merge is future work.",
+    "Expanded evidence can make a page tall intentionally; essential data is not clipped."
+  ]
 }

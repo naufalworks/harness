@@ -6,7 +6,7 @@ const root=path.resolve(__dirname,'..');const out=process.env.QA_DIR || path.joi
  const browser=await chromium.launch({headless:true,executablePath:process.env.CHROMIUM_PATH||'/usr/local/bin/chromium',args:['--no-sandbox']});
  try{
   const page=await browser.newPage({viewport:{width:1120,height:900},colorScheme:'light'});const errors=[];page.on('pageerror',e=>errors.push(String(e)));
-  let candidate=true,failConfirm=false,chatHistory=[],importCalls=0,retryCalls=0;
+  let candidate=true,failConfirm=false,chatHistory=[],receipt=null,importCalls=0,retryCalls=0;
   const malicious='<img src=x onerror="window.INJECTED=1">';
   const data={id:'synthetic-proposal',scope:'global',key:'preferred_language',value:'Rust for local tools. '+malicious,old_value:'Python for prototypes.',category:'preference',expected_revision:1,evidence:{quote:'I prefer Rust for local tools.'}};
   await page.route('http://127.0.0.1:8080/**',async route=>{
@@ -16,14 +16,16 @@ const root=path.resolve(__dirname,'..');const out=process.env.QA_DIR || path.joi
    if(req.headers().authorization!=='Bearer test-token'){return route.fulfill({status:401,json:{error:'Bearer token required'}});}
    let result={};
    if(p==='/memory/status')result={active_memories:candidate?1:2,pending_confirmations:candidate?1:0,queued_jobs:0,failed_jobs:1};
-   else if(p.startsWith('/sessions/'))result={scope:'global',messages:chatHistory};
+   else if(p==='/sessions')result={sessions:[]};
+   else if(p.startsWith('/sessions/'))result={scope:'global',messages:chatHistory,has_more:false};
+   else if(p.startsWith('/chat/requests/'))result=receipt;
    else if(p==='/memory/candidates')result={candidates:candidate?[data]:[]};
    else if(p==='/memory/confirm'){
     if(failConfirm)return route.fulfill({status:409,json:{error:'Proposal conflicts with a newer revision; reload the inbox'}});
     candidate=false;result={status:JSON.parse(req.postData()).confirm?'approved':'rejected'};
-   }else if(p==='/chat'){
-    const body=JSON.parse(req.postData());chatHistory=[{role:'user',content:body.prompt,status:'complete'},{role:'assistant',content:'Use a small Rust service with SQLite. Keep capture separate from extraction.',status:'complete'}];
-    result={response:chatHistory[1].content,recalled:[{...data,revision:2}],redacted:false};
+   }else if(p==='/chat/submit'){
+    const body=JSON.parse(req.postData());chatHistory=[{role:'user',content:body.prompt,status:'complete',generation_state:'complete',request_id:body.request_id},{role:'assistant',content:'Use a small Rust service with SQLite. Keep capture separate from extraction.',status:'complete'}];
+    receipt={request_id:body.request_id,session_id:body.session_id,state:'complete',response:chatHistory[1].content,recalled:[{...data,revision:2}],redacted:false,memory_status:'pending',events:[]};result=receipt;
    }else if(p==='/jobs')result={jobs:[{id:'failed-job',status:retryCalls?'pending':'failed',scope:'global',attempts:3,error:'Extraction failed; check provider configuration.'}]};
    else if(p==='/jobs/failed-job/retry'){retryCalls++;result={status:'queued'};}
    else if(p==='/memory/ingest'){importCalls++;result={duplicate:false,chunks_queued:2,warnings:[]};}

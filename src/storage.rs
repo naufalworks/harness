@@ -20,19 +20,19 @@ pub struct Job { pub id:String, pub scope:String, pub source_id:String, pub even
 
 impl DbStore {
     pub fn init(path: &str) -> Result<Self> {
-        let conn = Connection::open(path)?;
+        let mut conn = Connection::open(path)?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         // Inspect first: rejecting a legacy DB must not change its journal mode.
         let version:i64 = conn.query_row("PRAGMA user_version",[],|r|r.get(0))?;
         if version == 0 {
             let existing:i64 = conn.query_row("SELECT count(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",[],|r|r.get(0))?;
             if existing != 0 { bail!("legacy or unknown database: use scripts/migrate_legacy.py into a NEW database"); }
-        } else if version != 1 { bail!("unsupported schema version {version}"); }
+        } else if version != 1 && version != 2 { bail!("unsupported schema version {version}"); }
         conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")?;
         if version == 0 { conn.execute_batch(include_str!("../migrations/001_core.sql"))?; }
-        // Single-process service: persisted work is retried after a process restart.
-        conn.execute("UPDATE jobs SET status='pending' WHERE status='running'",[])?;
-        conn.execute("UPDATE messages SET status='failed' WHERE status='pending'",[])?;
+        if version < 2 { conn.execute_batch(include_str!("../migrations/002_recording.sql"))?; }
+        // One process only. Never silently repeat a potentially billed generation.
+        crate::recording::recover(&mut conn)?;
         Ok(Self{conn:Arc::new(Mutex::new(conn)),permits:Arc::new(Semaphore::new(32))})
     }
     pub async fn run<T,F>(&self, f:F) -> Result<T>
@@ -63,48 +63,6 @@ impl DbStore {
         let key=format!("model.{role}"); let default=default.to_string();
         self.run(move|c|{let v:Option<String>=c.query_row("SELECT value FROM settings WHERE key=?1",[key],|r|r.get(0)).optional()?; Ok(v.filter(|s|!s.is_empty()).unwrap_or(default))}).await
     }
-    pub async fn begin_chat(&self, session:String, scope:String, request:String, prompt:String) -> Result<Vec<Event>> {
-        self.run(move|c|{
-            let tx=c.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            tx.execute("INSERT INTO sessions(id,scope,created_at) VALUES(?1,?2,?3) ON CONFLICT(id) DO NOTHING",params![session,scope,now()])?;
-            let actual:String=tx.query_row("SELECT scope FROM sessions WHERE id=?1",[&session],|r|r.get(0))?;
-            if actual!=scope {bail!("session belongs to a different scope");}
-            let mut events={
-                let mut stmt=tx.prepare("SELECT id,role,content FROM (SELECT seq,id,role,content FROM messages WHERE session_id=?1 AND status='complete' ORDER BY seq DESC LIMIT 20) ORDER BY seq")?;
-                let rows=stmt.query_map([&session],|r|Ok(Event{id:r.get(0)?,role:r.get(1)?,content:r.get(2)?}))?;
-                rows.collect::<rusqlite::Result<Vec<_>>>()?
-            };
-            // Successful chat writes complete user/assistant turns atomically.
-            while events.iter().map(|e|e.content.len()).sum::<usize>()>24_000 && events.len()>=2 {events.drain(..2);}
-            tx.execute("INSERT INTO messages(id,session_id,role,content,status,created_at) VALUES(?1,?2,'user',?3,'pending',?4)",params![request,session,prompt,now()])?;
-            events.push(Event{id:request,role:"user".into(),content:prompt});
-            tx.commit()?; Ok(events)
-        }).await
-    }
-    pub async fn fail_chat(&self, request:String) -> Result<()> {
-        self.run(move|c|{c.execute("UPDATE messages SET status='failed' WHERE id=?1 AND status='pending'",[request])?;Ok(())}).await
-    }
-    pub async fn complete_chat(&self,session:String,scope:String,request:String,prompt:String,answer:String)->Result<String>{
-        self.run(move|c|{
-            let tx=c.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            let changed=tx.execute("UPDATE messages SET status='complete' WHERE id=?1 AND session_id=?2 AND status='pending'",params![request,session])?;
-            if changed!=1 {bail!("request not pending");}
-            tx.execute("INSERT INTO messages(id,session_id,role,content,status,created_at) VALUES(?1,?2,'assistant',?3,'complete',?4)",params![uid(),session,answer,now()])?;
-            let queued:i64=tx.query_row("SELECT count(*) FROM jobs WHERE status IN ('pending','running')",[],|r|r.get(0))?;
-            if queued>=1000 {bail!("extraction queue is full");}
-            let job=uid(); let events=vec![Event{id:request.clone(),role:"user".into(),content:prompt}];
-            tx.execute("INSERT INTO jobs(id,job_key,scope,source_id,payload,status,available_at,created_at) VALUES(?1,?2,?3,?4,?5,'pending',?6,?7)",params![job,format!("chat:{request}"),scope,format!("chat:{request}"),serde_json::to_string(&events)?,Utc::now().timestamp(),now()])?;
-            tx.commit()?;Ok(job)
-        }).await
-    }
-    pub async fn history(&self,session:String)->Result<Value>{
-        self.run(move|c|{
-            let scope:Option<String>=c.query_row("SELECT scope FROM sessions WHERE id=?1",[&session],|r|r.get(0)).optional()?;
-            let mut stmt=c.prepare("SELECT id,role,content,status FROM (SELECT seq,id,role,content,status FROM messages WHERE session_id=?1 ORDER BY seq DESC LIMIT 100) ORDER BY seq")?;
-            let rows=stmt.query_map([session],|r|Ok(json!({"id":r.get::<_,String>(0)?,"role":r.get::<_,String>(1)?,"content":r.get::<_,String>(2)?,"status":r.get::<_,String>(3)?})))?;
-            Ok(json!({"scope":scope,"messages":rows.collect::<rusqlite::Result<Vec<_>>>()?}))
-        }).await
-    }
     #[allow(clippy::too_many_arguments)]
     pub async fn ingest(&self,scope:String,name:String,format:String,content:String,fingerprint:String,warnings:Vec<String>,chunks:Vec<Vec<Event>>)->Result<Value>{
         self.run(move|c|{
@@ -123,6 +81,7 @@ impl DbStore {
         }).await
     }
     pub async fn claim_job(&self)->Result<Option<Job>>{
+        self.flush_recording_outbox().await?;
         self.run(|c|{
             let tx=c.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let row:Option<(String,String,String,String,i64)>=tx.query_row("SELECT id,scope,source_id,payload,attempts FROM jobs WHERE status='pending' AND available_at<=?1 ORDER BY created_at,id LIMIT 1",[Utc::now().timestamp()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional()?;

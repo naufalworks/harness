@@ -1,0 +1,46 @@
+test_additive_upgrade_does_not_invent_legacy_receipts (test_recording_contracts.RecordingContracts.test_additive_upgrade_does_not_invent_legacy_receipts) ... ok
+test_answer_save_error_rolls_back_completion_not_capture (test_recording_contracts.RecordingContracts.test_answer_save_error_rolls_back_completion_not_capture) ... ok
+test_claim_is_once_and_ordered (test_recording_contracts.RecordingContracts.test_claim_is_once_and_ordered) ... ok
+test_committed_receipt_survives_close_and_reopen (test_recording_contracts.RecordingContracts.test_committed_receipt_survives_close_and_reopen) ... ok
+test_completion_needs_recorded_context (test_recording_contracts.RecordingContracts.test_completion_needs_recorded_context) ... ok
+test_context_snapshot_is_write_once (test_recording_contracts.RecordingContracts.test_context_snapshot_is_write_once) ... ok
+test_deferred_extraction_resumes_exactly_once (test_recording_contracts.RecordingContracts.test_deferred_extraction_resumes_exactly_once) ... ok
+test_duplicate_submission_has_one_message_and_intent (test_recording_contracts.RecordingContracts.test_duplicate_submission_has_one_message_and_intent) ... ok
+test_every_embedded_select_prepares_against_actual_schema (test_recording_contracts.RecordingContracts.test_every_embedded_select_prepares_against_actual_schema) ... ok
+test_failed_admission_rolls_back_all_writes (test_recording_contracts.RecordingContracts.test_failed_admission_rolls_back_all_writes) ... ok
+test_failed_history_excluded_from_model_context (test_recording_contracts.RecordingContracts.test_failed_history_excluded_from_model_context) ... ok
+test_failed_job_insert_leaves_answer_intact_and_retriable (test_recording_contracts.RecordingContracts.test_failed_job_insert_leaves_answer_intact_and_retriable) ... ok
+test_failed_turn_does_not_reenter_generation (test_recording_contracts.RecordingContracts.test_failed_turn_does_not_reenter_generation) ... ok
+test_foreign_keys_and_integrity_after_lifecycle (test_recording_contracts.RecordingContracts.test_foreign_keys_and_integrity_after_lifecycle) ... ok
+test_full_extraction_queue_cannot_undo_answer (test_recording_contracts.RecordingContracts.test_full_extraction_queue_cannot_undo_answer) ... ok
+test_message_keyset_pagination_covers_history_without_duplicates (test_recording_contracts.RecordingContracts.test_message_keyset_pagination_covers_history_without_duplicates) ... ok
+test_one_unfinished_turn_per_session (test_recording_contracts.RecordingContracts.test_one_unfinished_turn_per_session) ... ok
+test_provider_failure_preserves_user_and_extraction_intent (test_recording_contracts.RecordingContracts.test_provider_failure_preserves_user_and_extraction_intent) ... ok
+test_receipt_only_after_message_and_outbox_commit (test_recording_contracts.RecordingContracts.test_receipt_only_after_message_and_outbox_commit) ... ok
+test_rejecting_candidate_does_not_delete_recording (test_recording_contracts.RecordingContracts.test_rejecting_candidate_does_not_delete_recording) ... ok
+test_restart_does_not_downgrade_completed_answer (test_recording_contracts.RecordingContracts.test_restart_does_not_downgrade_completed_answer) ... ok
+test_restart_marks_only_started_generation_interrupted (test_recording_contracts.RecordingContracts.test_restart_marks_only_started_generation_interrupted) ... ok
+test_same_identifier_different_content_is_conflict (test_recording_contracts.RecordingContracts.test_same_identifier_different_content_is_conflict) ... ok
+test_same_session_cannot_change_scope (test_recording_contracts.RecordingContracts.test_same_session_cannot_change_scope) ... ok
+test_session_pagination_does_not_strand_old_work (test_recording_contracts.RecordingContracts.test_session_pagination_does_not_strand_old_work) ... ok
+test_approval_and_repeat_resolution (test_sql_contracts.Contracts.test_approval_and_repeat_resolution) ... ok
+test_candidate_dedup_constraint (test_sql_contracts.Contracts.test_candidate_dedup_constraint) ... ok
+test_candidates_do_not_become_active (test_sql_contracts.Contracts.test_candidates_do_not_become_active) ... ok
+test_failure_rolls_back_memory_and_approval (test_sql_contracts.Contracts.test_failure_rolls_back_memory_and_approval) ... ok
+test_foreign_key_requires_candidate (test_sql_contracts.Contracts.test_foreign_key_requires_candidate) ... ok
+test_job_key_is_idempotent (test_sql_contracts.Contracts.test_job_key_is_idempotent) ... ok
+test_legacy_migration_is_quarantined_and_filters_secrets (test_sql_contracts.Contracts.test_legacy_migration_is_quarantined_and_filters_secrets) ... ok
+test_new_revision_updates_fts_and_keeps_history (test_sql_contracts.Contracts.test_new_revision_updates_fts_and_keeps_history) ... ok
+test_online_backup_reads_wal_and_refuses_overwrite (test_sql_contracts.Contracts.test_online_backup_reads_wal_and_refuses_overwrite) ... ok
+test_reject_does_not_write_memory (test_sql_contracts.Contracts.test_reject_does_not_write_memory) ... ok
+test_schema_version_and_integrity (test_sql_contracts.Contracts.test_schema_version_and_integrity) ... ok
+test_scope_and_global_override (test_sql_contracts.Contracts.test_scope_and_global_override) ... ok
+test_sensitive_category_is_rejected_by_schema (test_sql_contracts.Contracts.test_sensitive_category_is_rejected_by_schema) ... ok
+test_short_terms_are_indexed (test_sql_contracts.Contracts.test_short_terms_are_indexed) ... ok
+test_stale_proposal_cannot_overwrite (test_sql_contracts.Contracts.test_stale_proposal_cannot_overwrite) ... ok
+test_wrong_scope_cannot_resolve (test_sql_contracts.Contracts.test_wrong_scope_cannot_resolve) ... ok
+
+----------------------------------------------------------------------
+Ran 41 tests in 0.119s
+
+OK

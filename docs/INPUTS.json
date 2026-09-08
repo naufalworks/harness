@@ -1,0 +1,10 @@
+{
+  "harness-v0.2-implementation-candidate.zip": {
+    "bytes": 562502,
+    "sha256": "f21207e30cd1c6ce7b494b245ff16e4e7e8fc251620b731a0d6e91df038e85f9"
+  },
+  "harness-v2.zip": {
+    "bytes": 38864,
+    "sha256": "ce2ce5801cd9b17cc322aa72ca69a3e7df16052529ca5a6136ed2c0c00cb8073"
+  }
+}

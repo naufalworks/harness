@@ -1,3 +1,5 @@
+> Superseded for continuation planning by `NEXT_SESSION_START_HERE.md` and `docs/ROADMAP.md`. Preserved below as prior-session design context, not a completion record.
+
 # Implementation plan and to-do list
 
 Status: core implementation candidate delivered; native Rust release validation remains OPEN.

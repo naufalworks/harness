@@ -1,3 +1,11 @@
+# Recording receipts checkpoint — 2026-09-08
+
+Unreleased/source candidate. Native Rust compilation and HTTP verification outstanding.
+
+Added durable admission and generation receipts, pre-dispatch context snapshots, request replay, generation restart states, deferred extraction outbox, session/message pagination and progressive-disclosure recording UI. Fixed answer rollback caused by an extraction queue at capacity. Added 25 SQL contracts, 8 Rust tests, a mocked recording-UX suite and a live crash/restart integration gate. No full UI/streaming merge, original artifact vault, legacy DB migration, live installation or deployment was performed.
+
+Prior changelog follows for historical reference (not current validation claims).
+
 # Changes from the supplied prototype
 
 ## 0.2.0 implementation candidate

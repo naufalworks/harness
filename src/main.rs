@@ -3,17 +3,19 @@ use axum::{extract::{DefaultBodyLimit,Path,Query,Request,State},http::{header,St
 use serde::Deserialize;
 use serde_json::{json,Value};
 use std::{collections::BTreeMap,env,net::SocketAddr,sync::Arc};
-use tokio::sync::{Mutex,Semaphore};
+use tokio::sync::Semaphore;
 use uuid::Uuid;
 mod ingest;
 mod memory_agents;
 mod safety;
 mod storage;
+mod recording;
+mod recording_sql;
 use memory_agents::MemoryAgents;
 use storage::DbStore;
 
 #[derive(Clone)]
-struct Harness {store:DbStore,agents:MemoryAgents,token:Arc<String>,port:u16,api_limit:Arc<Semaphore>,chat_lock:Arc<Mutex<()>>}
+struct Harness {store:DbStore,agents:MemoryAgents,token:Arc<String>,port:u16,api_limit:Arc<Semaphore>}
 struct ApiError(StatusCode,&'static str);
 impl IntoResponse for ApiError{fn into_response(self)->Response{(self.0,Json(json!({"error":self.1}))).into_response()}}
 type ApiResult<T> = std::result::Result<T,ApiError>;
@@ -51,28 +53,64 @@ async fn css()->impl IntoResponse{([(header::CONTENT_TYPE,"text/css; charset=utf
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ChatRequest {prompt:String,#[serde(default)]model:Option<String>,#[serde(default)]session_id:Option<String>,#[serde(default)]request_id:Option<String>,#[serde(default="default_scope")]scope:String}
-async fn chat(State(h):State<Harness>,Json(req):Json<ChatRequest>)->ApiResult<Json<Value>>{
+async fn admit_chat(h:&Harness,req:ChatRequest)->ApiResult<Value>{
     safety::scope(&req.scope).map_err(|_|invalid("Invalid scope"))?;
     if req.prompt.trim().is_empty() || req.prompt.len()>16_000{return Err(invalid("Prompt must contain 1-16000 UTF-8 bytes"));}
-    let _guard=h.chat_lock.try_lock().map_err(|_|ApiError(StatusCode::CONFLICT,"A chat is already running; retry after it completes"))?;
     let session=req.session_id.unwrap_or_else(storage::uid);let request=req.request_id.unwrap_or_else(storage::uid);
-    Uuid::parse_str(&session).map_err(|_|invalid("Invalid session identifier"))?;Uuid::parse_str(&request).map_err(|_|invalid("Invalid request identifier"))?;
+    Uuid::parse_str(&session).map_err(|_|invalid("Invalid session identifier"))?;
+    Uuid::parse_str(&request).map_err(|_|invalid("Invalid request identifier"))?;
     let prompt=safety::redact(&req.prompt);let redacted=prompt!=req.prompt;
     if prompt.len()>16_000{return Err(invalid("Sanitized prompt exceeds the size budget"));}
-    let model=match req.model{Some(m) if !m.is_empty() && m.len()<=128 && !m.chars().any(char::is_control)=>m,Some(_)=>return Err(invalid("Invalid model")),None=>h.store.role_model("main",&h.agents.model).await.map_err(db_error)?};
-    // Persist first. A failed capture never masquerades as a recorded successful request.
-    let events=h.store.begin_chat(session.clone(),req.scope.clone(),request.clone(),prompt.clone()).await.map_err(db_error)?;
-    let result=async{
-        let recalled=h.store.recall(req.scope.clone(),prompt.clone()).await?;
-        let answer=h.agents.chat(&model,&events,&recalled).await?;
-        Ok::<_,anyhow::Error>((answer,recalled))
-    }.await;
-    let (answer,recalled)=match result{Ok(v)=>v,Err(_)=>{
-        h.store.fail_chat(request.clone()).await.map_err(db_error)?;
-        return Err(ApiError(StatusCode::BAD_GATEWAY,"Recall or provider call failed; the captured request is marked failed"));
-    }};
-    let job=h.store.complete_chat(session.clone(),req.scope,request,prompt,answer.clone()).await.map_err(db_error)?;
-    Ok(Json(json!({"response":answer,"session_id":session,"recalled_context_applied":!recalled.is_empty(),"recalled":recalled,"redacted":redacted,"memory_job_id":job,"background_status":"queued","confirmation_prompt":null})))
+    if req.model.as_ref().is_some_and(|m|m.is_empty() || m.len()>128 || m.chars().any(char::is_control)) {return Err(invalid("Invalid model"));}
+    // Fingerprint SANITIZED content only; never retain a brute-forceable hash of a secret.
+    // Default-model changes do not turn a repeated request into a new paid generation.
+    let signature=safety::fingerprint(&json!({"session":session,"scope":req.scope,"prompt":prompt,"model_override":req.model,"redacted":redacted}).to_string());
+    let model=match req.model {Some(m)=>m,None=>h.store.role_model("main",&h.agents.model).await.map_err(db_error)?};
+    match h.store.capture_chat(recording::CaptureInput{request,session,scope:req.scope,prompt,model,signature,redacted}).await.map_err(db_error)? {
+        recording::Admission::Saved(receipt)=>Ok(receipt),
+        recording::Admission::Conflict=>Err(ApiError(StatusCode::CONFLICT,"Request identifier already belongs to different content; nothing new was recorded")),
+        recording::Admission::ScopeConflict=>Err(ApiError(StatusCode::CONFLICT,"Session belongs to a different scope; start a new conversation")),
+        recording::Admission::Busy=>Err(ApiError(StatusCode::CONFLICT,"This conversation has an unfinished answer; check its saved receipt before sending another message")),
+        recording::Admission::Full=>Err(ApiError(StatusCode::SERVICE_UNAVAILABLE,"Recording queue is full. This new message was not accepted; keep your draft and try later")),
+    }
+}
+async fn submit_chat(State(h):State<Harness>,Json(req):Json<ChatRequest>)->ApiResult<(StatusCode,Json<Value>)>{
+    let receipt=admit_chat(&h,req).await?;
+    let code=if receipt["state"]=="captured" || receipt["state"]=="generating" {StatusCode::ACCEPTED} else {StatusCode::OK};
+    Ok((code,Json(receipt)))
+}
+// Compatibility endpoint: briefly wait for fast providers, otherwise return the durable
+// 202 receipt. Disconnecting never owns/cancels the generation worker.
+async fn chat(State(h):State<Harness>,Json(req):Json<ChatRequest>)->ApiResult<(StatusCode,Json<Value>)>{
+    let mut receipt=admit_chat(&h,req).await?;
+    let request=receipt["request_id"].as_str().unwrap().to_string();
+    for _ in 0..20 {
+        match receipt["state"].as_str() {
+            Some("complete")=>return Ok((StatusCode::OK,Json(receipt))),
+            Some("failed"|"interrupted")=>return Ok((StatusCode::BAD_GATEWAY,Json(receipt))),
+            _=>tokio::time::sleep(std::time::Duration::from_millis(250)).await,
+        }
+        receipt=h.store.recording_receipt(request.clone()).await.map_err(db_error)?.ok_or(ApiError(StatusCode::NOT_FOUND,"Recording receipt not found"))?;
+    }
+    Ok((StatusCode::ACCEPTED,Json(receipt)))
+}
+async fn get_receipt(State(h):State<Harness>,Path(id):Path<String>)->ApiResult<Json<Value>>{
+    Uuid::parse_str(&id).map_err(|_|invalid("Invalid request identifier"))?;
+    Ok(Json(h.store.recording_receipt(id).await.map_err(db_error)?.ok_or(ApiError(StatusCode::NOT_FOUND,"Recording receipt not found"))?))
+}
+async fn get_context(State(h):State<Harness>,Path(id):Path<String>)->ApiResult<Json<Value>>{
+    Uuid::parse_str(&id).map_err(|_|invalid("Invalid request identifier"))?;
+    Ok(Json(h.store.recording_context(id).await.map_err(db_error)?.ok_or(ApiError(StatusCode::NOT_FOUND,"Recording receipt not found"))?))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HistoryQuery { before_seq:Option<i64> }
+fn cursor(query:HistoryQuery)->ApiResult<Option<i64>> {
+    if query.before_seq.is_some_and(|n|n<=0) {return Err(invalid("History cursor must be positive"));}
+    Ok(query.before_seq)
+}
+async fn sessions(State(h):State<Harness>,Query(q):Query<HistoryQuery>)->ApiResult<Json<Value>>{
+    Ok(Json(h.store.recorded_sessions(cursor(q)?).await.map_err(db_error)?))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -85,7 +123,7 @@ async fn confirm(State(h):State<Harness>,Json(req):Json<ConfirmRequest>)->ApiRes
 #[derive(Deserialize)]struct ScopeQuery{#[serde(default="default_scope")]scope:String}
 async fn candidates(State(h):State<Harness>,Query(q):Query<ScopeQuery>)->ApiResult<Json<Value>>{safety::scope(&q.scope).map_err(|_|invalid("Invalid scope"))?;Ok(Json(h.store.candidates(q.scope).await.map_err(db_error)?))}
 async fn status(State(h):State<Harness>)->ApiResult<Json<Value>>{Ok(Json(h.store.stats().await.map_err(db_error)?))}
-async fn history(State(h):State<Harness>,Path(session):Path<String>)->ApiResult<Json<Value>>{Uuid::parse_str(&session).map_err(|_|invalid("Invalid session identifier"))?;Ok(Json(h.store.history(session).await.map_err(db_error)?))}
+async fn history(State(h):State<Harness>,Path(session):Path<String>,Query(q):Query<HistoryQuery>)->ApiResult<Json<Value>>{Uuid::parse_str(&session).map_err(|_|invalid("Invalid session identifier"))?;Ok(Json(h.store.history(session,cursor(q)?).await.map_err(db_error)?))}
 async fn get_config(State(h):State<Harness>)->ApiResult<Json<Value>>{Ok(Json(h.store.settings().await.map_err(db_error)?))}
 async fn set_config(State(h):State<Harness>,Json(data):Json<BTreeMap<String,String>>)->ApiResult<Json<Value>>{h.store.set_settings(data).await.map_err(db_error)?;Ok(Json(json!({"status":"saved"})))}
 async fn models(State(h):State<Harness>)->ApiResult<Json<Value>>{Ok(Json(h.agents.list_models().await.map_err(|_|ApiError(StatusCode::BAD_GATEWAY,"Unable to load provider models"))?))}
@@ -115,7 +153,7 @@ async fn ingest_memory(State(h):State<Harness>,Json(req):Json<IngestRequest>)->A
 }
 
 fn router(state:Harness)->Router{
-    let api=Router::new().route("/chat",post(chat)).route("/models",get(models)).route("/config",get(get_config).post(set_config))
+    let api=Router::new().route("/chat",post(chat)).route("/chat/submit",post(submit_chat)).route("/chat/requests/{id}",get(get_receipt)).route("/chat/requests/{id}/context",get(get_context)).route("/sessions",get(sessions)).route("/models",get(models)).route("/config",get(get_config).post(set_config))
         .route("/memory/status",get(status)).route("/memory/candidates",get(candidates)).route("/memory/confirm",post(confirm))
         .route("/memory/ingest",post(ingest_memory)).route("/sessions/{id}/messages",get(history))
         .route("/jobs",get(jobs)).route("/jobs/{id}/retry",post(retry_job))
@@ -138,8 +176,9 @@ async fn main()->Result<()>{
     let store=DbStore::init(&database)?;
     #[cfg(unix)] {use std::os::unix::fs::PermissionsExt;for suffix in ["","-wal","-shm"]{let path=format!("{database}{suffix}");if std::path::Path::new(&path).exists(){std::fs::set_permissions(path,std::fs::Permissions::from_mode(0o600))?;}}}
     let agents=MemoryAgents::new(&env::var("HARNESS_BASE_URL").unwrap_or_else(|_|"https://api.longcat.chat/openai".into()),&key,&env::var("HARNESS_MODEL").unwrap_or_else(|_|"LongCat-2.0".into()))?;
-    let state=Harness{store:store.clone(),agents:agents.clone(),token:Arc::new(token),port:addr.port(),api_limit:Arc::new(Semaphore::new(8)),chat_lock:Arc::new(Mutex::new(()))};
+    let state=Harness{store:store.clone(),agents:agents.clone(),token:Arc::new(token),port:addr.port(),api_limit:Arc::new(Semaphore::new(8))};
     let listener=tokio::net::TcpListener::bind(addr).await?;
+    tokio::spawn(recording::worker(store.clone(),agents.clone()));
     tokio::spawn(memory_agents::worker(store,agents));
     println!("harness listening on http://{addr} (authenticated, single-user)");
     axum::serve(listener,router(state)).await?;
@@ -149,8 +188,11 @@ async fn main()->Result<()>{
 #[cfg(test)]
 mod tests{
     use super::*;use axum::body::Body;use tower::ServiceExt;
-    fn app()->Router{router(Harness{store:DbStore::init(":memory:").unwrap(),agents:MemoryAgents::new("http://127.0.0.1:9","synthetic","test").unwrap(),token:Arc::new("x".repeat(32)),port:8080,api_limit:Arc::new(Semaphore::new(8)),chat_lock:Arc::new(Mutex::new(()))})}
+    fn app()->Router{router(Harness{store:DbStore::init(":memory:").unwrap(),agents:MemoryAgents::new("http://127.0.0.1:9","synthetic","test").unwrap(),token:Arc::new("x".repeat(32)),port:8080,api_limit:Arc::new(Semaphore::new(8))})}
     #[tokio::test]async fn api_requires_auth(){let response=app().oneshot(axum::http::Request::builder().uri("/memory/status").body(Body::empty()).unwrap()).await.unwrap();assert_eq!(response.status(),StatusCode::UNAUTHORIZED);}
     #[tokio::test]async fn authenticated_status_succeeds(){let response=app().oneshot(axum::http::Request::builder().uri("/memory/status").header("Authorization",format!("Bearer {}","x".repeat(32))).body(Body::empty()).unwrap()).await.unwrap();assert_eq!(response.status(),StatusCode::OK);}
     #[tokio::test]async fn foreign_origin_is_rejected(){let response=app().oneshot(axum::http::Request::builder().uri("/memory/status").header("Authorization",format!("Bearer {}","x".repeat(32))).header("Origin","https://untrusted.invalid").body(Body::empty()).unwrap()).await.unwrap();assert_eq!(response.status(),StatusCode::FORBIDDEN);}
 }
+
+#[cfg(test)]
+mod recording_tests;

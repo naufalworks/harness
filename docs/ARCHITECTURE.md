@@ -1,3 +1,5 @@
+> Checkpoint update: chat generation is now owned by `recording::worker` and uses a durable receipt/outbox, not a request-owned provider call. `docs/RECORDING_PROTOCOL.md` is authoritative for chat capture, context, recovery and history. Remaining inherited memory/import architecture follows.
+
 # Architecture decisions
 
 ## Scope
