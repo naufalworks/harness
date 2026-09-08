@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>harness</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.5 system-ui, sans-serif; background: #14161a; color: #e6e6e6; display: flex; flex-direction: column; height: 100vh; }
+  header { padding: 12px 18px; border-bottom: 1px solid #262a31; display: flex; align-items: baseline; gap: 10px; }
+  header h1 { font-size: 16px; margin: 0; letter-spacing: .5px; }
+  header span { font-size: 11px; color: #8b93a1; }
+  #log { flex: 1; overflow-y: auto; padding: 18px; display: flex; flex-direction: column; gap: 12px; }
+  .msg { max-width: 72%; padding: 10px 14px; border-radius: 12px; white-space: pre-wrap; word-break: break-word; }
+  .user { align-self: flex-end; background: #2b5c8f; }
+  .bot { align-self: flex-start; background: #232830; }
+  .meta { font-size: 11px; color: #8b93a1; margin-top: 4px; }
+  .gate { margin-top: 8px; display: flex; gap: 8px; }
+  .gate button { padding: 4px 12px; border: 1px solid #3a4150; border-radius: 8px; background: #2a3140; color: #e6e6e6; cursor: pointer; font-size: 13px; }
+  .gate button.ok:hover { background: #2f5d3a; }
+  .gate button.no:hover { background: #6b3535; }
+  form { display: flex; gap: 8px; padding: 12px 18px; border-top: 1px solid #262a31; }
+  input { flex: 1; padding: 11px 14px; border-radius: 10px; border: 1px solid #3a4150; background: #1b1f26; color: #e6e6e6; font: inherit; }
+  input:focus { outline: 1px solid #2b5c8f; }
+  button.send { padding: 11px 18px; border-radius: 10px; border: none; background: #2b5c8f; color: #fff; font: inherit; cursor: pointer; }
+  button.send:disabled { opacity: .5; cursor: wait; }
+</style>
+</head>
+<body>
+<header><h1>harness</h1><span id="sid"></span></header>
+<div id="log"></div>
+<form id="f"><input id="p" placeholder="ask anything…" autocomplete="off" autofocus><button class="send">Send</button></form>
+<script>
+const sid = localStorage.harness_sid || (localStorage.harness_sid = crypto.randomUUID());
+document.getElementById('sid').textContent = 'session ' + sid.slice(0, 8);
+const log = document.getElementById('log');
+
+function add(cls, text) {
+  const d = document.createElement('div');
+  d.className = 'msg ' + cls;
+  d.textContent = text;
+  log.appendChild(d);
+  log.scrollTop = log.scrollHeight;
+  return d;
+}
+
+async function send(prompt) {
+  add('user', prompt);
+  const input = document.getElementById('p');
+  const btn = document.querySelector('.send');
+  input.value = ''; btn.disabled = true;
+  try {
+    const r = await fetch('/chat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ prompt, session_id: sid })
+    });
+    const j = await r.json();
+    if (j.error) { add('bot', 'error: ' + j.error); return; }
+    const b = add('bot', j.response);
+    if (j.recalled_context_applied) {
+      const m = document.createElement('div');
+      m.className = 'meta'; m.textContent = '🧠 recalled from memory';
+      b.appendChild(m);
+    }
+    const id = (j.confirmation_prompt || '').match(/confirm\s+([0-9a-f-]{36})/i);
+    if (id) {
+      const g = document.createElement('div');
+      g.className = 'gate';
+      for (const [label, word, cls] of [['Remember', 'confirm', 'ok'], ['Skip', 'reject', 'no']]) {
+        const btn2 = document.createElement('button');
+        btn2.className = cls; btn2.textContent = label;
+        btn2.onclick = () => { g.remove(); send(word + ' ' + id[1]); };
+        g.appendChild(btn2);
+      }
+      b.appendChild(g);
+    }
+  } catch (e) { add('bot', 'network error: ' + e); }
+  finally { btn.disabled = false; input.focus(); }
+}
+
+document.getElementById('f').onsubmit = e => { e.preventDefault(); const v = document.getElementById('p').value.trim(); if (v) send(v); };
+</script>
+</body>
+</html>

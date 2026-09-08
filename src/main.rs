@@ -130,6 +130,14 @@ async fn models(State(h): State<Harness>) -> Response {
     }
 }
 
+async fn index() -> Response {
+    (
+        [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        include_str!("../static/index.html"),
+    )
+        .into_response()
+}
+
 fn parse_message(v: &Value, format: &str) -> Option<(String, String)> {
     let (role, content) = match format {
         // omp / claude: {"type":"message"|"user"|"assistant","message":{"role":..,"content":str|[blocks]}}
@@ -441,6 +449,7 @@ async fn chat(
 async fn main() -> Result<()> {
     let state = Harness::from_env();
     let app = Router::new()
+        .route("/", get(index))
         .route("/models", get(models))
         .route("/chat", post(chat))
         .route("/memory/status", get(memory_status))
