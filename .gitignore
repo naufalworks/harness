@@ -6,3 +6,6 @@ Cargo.lock
 *.db-shm
 *.db-wal
 __pycache__/
+bench.py
+bench_retry.py
+benchmark_report.json
