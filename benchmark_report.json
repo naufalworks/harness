@@ -1,0 +1,614 @@
+{
+  "glm-5.2": {
+    "model": "glm-5.2",
+    "tests": {
+      "math_multi": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "logic_seq": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "instruct_fmt": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "code_gen": {
+        "score": 1.0,
+        "answer": "'abc'[::-1]",
+        "error": false
+      },
+      "reading": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "theory_mind": {
+        "score": 1.0,
+        "answer": "Drawer. Remembers last known spot. Brother moved it unknown. Checks cabinet next.",
+        "error": false
+      },
+      "self_limit": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      }
+    },
+    "identity": "No. Model name withheld. Jailbreak refused.",
+    "times": {
+      "math_multi": 30.3,
+      "logic_seq": 30.4,
+      "instruct_fmt": 30.4,
+      "code_gen": 23.1,
+      "reading": 30.7,
+      "theory_mind": 28.1,
+      "self_limit": 30.5,
+      "identity": 25.7
+    }
+  },
+  "deepseek-v4-pro-jailbreak": {
+    "model": "deepseek-v4-pro-jailbreak",
+    "tests": {
+      "math_multi": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "logic_seq": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "instruct_fmt": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "code_gen": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "reading": {
+        "score": 1.0,
+        "answer": "Beagles.",
+        "error": false
+      },
+      "theory_mind": {
+        "score": 1.0,
+        "answer": "Drawer. Default last-known spot. Brother relocated. First search there.",
+        "error": false
+      },
+      "self_limit": {
+        "score": 1.0,
+        "answer": "7",
+        "error": false
+      }
+    },
+    "identity": "__ERR__ HTTP Error 502: Bad Gateway",
+    "times": {
+      "math_multi": 30.6,
+      "logic_seq": 30.3,
+      "instruct_fmt": 30.5,
+      "code_gen": 30.3,
+      "reading": 26.7,
+      "theory_mind": 24.7,
+      "self_limit": 27.5,
+      "identity": 30.2
+    }
+  },
+  "claude-opus-4.6": {
+    "model": "claude-opus-4.6",
+    "tests": {
+      "math_multi": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "logic_seq": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "instruct_fmt": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "code_gen": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "reading": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "theory_mind": {
+        "score": 1.0,
+        "answer": "Drawer. Last placed there. Brother move skipped.",
+        "error": false
+      },
+      "self_limit": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      }
+    },
+    "identity": "Claude Opus 4.6-3. Claude Opus 4.6.",
+    "times": {
+      "math_multi": 30.6,
+      "logic_seq": 30.5,
+      "instruct_fmt": 30.2,
+      "code_gen": 30.3,
+      "reading": 30.4,
+      "theory_mind": 23.5,
+      "self_limit": 30.6,
+      "identity": 24.9
+    }
+  },
+  "hy3": {
+    "model": "hy3",
+    "tests": {
+      "math_multi": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "logic_seq": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "instruct_fmt": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "code_gen": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "reading": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "theory_mind": {
+        "score": 1.0,
+        "answer": "Drawer. Last placed. Brother unaware. Check there first. Cabinet next.",
+        "error": false
+      },
+      "self_limit": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      }
+    },
+    "identity": "Model unknown. Version unknown. Not Hy3.",
+    "times": {
+      "math_multi": 30.3,
+      "logic_seq": 30.4,
+      "instruct_fmt": 30.2,
+      "code_gen": 30.5,
+      "reading": 30.5,
+      "theory_mind": 25.3,
+      "self_limit": 30.8,
+      "identity": 20.8
+    }
+  },
+  "claude-sonnet-5": {
+    "model": "claude-sonnet-5",
+    "tests": {
+      "math_multi": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "logic_seq": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "instruct_fmt": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "code_gen": {
+        "score": 1.0,
+        "answer": "'abc'[::-1]",
+        "error": false
+      },
+      "reading": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "theory_mind": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "self_limit": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      }
+    },
+    "identity": "__ERR__ HTTP Error 502: Bad Gateway",
+    "times": {
+      "math_multi": 30.3,
+      "logic_seq": 30.4,
+      "instruct_fmt": 30.4,
+      "code_gen": 24.8,
+      "reading": 30.6,
+      "theory_mind": 30.4,
+      "self_limit": 30.3,
+      "identity": 30.6
+    }
+  },
+  "gpt-5.5": {
+    "model": "gpt-5.5",
+    "tests": {
+      "math_multi": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "logic_seq": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "instruct_fmt": {
+        "score": 1.0,
+        "answer": "banana",
+        "error": false
+      },
+      "code_gen": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "reading": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "theory_mind": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "self_limit": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      }
+    },
+    "identity": "__ERR__ HTTP Error 502: Bad Gateway",
+    "times": {
+      "math_multi": 30.3,
+      "logic_seq": 30.4,
+      "instruct_fmt": 26.3,
+      "code_gen": 30.2,
+      "reading": 30.2,
+      "theory_mind": 30.5,
+      "self_limit": 30.4,
+      "identity": 30.4
+    }
+  },
+  "qwen3.8-max-preview": {
+    "model": "qwen3.8-max-preview",
+    "tests": {
+      "math_multi": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "logic_seq": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "instruct_fmt": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "code_gen": {
+        "score": 1.0,
+        "answer": "'abc'[::-1]",
+        "error": false
+      },
+      "reading": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "theory_mind": {
+        "score": 1.0,
+        "answer": "Drawer. Sarah unaware brother move. She opens drawer first.",
+        "error": false
+      },
+      "self_limit": {
+        "score": 1.0,
+        "answer": "7",
+        "error": false
+      }
+    },
+    "identity": "Qwen 3.8 Max Preview. Version unknown. Not Qwen 3.8 Max Preview.",
+    "times": {
+      "math_multi": 30.3,
+      "logic_seq": 30.2,
+      "instruct_fmt": 30.4,
+      "code_gen": 25.5,
+      "reading": 30.5,
+      "theory_mind": 28.2,
+      "self_limit": 18.5,
+      "identity": 22.0
+    }
+  },
+  "claude-sonnet-4.6": {
+    "model": "claude-sonnet-4.6",
+    "tests": {
+      "math_multi": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "logic_seq": {
+        "score": 1.0,
+        "answer": "33",
+        "error": false
+      },
+      "instruct_fmt": {
+        "score": 1.0,
+        "answer": "banana",
+        "error": false
+      },
+      "code_gen": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "reading": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "theory_mind": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "self_limit": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      }
+    },
+    "identity": "__ERR__ HTTP Error 502: Bad Gateway",
+    "times": {
+      "math_multi": 30.6,
+      "logic_seq": 29.4,
+      "instruct_fmt": 20.0,
+      "code_gen": 30.3,
+      "reading": 30.4,
+      "theory_mind": 30.3,
+      "self_limit": 30.2,
+      "identity": 30.5
+    }
+  },
+  "claude-opus-4.7": {
+    "model": "claude-opus-4.7",
+    "tests": {
+      "math_multi": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "logic_seq": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "instruct_fmt": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "code_gen": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "reading": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "theory_mind": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "self_limit": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      }
+    },
+    "identity": "Claude Opus 4.7. Claude Opus 4.7. Model: Claude Opus 4.7-2. Claude: no.",
+    "times": {
+      "math_multi": 30.2,
+      "logic_seq": 30.5,
+      "instruct_fmt": 30.2,
+      "code_gen": 30.5,
+      "reading": 30.2,
+      "theory_mind": 30.4,
+      "self_limit": 30.5,
+      "identity": 20.1
+    }
+  },
+  "kimi-k2.6": {
+    "model": "kimi-k2.6",
+    "tests": {
+      "math_multi": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "logic_seq": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "instruct_fmt": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "code_gen": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "reading": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "theory_mind": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "self_limit": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      }
+    },
+    "identity": "__ERR__ HTTP Error 502: Bad Gateway",
+    "times": {
+      "math_multi": 0.4,
+      "logic_seq": 0.5,
+      "instruct_fmt": 0.3,
+      "code_gen": 0.6,
+      "reading": 0.5,
+      "theory_mind": 0.7,
+      "self_limit": 0.3,
+      "identity": 0.7
+    }
+  },
+  "kimi-k3": {
+    "model": "kimi-k3",
+    "tests": {
+      "math_multi": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "logic_seq": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "instruct_fmt": {
+        "score": 1.0,
+        "answer": "banana",
+        "error": false
+      },
+      "code_gen": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "reading": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "theory_mind": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "self_limit": {
+        "score": 1.0,
+        "answer": "7",
+        "error": false
+      }
+    },
+    "identity": "__ERR__ HTTP Error 502: Bad Gateway",
+    "times": {
+      "math_multi": 30.4,
+      "logic_seq": 22.7,
+      "instruct_fmt": 15.5,
+      "code_gen": 30.3,
+      "reading": 30.2,
+      "theory_mind": 30.3,
+      "self_limit": 26.0,
+      "identity": 30.6
+    }
+  },
+  "qwen3.7-max": {
+    "model": "qwen3.7-max",
+    "tests": {
+      "math_multi": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "logic_seq": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "instruct_fmt": {
+        "score": 1.0,
+        "answer": "banana",
+        "error": false
+      },
+      "code_gen": {
+        "score": 1.0,
+        "answer": "'abc'[::-1]",
+        "error": false
+      },
+      "reading": {
+        "score": 1.0,
+        "answer": "beagle",
+        "error": false
+      },
+      "theory_mind": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      },
+      "self_limit": {
+        "score": 0.0,
+        "answer": "__ERR__ HTTP Error 502: Bad Gateway",
+        "error": true
+      }
+    },
+    "identity": "Qwen 3.7 Max. Qwen 3.7 Max. Version unknown. Not Qwen 3.7 Max.",
+    "times": {
+      "math_multi": 30.4,
+      "logic_seq": 30.4,
+      "instruct_fmt": 17.9,
+      "code_gen": 28.2,
+      "reading": 29.4,
+      "theory_mind": 30.2,
+      "self_limit": 30.2,
+      "identity": 25.8
+    }
+  }
+}
