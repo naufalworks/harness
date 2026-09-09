@@ -109,10 +109,10 @@
       <section id="view-memory" class="view pageview" hidden>
         <div class="pagecol">
           <div class="sectionhead">
-            <h2>Review before remembering</h2>
+            <h2>Imported memory inbox</h2>
             <button id="refreshmemory" class="secondary" type="button">Refresh inbox</button>
           </div>
-          <p class="muted">Imports never activate memories automatically. Check the proposed value and its evidence. Approval may replace an existing value in this scope; a newer revision blocks stale approval.</p>
+          <p class="muted">This inbox is only for transcript imports. Suggestions from a chat turn appear directly beneath that turn. Nothing activates automatically; a newer revision blocks stale approval.</p>
           <div id="candidates"><p class="empty">No pending suggestions in this scope.</p></div>
         </div>
       </section>
@@ -146,7 +146,7 @@
       <section id="view-settings" class="view pageview" hidden>
         <div class="pagecol">
           <h2>Project &amp; models</h2>
-          <p class="muted">The main model answers. The extraction model proposes memories. Recall uses local FTS5 search—no extra recall model call.</p>
+          <p class="muted">The main model answers. The extraction model proposes memories. Recall combines local FTS5 and deterministic offline vectors—no network or extra recall model call.</p>
           <form id="settingsform" class="panel">
             <label for="mainmodel">Main model</label>
             <input id="mainmodel" maxlength="128" placeholder="Use server default">

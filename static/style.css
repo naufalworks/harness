@@ -385,6 +385,15 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere}
   color:var(--text-2);font-size:13.5px;
 }
 .candidate .row{display:flex;gap:10px;justify-content:flex-end;margin-top:12px}
+.suggestion-tray{grid-column:2;margin:10px 0 2px;padding:12px;border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:10px;background:var(--accent-soft)}
+.suggestion-tray>strong{display:block;font-size:12px;text-transform:uppercase;letter-spacing:.55px;color:var(--accent);margin-bottom:7px}
+.suggestion-tray .candidate{margin:8px 0;padding:12px 14px;background:var(--canvas)}
+.candidate.high-priority{border-color:rgba(222,146,85,.5)}
+.priority-badge{display:inline-flex;margin-left:8px;padding:1px 7px;border-radius:999px;background:var(--orange-soft);color:var(--orange);font-size:10.5px;text-transform:uppercase;letter-spacing:.35px}
+.candidate-editor{margin-top:10px;padding-top:10px;border-top:1px solid var(--border)}
+.candidate-editor label{margin:0 0 6px}
+.candidate-editor textarea{min-height:86px;resize:vertical}
+.candidate-editor .row{margin-top:8px}
 .job{display:flex;flex-direction:column;gap:4px}
 .job strong{font-size:13.5px}
 .job p{margin:0;font-size:13px}
@@ -432,5 +441,6 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere}
   .setup-banner{flex-direction:column;align-items:stretch}
   .pagecol{padding:20px 16px 40px}
   .candidate .row,.permission-card .row{flex-direction:column;align-items:stretch}
+  .suggestion-tray{grid-column:1 / -1}
   .send-actions button{flex:1}
 }

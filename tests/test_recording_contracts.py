@@ -22,7 +22,7 @@ class Recorder:
         self.c=sqlite3.connect(path,isolation_level=None);self.c.execute('PRAGMA foreign_keys=ON')
         self.c.execute('PRAGMA journal_mode=WAL');self.c.execute('PRAGMA synchronous=FULL')
         if fresh:
-            for name in ['001_core.sql','002_recording.sql']:self.c.executescript((ROOT/'migrations'/name).read_text())
+            for name in ['001_core.sql','002_recording.sql','003_agentic.sql','004_memory_kinds.sql']:self.c.executescript((ROOT/'migrations'/name).read_text())
     def tx(self,fn):
         self.c.execute('BEGIN IMMEDIATE')
         try:out=fn();self.c.execute('COMMIT');return out
@@ -73,9 +73,12 @@ class Recorder:
         def body():
             queued=self.c.execute("SELECT count(*) FROM jobs WHERE status IN ('pending','running')").fetchone()[0]
             rows=self.c.execute(OUTBOX_SELECT,(min(32,max(0,1000-queued)),)).fetchall()
-            for request,scope,prompt in rows:
+            for request,scope,session,prompt in rows:
                 job=request+'-job';source='chat:'+request
-                self.execute('ENQUEUE',job,source,scope,source,json.dumps([{'id':request,'role':'user','content':prompt}]),0,'now')
+                events=[{'id':request,'role':'user','content':prompt}]
+                plan=[{'seq':seq,'status':status,'text':text} for seq,status,text in self.c.execute('SELECT seq,status,text FROM plan_items WHERE session_id=? ORDER BY seq',(session,))]
+                if plan:events.append({'id':'plan:'+request,'role':'plan','content':json.dumps(plan,separators=(',',':'))})
+                self.execute('ENQUEUE',job,source,scope,source,json.dumps(events),0,'now')
                 assert self.execute('LINK_JOB',request,job).rowcount==1
                 self.event(request,'extraction_queued')
             return len(rows)

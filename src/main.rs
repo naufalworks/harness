@@ -15,6 +15,8 @@ mod agentic_sql; // P1 SQL constants (schema 003); contract-tested by tests/test
 mod tools;       // P1-T05/T06 tool registry (needs-verify: written without cargo)
 mod agent_loop;  // P1-T10 agentic turn loop: steps, tools, activity events, budgets
 mod context;     // P3-T01 deterministic initial window and per-category byte receipts
+mod repo_map;    // P3-T04 bounded per-scope file/symbol map
+mod embeddings;  // P4-T02 deterministic offline vectors and cosine scoring
 use memory_agents::MemoryAgents;
 use storage::DbStore;
 
@@ -125,7 +127,26 @@ async fn confirm(State(h):State<Harness>,Json(req):Json<ConfirmRequest>)->ApiRes
     match status.as_str(){"approved"|"rejected"=>Ok(Json(json!({"status":status}))),"not_found"=>Err(ApiError(StatusCode::NOT_FOUND,"Proposal not found in this scope")),_=>Err(ApiError(StatusCode::CONFLICT,"Proposal is expired, already resolved, or conflicts with a newer revision; reload the inbox"))}
 }
 #[derive(Deserialize)]struct ScopeQuery{#[serde(default="default_scope")]scope:String}
-async fn candidates(State(h):State<Harness>,Query(q):Query<ScopeQuery>)->ApiResult<Json<Value>>{safety::scope(&q.scope).map_err(|_|invalid("Invalid scope"))?;Ok(Json(h.store.candidates(q.scope).await.map_err(db_error)?))}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CandidateQuery{#[serde(default="default_scope")]scope:String,#[serde(default)]request_id:Option<String>,#[serde(default)]imports_only:bool,#[serde(default)]chat_only:bool}
+async fn candidates(State(h):State<Harness>,Query(q):Query<CandidateQuery>)->ApiResult<Json<Value>>{
+    safety::scope(&q.scope).map_err(|_|invalid("Invalid scope"))?;
+    if q.imports_only&&q.chat_only{return Err(invalid("Candidate filters cannot be combined"));}
+    if let Some(id)=q.request_id.as_deref(){Uuid::parse_str(id).map_err(|_|invalid("Invalid request identifier"))?;}
+    Ok(Json(h.store.candidate_feed(q.scope,q.request_id,q.imports_only,q.chat_only).await.map_err(db_error)?))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CandidateEdit{value:String,#[serde(default="default_scope")]scope:String}
+async fn edit_candidate(State(h):State<Harness>,Path(id):Path<String>,Json(req):Json<CandidateEdit>)->ApiResult<Json<Value>>{
+    Uuid::parse_str(&id).map_err(|_|invalid("Invalid candidate identifier"))?;safety::scope(&req.scope).map_err(|_|invalid("Invalid scope"))?;
+    if req.value.trim().is_empty()||req.value.chars().count()>1000||req.value.len()>4000||safety::sensitive(&req.value){return Err(invalid("Edited memory must contain 1–1000 safe characters"));}
+    match h.store.edit_candidate(id,req.scope,req.value).await.map_err(db_error)?.as_str(){
+        "edited"=>Ok(Json(json!({"status":"edited"}))),"not_found"=>Err(ApiError(StatusCode::NOT_FOUND,"Candidate not found in this scope")),
+        _=>Err(ApiError(StatusCode::CONFLICT,"Candidate is expired, resolved, or duplicates another suggestion; reload the tray")),
+    }
+}
 async fn status(State(h):State<Harness>)->ApiResult<Json<Value>>{Ok(Json(h.store.stats().await.map_err(db_error)?))}
 async fn history(State(h):State<Harness>,Path(session):Path<String>,Query(q):Query<HistoryQuery>)->ApiResult<Json<Value>>{Uuid::parse_str(&session).map_err(|_|invalid("Invalid session identifier"))?;Ok(Json(h.store.history(session,cursor(q)?).await.map_err(db_error)?))}
 async fn get_config(State(h):State<Harness>)->ApiResult<Json<Value>>{Ok(Json(h.store.settings().await.map_err(db_error)?))}
@@ -368,7 +389,7 @@ async fn ingest_memory(State(h):State<Harness>,Json(req):Json<IngestRequest>)->A
 
 fn router(state:Harness)->Router{
     let api=Router::new().route("/chat",post(chat)).route("/chat/submit",post(submit_chat)).route("/chat/requests/{id}",get(get_receipt)).route("/chat/requests/{id}/context",get(get_context)).route("/sessions",get(sessions)).route("/models",get(models)).route("/config",get(get_config).post(set_config))
-        .route("/memory/status",get(status)).route("/memory/candidates",get(candidates)).route("/memory/confirm",post(confirm))
+        .route("/memory/status",get(status)).route("/memory/candidates",get(candidates)).route("/memory/candidates/{id}/edit",post(edit_candidate)).route("/memory/confirm",post(confirm))
         .route("/memory/ingest",post(ingest_memory)).route("/sessions/{id}/messages",get(history))
         .route("/jobs",get(jobs)).route("/jobs/{id}/retry",post(retry_job))
         .route("/scopes",get(list_scopes)).route("/scopes/{scope}",get(get_scope).post(set_scope))

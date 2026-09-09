@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Offline migration-chain check. No Rust toolchain needed.
 
-Applies migrations/001 -> 002 -> 003 to an in-memory SQLite DB the same way
+Applies migrations/001 -> 002 -> 003 -> 004 to an in-memory SQLite DB the same way
 `DbStore::init` does (execute_batch in order), then asserts the expected tables,
-user_version and CHECK constraints. Also verifies a v2 database upgrades to v3.
+user_version and CHECK constraints. Also verifies a populated v3 database upgrades to v4.
 """
 import pathlib
 import sqlite3
@@ -12,12 +12,13 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MIG = ROOT / "migrations"
-CHAIN = ["001_core.sql", "002_recording.sql", "003_agentic.sql"]
+CHAIN = ["001_core.sql", "002_recording.sql", "003_agentic.sql", "004_memory_kinds.sql"]
 
 EXPECTED_TABLES = {
     1: {"sessions", "messages", "sources", "jobs", "candidates", "memories", "memory_revisions", "settings"},
     2: {"chat_receipts", "recording_events", "recording_outbox"},
     3: {"scopes", "turn_steps", "activity_events", "permission_requests", "file_changes", "plan_items"},
+    4: {"memory_embeddings"},
 }
 
 
@@ -43,8 +44,8 @@ def check_fts5():
 
 def test_full_chain():
     c = fresh()
-    apply(c, 3)
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 3
+    apply(c, len(CHAIN))
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 4
     have = tables(c)
     for v, names in EXPECTED_TABLES.items():
         missing = names - have
@@ -59,6 +60,68 @@ def test_v2_to_v3():
     c.executescript((MIG / CHAIN[2]).read_text())
     assert c.execute("PRAGMA user_version").fetchone()[0] == 3
     assert EXPECTED_TABLES[3] <= tables(c)
+
+
+def test_populated_v3_to_v4():
+    c = fresh()
+    apply(c, 3)
+    now = "2026-01-01T00:00:00Z"
+    c.execute(
+        "INSERT INTO candidates(id,scope,key,value,category,source_id,evidence,expected_revision,status,created_at,expires_at,resolved_at)"
+        " VALUES('c-old','proj','language','Rust','preference','source-old','{\"quote\":\"I prefer Rust\"}',0,'approved',?,2000000000,?)",
+        (now, now),
+    )
+    c.execute(
+        "INSERT INTO memories(rowid,id,scope,key,value,category,status,revision,candidate_id,created_at,updated_at)"
+        " VALUES(41,'m-old','proj','language','Rust','preference','active',1,'c-old',?,?)",
+        (now, now),
+    )
+    c.execute(
+        "INSERT INTO memory_revisions(id,memory_id,revision,action,old_value,new_value,candidate_id,created_at)"
+        " VALUES('r-old','m-old',1,'approve',NULL,'Rust','c-old',?)",
+        (now,),
+    )
+    c.commit()
+    c.executescript((MIG / CHAIN[3]).read_text())
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 4
+    assert c.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    assert c.execute("PRAGMA foreign_key_check").fetchall() == []
+    assert c.execute("SELECT rowid,id,candidate_id FROM memories WHERE id='m-old'").fetchone() == (41, "m-old", "c-old")
+    assert c.execute("SELECT id,memory_id,candidate_id FROM memory_revisions").fetchone() == ("r-old", "m-old", "c-old")
+    assert c.execute("SELECT rowid FROM memory_fts WHERE memory_fts MATCH 'Rust'").fetchone() == (41,)
+    indexes = {row[1] for row in c.execute("PRAGMA index_list('memory_embeddings')")}
+    assert "memory_embeddings_model" in indexes
+    c.execute("UPDATE memories SET value='Rust systems' WHERE id='m-old'")
+    assert c.execute("SELECT rowid FROM memory_fts WHERE memory_fts MATCH 'systems'").fetchone() == (41,)
+    return c
+
+
+def test_004_memory_categories_and_embedding_constraints():
+    c = test_populated_v3_to_v4()
+    now = "2026-01-01T00:00:00Z"
+    categories = ("preference", "fact", "project", "rule", "skill", "decision", "episodic", "procedural")
+    for index, category in enumerate(categories):
+        c.execute(
+            "INSERT INTO candidates(id,scope,key,value,category,source_id,evidence,expected_revision,status,created_at,expires_at)"
+            " VALUES(?,?,?,?,?,'source-kinds','{}',0,'pending',?,2000000000)",
+            (f"c-{category}", "kinds", f"key_{index}", category, category, now),
+        )
+    bad_rows = (
+        ("INSERT INTO candidates VALUES('bad','x','bad','bad','unknown','s','{}',0,'pending',?,2000000000,NULL)", (now,)),
+        ("INSERT INTO memories(id,scope,key,value,category,status,revision,candidate_id,created_at,updated_at) VALUES('bad-m','kinds','bad','bad','unknown','active',1,'c-fact',?,?)", (now, now)),
+    )
+    for statement, values in bad_rows:
+        try:
+            c.execute(statement, values)
+        except sqlite3.IntegrityError:
+            pass
+        else:
+            raise AssertionError("unsupported memory category was accepted")
+    c.execute(
+        "INSERT INTO memory_embeddings(memory_id,model,dimensions,vector,content_hash,updated_at) VALUES('m-old','local',8,zeroblob(32),'hash',?)",
+        (now,),
+    )
+    assert c.execute("SELECT dimensions,length(vector),recall_count,useful_count FROM memory_embeddings").fetchone() == (8, 32, 0, 0)
 
 
 def test_003_constraints():
@@ -121,8 +184,10 @@ def main():
     check_fts5()
     test_full_chain()
     test_v2_to_v3()
+    test_populated_v3_to_v4()
+    test_004_memory_categories_and_embedding_constraints()
     test_003_constraints()
-    print("migrations OK: 001 -> 002 -> 003, user_version=3, constraints enforced")
+    print("migrations OK: 001 -> 002 -> 003 -> 004, user_version=4, data/FTS/FKs preserved")
 
 
 class Suite(unittest.TestCase):

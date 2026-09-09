@@ -211,48 +211,55 @@ Each task has: `status`, `depends`, `design` (doc section), `files` (touched),
 - note (2026-09-10): added `src/context.rs` with fixed independent UTF-8 source-byte budgets and a deterministic nine-row ledger (`included_parts`, `excluded_parts`, byte totals, state) plus exact first-call provider-array sizes. System rules, current user input, and the configured registry are atomic/fail-closed; optional structured parts are whole-item prefixes; recent history is the newest complete user-led turn suffix. `recording::generate` now uses the manager for tool and chat-only scopes, persists format-v2 `provider_messages` + `provider_tools` + only the included memories before any provider call, and hands that exact tool array to `agent_loop` instead of rebuilding it. Skills/repo-map/compacted-history inputs are typed but intentionally empty until P5-T02/P3-T04/P3-T03. Verified: focused context filter 7 passed; all 93 Rust tests passed; release gate passed (Clippy/build, migrations 001→003, 8 schemas, 51 Python contracts, both HTTP suites). Browser suites were not rerun because no UI asset or UI behavior changed.
 
 ### P3-T02 · Tool-result compaction and read cache
-- status: todo
+- status: done
 - depends: P3-T01
 - done-when: tool results older than 3 model calls are replaced in the window by `[tool <name> step N, <bytes> bytes, hash <h>; call read again if needed]`; `read` of an unchanged file (same content_hash as an earlier step in the turn) returns a reference.
-- verify: cargo test --locked context::compaction
+- verify: cargo test --locked agent_loop::tests::
+- note (2026-09-10): current-turn tool bodies stay verbatim for three later model calls, then become stable name/step/byte/hash references in the provider window only. Unchanged repeated reads reference the first durable read step through a path/offset/limit/content-hash cache; audit rows keep full output. Focused and full Rust suites pass.
 
 ### P3-T03 · Turn compaction at 70% budget with receipt
-- status: todo
+- status: done
 - depends: P3-T02
 - done-when: a `compaction` step summarizes older steps (cheaper model), keeps plan + last 2 tool results verbatim, and the summary is stored as an episodic candidate source.
-- verify: cargo test --locked context::turn_compaction
+- verify: cargo test --locked turn_compaction
+- note (2026-09-10): observed provider prompt tokens trigger inclusively at 70% of `HARNESS_CONTEXT_TOKENS` (128k default). A text-only `compaction` model role summarizes only the older running replay, preserves the base plan/current prompt and newest two tool results, records source messages/hash/token receipt and usage, and queues the bounded summary as review-only episodic memory. Failure fails the turn rather than using an invented summary.
 
 ### P3-T04 · Repo map per scope
-- status: todo
+- status: done
 - depends: P1-T04
-- done-when: `.harness/repo_map.txt` (≤ 8 KB) with files and top-level symbols (tree-sitter or ctags if present, else heading/regex fallback), refreshed by a job when files change.
+- done-when: `.harness/repo_map.txt` (≤ 8 KB) with files and top-level symbols (ctags if present, else heading/regex fallback), refreshed when files change.
 - verify: cargo test --locked repo_map
+- note (2026-09-10): Git-aware deterministic discovery excludes secrets, symlinks and build/vendor outputs; optional ctags and bounded language fallbacks produce a UTF-8-safe map. A path/size/mtime signature refreshes external changes on the next context build and successful file-changing tools refresh immediately. Generated `.harness/` state is ignored.
 
 ## P4 · Memory kinds, hybrid recall, ambient UI
 
 ### P4-T01 · Migration 004_memory_kinds.sql
-- status: todo
+- status: done
 - depends: P1-T01
 - done-when: `memories.category` and `candidates.category` accept `decision | episodic | procedural` via table rebuild inside one transaction; FTS rebuilt; existing rows preserved.
 - verify: python3 tests/test_migrations.py && cargo test --locked storage
+- note (2026-09-10): migration 004 rebuilds candidates/memories/revisions transactionally, preserves IDs/rowids/evidence links/history, restores FTS plus triggers, accepts all eight categories, creates constrained `memory_embeddings`, runs foreign-key checks, and advances `user_version` to 4. Populated v3→v4 and constraint tests pass.
 
 ### P4-T02 · Local embeddings + hybrid recall
-- status: todo
+- status: done
 - depends: P4-T01
-- done-when: embeddings table; ONNX small model (no network at runtime); recall = union(FTS5 top 20, cosine top 20) reranked by scope, recency, prior usefulness; same 6000-byte budget.
+- done-when: embeddings table; bundled deterministic local model (no network/model download at runtime); recall = union(FTS5 top 20, cosine top 20) reranked by scope, recency, prior usefulness; same 6000-byte budget.
 - verify: cargo test --locked recall
+- note (2026-09-10): selected `harness-local-hash-v1` (256-dimensional normalized word/character/bigram feature hashing) instead of adding an ONNX runtime and binary model to this zero-download local service. Vectors refresh lazily by content hash. Focused tests prove related-spelling cosine recall, scope shadowing, usefulness reranking, vector persistence and the serialized byte cap.
 
 ### P4-T03 · Correction detection and decision candidates
-- status: todo
+- status: done
 - depends: P4-T01
 - done-when: extraction prompt also proposes `decision` (from plan + user confirmations) and marks user corrections ("no, use X") as high-priority candidates.
 - verify: cargo test --locked extraction
+- note (2026-09-10): extraction now receives separately labelled current-plan context, but exact user-event substrings remain the only evidence. The prompt proposes decisions/procedures and deterministic correction wording is stored with `priority=high`; plan/assistant/tool text cannot establish a candidate. Three focused tests pass.
 
 ### P4-T04 · Inline suggestion tray
-- status: todo
+- status: done
 - depends: P2-T02
 - done-when: candidates from the current turn appear under it with Save / Edit / Dismiss; Memory tab becomes "Inbox" for imports only.
 - verify: node tests/ui_smoke.cjs
+- note (2026-09-10): pending chat/compaction candidates are associated through `chat:{request_id}` or `evidence.request_id` and render beneath their source turn with Save/Edit/Dismiss. Edits validate and update pending values without changing evidence or expected revision. The Inbox reads import-only candidates. Hostile text, conflict recovery, mobile/dark mode and lock clearing pass the 21-check browser suite.
 
 ## P5 · Verifier, skills, sub-agents
 

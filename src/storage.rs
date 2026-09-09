@@ -3,7 +3,7 @@ use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::sync::{Arc, Mutex};
+use std::{collections::{HashMap,HashSet},sync::{Arc, Mutex}};
 use tokio::sync::Semaphore;
 use uuid::Uuid;
 use crate::{ingest::Event, safety};
@@ -13,7 +13,7 @@ pub fn uid() -> String { Uuid::new_v4().to_string() }
 #[derive(Clone)]
 pub struct DbStore { conn: Arc<Mutex<Connection>>, permits: Arc<Semaphore> }
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Proposal { pub key:String, pub value:String, pub category:String, pub evidence_id:String, pub quote:String }
+pub struct Proposal { pub key:String, pub value:String, pub category:String, pub evidence_id:String, pub quote:String, #[serde(default)] pub priority:Option<String> }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Recall { pub id:String, pub scope:String, pub key:String, pub value:String, pub revision:i64, pub evidence:Value }
 pub struct Job { pub id:String, pub scope:String, pub source_id:String, pub events:Vec<Event>, pub attempts:i64 }
@@ -178,11 +178,14 @@ impl DbStore {
         if version == 0 {
             let existing:i64 = conn.query_row("SELECT count(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",[],|r|r.get(0))?;
             if existing != 0 { bail!("legacy or unknown database: use scripts/migrate_legacy.py into a NEW database"); }
-        } else if !(1..=3).contains(&version) { bail!("unsupported schema version {version}"); }
+        } else if !(1..=4).contains(&version) { bail!("unsupported schema version {version}"); }
         conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")?;
         if version == 0 { conn.execute_batch(include_str!("../migrations/001_core.sql"))?; }
         if version < 2 { conn.execute_batch(include_str!("../migrations/002_recording.sql"))?; }
         if version < 3 { conn.execute_batch(include_str!("../migrations/003_agentic.sql"))?; }
+        if version < 4 { conn.execute_batch(include_str!("../migrations/004_memory_kinds.sql"))?; }
+        let foreign_key_errors:i64=conn.query_row("SELECT count(*) FROM pragma_foreign_key_check",[],|r|r.get(0))?;
+        if foreign_key_errors!=0 { bail!("schema migration left {foreign_key_errors} foreign-key errors"); }
         // One process only. Never silently repeat a potentially billed generation.
         crate::recording::recover(&mut conn)?;
         Ok(Self{conn:Arc::new(Mutex::new(conn)),permits:Arc::new(Semaphore::new(32))})
@@ -200,7 +203,7 @@ impl DbStore {
     pub async fn settings(&self) -> Result<Value> {
         self.run(|c| {
             let mut map=serde_json::Map::new();
-            for role in ["main","extraction"] {
+            for role in ["main","extraction","compaction"] {
                 let value:Option<String>=c.query_row("SELECT value FROM settings WHERE key=?1",[format!("model.{role}")],|r|r.get(0)).optional()?;
                 map.insert(role.into(),json!(value.unwrap_or_default()));
             }
@@ -208,12 +211,32 @@ impl DbStore {
         }).await
     }
     pub async fn set_settings(&self, data:std::collections::BTreeMap<String,String>) -> Result<()> {
-        for (role,value) in &data { if !["main","extraction"].contains(&role.as_str()) || value.len()>128 || value.chars().any(char::is_control) { bail!("invalid model setting"); } }
+        for (role,value) in &data { if !["main","extraction","compaction"].contains(&role.as_str()) || value.len()>128 || value.chars().any(char::is_control) { bail!("invalid model setting"); } }
         self.run(move|c|{ let tx=c.transaction()?; for (role,value) in data {tx.execute("INSERT INTO settings(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![format!("model.{role}"),value.trim()])?;} tx.commit()?; Ok(()) }).await
     }
     pub async fn role_model(&self, role:&str, default:&str) -> Result<String> {
         let key=format!("model.{role}"); let default=default.to_string();
         self.run(move|c|{let v:Option<String>=c.query_row("SELECT value FROM settings WHERE key=?1",[key],|r|r.get(0)).optional()?; Ok(v.filter(|s|!s.is_empty()).unwrap_or(default))}).await
+    }
+    /// Store a model-produced turn summary as review-only episodic evidence. It does not enter
+    /// recall until a person approves the candidate.
+    pub async fn save_compaction_candidate(&self,scope:String,request:String,step:String,summary:String)->Result<String>{
+        safety::validate_fact("turn_summary",&summary,"episodic")?;
+        self.run(move|c|{
+            let tx=c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let source_id=format!("compaction:{step}");
+            let fingerprint=crate::tools::content_hash(&summary);
+            let stamp=now();
+            tx.execute("INSERT INTO sources(id,scope,name,format,fingerprint,parser_version,content,warnings,created_at) VALUES(?1,?2,?3,'compaction',?4,'turn-compaction-v1',?5,'[]',?6) ON CONFLICT(id) DO NOTHING",
+                params![source_id,scope,format!("Turn compaction {request}"),fingerprint,summary,stamp])?;
+            let revision:i64=tx.query_row("SELECT revision FROM memories WHERE scope=?1 AND key='turn_summary'",[&scope],|r|r.get(0)).optional()?.unwrap_or(0);
+            let candidate=uid();
+            let evidence=json!({"source_id":source_id,"request_id":request,"step_id":step,"kind":"compaction","quote":summary});
+            tx.execute("INSERT INTO candidates(id,scope,key,value,category,source_id,evidence,expected_revision,status,created_at,expires_at) VALUES(?1,?2,'turn_summary',?3,'episodic',?4,?5,?6,'pending',?7,?8)",
+                params![candidate,scope,summary,source_id,evidence.to_string(),revision,stamp,Utc::now().timestamp()+30*86400])?;
+            tx.commit()?;
+            Ok(candidate)
+        }).await
     }
     #[allow(clippy::too_many_arguments)]
     pub async fn ingest(&self,scope:String,name:String,format:String,content:String,fingerprint:String,warnings:Vec<String>,chunks:Vec<Vec<Event>>)->Result<Value>{
@@ -248,13 +271,15 @@ impl DbStore {
         if proposals.len()>10 {bail!("too many extraction proposals");}
         for p in &proposals {
             safety::validate_fact(&p.key,&p.value,&p.category)?;
+            if p.priority.as_deref().is_some_and(|value|!["normal","high"].contains(&value)){bail!("proposal has invalid priority");}
             if p.quote.trim().is_empty() || p.quote.chars().count()>1000 || !job.events.iter().any(|e| e.id==p.evidence_id && e.role=="user" && e.content.contains(&p.quote)) {bail!("proposal has invalid user evidence");}
         }
         self.run(move|c|{
             let tx=c.transaction_with_behavior(TransactionBehavior::Immediate)?;let mut count=0;
             for p in proposals {
                 let revision:i64=tx.query_row("SELECT revision FROM memories WHERE scope=?1 AND key=?2",params![job.scope,p.key],|r|r.get(0)).optional()?.unwrap_or(0);
-                let evidence=json!({"source_id":job.source_id,"event_id":p.evidence_id,"quote":p.quote});
+                let correction=safety::is_correction(&p.quote);
+                let evidence=json!({"source_id":job.source_id,"event_id":p.evidence_id,"quote":p.quote,"priority":if correction{"high"}else{"normal"},"correction":correction});
                 count+=tx.execute("INSERT INTO candidates(id,scope,key,value,category,source_id,evidence,expected_revision,status,created_at,expires_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'pending',?9,?10) ON CONFLICT(scope,key,value,source_id) DO NOTHING",params![uid(),job.scope,p.key,p.value,p.category,job.source_id,evidence.to_string(),revision,now(),Utc::now().timestamp()+30*86400])?;
             }
             tx.execute("UPDATE jobs SET status='done',last_error=NULL WHERE id=?1",[job.id])?;
@@ -267,12 +292,42 @@ impl DbStore {
     pub async fn retry_job(&self,id:String)->Result<bool>{
         self.run(move|c|Ok(c.execute("UPDATE jobs SET status='pending',attempts=0,available_at=?1,last_error=NULL WHERE id=?2 AND status='failed'",params![Utc::now().timestamp(),id])?==1)).await
     }
-    pub async fn candidates(&self,scope:String)->Result<Value>{
+    pub async fn candidates(&self,scope:String)->Result<Value>{self.candidate_feed(scope,None,false,false).await}
+    pub async fn candidate_feed(&self,scope:String,request:Option<String>,imports_only:bool,chat_only:bool)->Result<Value>{
         self.run(move|c|{
             c.execute("UPDATE candidates SET status='expired',resolved_at=?1 WHERE status='pending' AND expires_at<=?2",params![now(),Utc::now().timestamp()])?;
-            let mut stmt=c.prepare("SELECT c.id,c.scope,c.key,c.value,c.category,c.evidence,c.expected_revision,m.value FROM candidates c LEFT JOIN memories m ON m.scope=c.scope AND m.key=c.key WHERE c.scope=?1 AND c.status='pending' ORDER BY c.created_at LIMIT 100")?;
-            let rows=stmt.query_map([scope],|r|Ok(json!({"id":r.get::<_,String>(0)?,"scope":r.get::<_,String>(1)?,"key":r.get::<_,String>(2)?,"value":r.get::<_,String>(3)?,"category":r.get::<_,String>(4)?,"evidence":serde_json::from_str::<Value>(&r.get::<_,String>(5)?).unwrap_or(Value::Null),"expected_revision":r.get::<_,i64>(6)?,"old_value":r.get::<_,Option<String>>(7)?})))?;
-            Ok(json!({"candidates":rows.collect::<rusqlite::Result<Vec<_>>>()?}))
+            let mut stmt=c.prepare("SELECT c.id,c.scope,c.key,c.value,c.category,c.evidence,c.expected_revision,m.value,c.source_id,c.created_at FROM candidates c LEFT JOIN memories m ON m.scope=c.scope AND m.key=c.key WHERE c.scope=?1 AND c.status='pending' ORDER BY c.created_at LIMIT 500")?;
+            let raw=stmt.query_map([scope],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?,r.get::<_,String>(5)?,r.get::<_,i64>(6)?,r.get::<_,Option<String>>(7)?,r.get::<_,String>(8)?,r.get::<_,String>(9)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            let mut items=Vec::new();
+            for (id,row_scope,key,value,category,evidence_text,expected_revision,old_value,source_id,created_at) in raw {
+                let evidence=serde_json::from_str::<Value>(&evidence_text).unwrap_or(Value::Null);
+                let request_id=evidence.get("request_id").and_then(Value::as_str).map(str::to_string).or_else(||source_id.strip_prefix("chat:").map(str::to_string));
+                if request.as_ref().is_some_and(|wanted|request_id.as_ref()!=Some(wanted)){continue;}
+                if imports_only && request_id.is_some(){continue;}
+                if chat_only && request_id.is_none(){continue;}
+                let priority=evidence.get("priority").and_then(Value::as_str).unwrap_or("normal");
+                items.push(json!({"id":id,"scope":row_scope,"key":key,"value":value,"category":category,"evidence":evidence,"expected_revision":expected_revision,"old_value":old_value,"request_id":request_id,"priority":priority,"created_at":created_at}));
+            }
+            items.sort_by(|a,b|(b["priority"]==json!("high")).cmp(&(a["priority"]==json!("high"))).then_with(||a["created_at"].as_str().cmp(&b["created_at"].as_str())).then_with(||a["id"].as_str().cmp(&b["id"].as_str())));
+            items.truncate(100);Ok(json!({"candidates":items}))
+        }).await
+    }
+    pub async fn edit_candidate(&self,id:String,scope:String,new_value:String)->Result<String>{
+        let value=new_value.trim().to_string();
+        self.run(move|c|{
+            let tx=c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let row:Option<(String,String,String,String,i64,String)>=tx.query_row("SELECT key,category,status,source_id,expires_at,evidence FROM candidates WHERE id=?1 AND scope=?2",params![id,scope],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional()?;
+            let Some((key,category,status,source_id,expiry,evidence_text))=row else{return Ok("not_found".into())};
+            if status!="pending"{return Ok("already_resolved".into());}
+            if expiry<=Utc::now().timestamp(){tx.execute("UPDATE candidates SET status='expired',resolved_at=?1 WHERE id=?2",params![now(),id])?;tx.commit()?;return Ok("expired".into());}
+            safety::validate_fact(&key,&value,&category)?;
+            let duplicate:Option<i64>=tx.query_row("SELECT 1 FROM candidates WHERE scope=?1 AND key=?2 AND value=?3 AND source_id=?4 AND id<>?5",params![scope,key,value,source_id,id],|r|r.get(0)).optional()?;
+            if duplicate.is_some(){return Ok("conflict".into());}
+            let mut evidence=serde_json::from_str::<Value>(&evidence_text)?;
+            let Some(object)=evidence.as_object_mut() else {bail!("candidate evidence must be an object")};
+            object.insert("edited".into(),json!(true));
+            tx.execute("UPDATE candidates SET value=?1,evidence=?2 WHERE id=?3 AND scope=?4 AND status='pending'",params![value,evidence.to_string(),id,scope])?;
+            tx.commit()?;Ok("edited".into())
         }).await
     }
     pub async fn resolve(&self,id:String,scope:String,confirm:bool)->Result<String>{
@@ -296,16 +351,68 @@ impl DbStore {
             tx.commit()?;Ok("approved".into())
         }).await
     }
+    /// Hybrid local recall: union lexical and vector top-20s, then rerank deterministically.
+    /// The final context payload retains the original 6,000-byte hard ceiling.
     pub async fn recall(&self,scope:String,prompt:String)->Result<Vec<Recall>>{
-        let query=safety::fts_query(&prompt);if query.is_empty(){return Ok(Vec::new());}
+        let fts=safety::fts_query(&prompt);
+        let query_vector=crate::embeddings::embed(&prompt);
+        if fts.is_empty() && query_vector.iter().all(|value|*value==0.0){return Ok(Vec::new());}
         self.run(move|c|{
-            let mut stmt=c.prepare("SELECT m.id,m.scope,m.key,m.value,m.revision,c.evidence FROM memory_fts JOIN memories m ON m.rowid=memory_fts.rowid JOIN candidates c ON c.id=m.candidate_id WHERE memory_fts MATCH ?1 AND m.status='active' AND (m.scope=?2 OR m.scope='global') AND (m.scope=?2 OR NOT EXISTS(SELECT 1 FROM memories p WHERE p.scope=?2 AND p.key=m.key AND p.status='active')) ORDER BY (m.scope=?2) DESC,bm25(memory_fts),m.updated_at DESC LIMIT 6")?;
-            let rows=stmt.query_map(params![query,scope],|r|Ok(Recall{id:r.get(0)?,scope:r.get(1)?,key:r.get(2)?,value:r.get(3)?,revision:r.get(4)?,evidence:serde_json::from_str(&r.get::<_,String>(5)?).unwrap_or(Value::Null)}))?;
+            struct Row { memory:Recall, updated_at:String, vector:Vec<f32>, recall_count:i64, useful_count:i64 }
+            let tx=c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let raw={
+                let mut stmt=tx.prepare("SELECT m.id,m.scope,m.key,m.value,m.revision,c.evidence,m.updated_at,e.dimensions,e.vector,e.content_hash,COALESCE(e.recall_count,0),COALESCE(e.useful_count,0) FROM memories m JOIN candidates c ON c.id=m.candidate_id LEFT JOIN memory_embeddings e ON e.memory_id=m.id AND e.model=?1 WHERE m.status='active' AND (m.scope=?2 OR m.scope='global') AND (m.scope=?2 OR NOT EXISTS(SELECT 1 FROM memories p WHERE p.scope=?2 AND p.key=m.key AND p.status='active')) ORDER BY m.id LIMIT 10000")?;
+                let collected=stmt.query_map(params![crate::embeddings::MODEL,scope],|r|Ok((
+                    r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,i64>(4)?,r.get::<_,String>(5)?,r.get::<_,String>(6)?,
+                    r.get::<_,Option<i64>>(7)?,r.get::<_,Option<Vec<u8>>>(8)?,r.get::<_,Option<String>>(9)?,r.get::<_,i64>(10)?,r.get::<_,i64>(11)?
+                )))?.collect::<rusqlite::Result<Vec<_>>>()?;
+                collected
+            };
+            let mut rows=Vec::new();
+            for (id,row_scope,key,value,revision,evidence,updated_at,dimensions,blob,stored_hash,recall_count,useful_count) in raw {
+                if safety::sensitive(&value){continue;}
+                let content=format!("{key}\n{value}");
+                let content_hash=safety::fingerprint(&content);
+                let decoded=blob.as_deref().and_then(|bytes|crate::embeddings::decode(bytes,dimensions.unwrap_or_default() as usize));
+                let cache_hit=stored_hash.as_deref()==Some(&content_hash) && dimensions==Some(crate::embeddings::DIMENSIONS as i64) && decoded.is_some();
+                let vector=if cache_hit{decoded.unwrap()}else{crate::embeddings::embed(&content)};
+                if !cache_hit {
+                    tx.execute("INSERT INTO memory_embeddings(memory_id,model,dimensions,vector,content_hash,recall_count,useful_count,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(memory_id) DO UPDATE SET model=excluded.model,dimensions=excluded.dimensions,vector=excluded.vector,content_hash=excluded.content_hash,updated_at=excluded.updated_at",
+                        params![id,crate::embeddings::MODEL,crate::embeddings::DIMENSIONS as i64,crate::embeddings::encode(&vector),content_hash,recall_count,useful_count,now()])?;
+                }
+                rows.push(Row{memory:Recall{id,scope:row_scope,key,value,revision,evidence:serde_json::from_str(&evidence).unwrap_or(Value::Null)},updated_at,vector,recall_count,useful_count});
+            }
+
+            let mut lexical=HashMap::<String,usize>::new();
+            if !fts.is_empty(){
+                let mut stmt=tx.prepare("SELECT m.id FROM memory_fts JOIN memories m ON m.rowid=memory_fts.rowid WHERE memory_fts MATCH ?1 AND m.status='active' AND (m.scope=?2 OR m.scope='global') AND (m.scope=?2 OR NOT EXISTS(SELECT 1 FROM memories p WHERE p.scope=?2 AND p.key=m.key AND p.status='active')) ORDER BY bm25(memory_fts),m.updated_at DESC LIMIT 20")?;
+                for (rank,id) in stmt.query_map(params![fts,scope],|r|r.get::<_,String>(0))?.enumerate(){lexical.insert(id?,rank);}
+            }
+            let mut semantic=rows.iter().map(|row|(row.memory.id.clone(),crate::embeddings::cosine(&query_vector,&row.vector))).filter(|(_,score)|*score>0.01).collect::<Vec<_>>();
+            semantic.sort_by(|a,b|b.1.total_cmp(&a.1).then_with(||a.0.cmp(&b.0)));semantic.truncate(20);
+            let semantic=semantic.into_iter().collect::<HashMap<_,_>>();
+            let candidate_ids=lexical.keys().chain(semantic.keys()).cloned().collect::<HashSet<_>>();
+            let now_at=Utc::now();
+            let mut ranked=rows.into_iter().filter(|row|candidate_ids.contains(&row.memory.id)).map(|row|{
+                let lexical_score=lexical.get(&row.memory.id).map(|rank|2.0/(1.0+*rank as f64)).unwrap_or(0.0);
+                let semantic_score=semantic.get(&row.memory.id).copied().unwrap_or(0.0).max(0.0) as f64;
+                let scope_score=if row.memory.scope==scope{0.5}else{0.0};
+                let days=chrono::DateTime::parse_from_rfc3339(&row.updated_at).map(|at|(now_at-at.with_timezone(&Utc)).num_days().max(0) as f64).unwrap_or(365.0);
+                let recency_score=0.25/(1.0+days/30.0);
+                let useful_ratio=row.useful_count.max(0) as f64/(1+row.recall_count.max(0)) as f64;
+                (lexical_score+semantic_score+scope_score+recency_score+0.5*useful_ratio,row)
+            }).collect::<Vec<_>>();
+            ranked.sort_by(|a,b|b.0.total_cmp(&a.0).then_with(||b.1.updated_at.cmp(&a.1.updated_at)).then_with(||a.1.memory.id.cmp(&b.1.memory.id)));
             let mut out=Vec::new();let mut bytes=0;
-            for item in rows {let item=item?;let length=serde_json::to_string(&item)?.len();if bytes+length<=6000 && !safety::sensitive(&item.value){bytes+=length;out.push(item);}}
-            Ok(out)
+            for (_,row) in ranked.into_iter().take(20){
+                let size=serde_json::to_vec(&row.memory)?.len();if bytes+size>6000{continue;}bytes+=size;
+                tx.execute("UPDATE memory_embeddings SET recall_count=recall_count+1 WHERE memory_id=?1",[&row.memory.id])?;
+                out.push(row.memory);
+            }
+            tx.commit()?;Ok(out)
         }).await
     }
+
     pub async fn stats(&self)->Result<Value>{
         self.run(|c|{
             let active:i64=c.query_row("SELECT count(*) FROM memories WHERE status='active'",[],|r|r.get(0))?;
@@ -463,13 +570,42 @@ mod tests {
         let a=db.ingest("global".into(),"test".into(),"claude".into(),"safe source".into(),"digest".into(),vec![],vec![events.clone()]).await.unwrap();
         assert_eq!(a["duplicate"],false);
         let b=db.ingest("global".into(),"test".into(),"claude".into(),"safe source".into(),"digest".into(),vec![],vec![events]).await.unwrap();assert_eq!(b["duplicate"],true);
-        let job=db.claim_job().await.unwrap().unwrap();db.finish_job(job,vec![Proposal{key:"language".into(),value:"Rust".into(),category:"preference".into(),evidence_id:"event-1:part-0".into(),quote:"I prefer Rust".into()}]).await.unwrap();
+        let job=db.claim_job().await.unwrap().unwrap();db.finish_job(job,vec![Proposal{key:"language".into(),value:"Rust".into(),category:"preference".into(),evidence_id:"event-1:part-0".into(),quote:"I prefer Rust".into(),priority:None}]).await.unwrap();
         assert_eq!(db.stats().await.unwrap()["active_memories"],0);
         let list=db.candidates("global".into()).await.unwrap();let id=list["candidates"][0]["id"].as_str().unwrap().to_string();
         assert_eq!(db.resolve(id.clone(),"wrong-scope".into(),true).await.unwrap(),"not_found");
         assert_eq!(db.resolve(id.clone(),"global".into(),true).await.unwrap(),"approved");
         assert_eq!(db.resolve(id,"global".into(),false).await.unwrap(),"already_resolved");
         assert_eq!(db.recall("global".into(),"Rust:".into()).await.unwrap().len(),1);
+    }
+
+    #[tokio::test] async fn hybrid_recall_uses_offline_vectors_shadowing_usefulness_and_budget() {
+        let db=DbStore::init(":memory:").unwrap();
+        db.run(|c|{let stamp=now();let rows=[
+            ("c-rust","m-rust","global","language","Rust systems"),("c-global-db","m-global-db","global","database","Postgres"),
+            ("c-project-db","m-project-db","proj","database","SQLite"),("c-fruit","m-fruit","global","fruit","Banana orchestra")];
+            for (candidate,memory,scope,key,value) in rows {c.execute("INSERT INTO candidates(id,scope,key,value,category,source_id,evidence,expected_revision,status,created_at,expires_at,resolved_at) VALUES(?1,?2,?3,?4,'fact',?5,'{}',0,'approved',?6,2000000000,?6)",params![candidate,scope,key,value,format!("source-{candidate}"),stamp])?;c.execute("INSERT INTO memories(id,scope,key,value,category,status,revision,candidate_id,created_at,updated_at) VALUES(?1,?2,?3,?4,'fact','active',1,?5,?6,?6)",params![memory,scope,key,value,candidate,stamp])?;}Ok(())}).await.unwrap();
+        let first=db.recall("proj".into(),"rustacean database".into()).await.unwrap();
+        assert!(first.iter().any(|memory|memory.id=="m-rust"),"vector recall should bridge related spelling");
+        assert!(first.iter().any(|memory|memory.id=="m-project-db"));
+        assert!(!first.iter().any(|memory|memory.id=="m-global-db"),"project key shadows global key");
+        assert!(first.iter().map(|memory|serde_json::to_vec(memory).unwrap().len()).sum::<usize>()<=6000);
+        db.run(|c|{let count:i64=c.query_row("SELECT count(*) FROM memory_embeddings",[],|r|r.get(0))?;assert_eq!(count,3);let bytes:i64=c.query_row("SELECT length(vector) FROM memory_embeddings WHERE memory_id='m-rust'",[],|r|r.get(0))?;assert_eq!(bytes,(crate::embeddings::DIMENSIONS*4) as i64);c.execute("UPDATE memory_embeddings SET useful_count=20 WHERE memory_id='m-rust'",[])?;Ok(())}).await.unwrap();
+        let reranked=db.recall("proj".into(),"database rustacean".into()).await.unwrap();
+        assert_eq!(reranked.first().map(|memory|memory.id.as_str()),Some("m-rust"),"prior usefulness participates in reranking");
+    }
+
+    #[tokio::test] async fn extraction_corrections_are_high_priority_and_candidate_feeds_are_scoped() {
+        let db=DbStore::init(":memory:").unwrap();let correction="No, use SQLite instead.";
+        db.ingest("global".into(),"turn".into(),"jsonl".into(),correction.into(),"correction-source".into(),vec![],vec![vec![Event{id:"event-correction".into(),role:"user".into(),content:correction.into()}]]).await.unwrap();
+        let job=db.claim_job().await.unwrap().unwrap();db.finish_job(job,vec![Proposal{key:"database_choice".into(),value:"SQLite".into(),category:"decision".into(),evidence_id:"event-correction".into(),quote:correction.into(),priority:None}]).await.unwrap();
+        let imports=db.candidate_feed("global".into(),None,true,false).await.unwrap();let candidate=&imports["candidates"][0];
+        assert_eq!((candidate["priority"].as_str(),candidate["evidence"]["correction"].as_bool()),(Some("high"),Some(true)));
+        let id=candidate["id"].as_str().unwrap().to_string();assert_eq!(db.edit_candidate(id,"global".into(),"SQLite with WAL".into()).await.unwrap(),"edited");
+        let edited=db.candidate_feed("global".into(),None,true,false).await.unwrap();assert_eq!(edited["candidates"][0]["value"],"SQLite with WAL");assert_eq!(edited["candidates"][0]["evidence"]["edited"],true);
+        let request=uid();let chat_candidate=uid();db.run({let request=request.clone();let chat_candidate=chat_candidate.clone();move|c|{c.execute("INSERT INTO candidates(id,scope,key,value,category,source_id,evidence,expected_revision,status,created_at,expires_at) VALUES(?1,'global','chat_choice','Rust','decision',?2,'{}',0,'pending',?3,2000000000)",params![chat_candidate,format!("chat:{request}"),now()])?;Ok(())}}).await.unwrap();
+        let chat=db.candidate_feed("global".into(),Some(request.clone()),false,true).await.unwrap();assert_eq!(chat["candidates"][0]["request_id"],request);
+        assert_eq!(db.candidate_feed("global".into(),None,true,false).await.unwrap()["candidates"].as_array().unwrap().len(),1,"chat candidates stay out of the import inbox");
     }
 
     fn scope_dir() -> std::path::PathBuf {

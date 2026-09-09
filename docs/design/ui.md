@@ -51,9 +51,11 @@ For each `file_changes` row: header `path · +A −B · applied 12:42`, body uni
 
 ## Memory becomes ambient (P4)
 
-- Under a turn: `Remember? “prefers pnpm over npm”  [Save] [Edit] [Dismiss]` — candidates whose source is this request.
+- Under a turn: `Remember? “prefers pnpm over npm”  [Save] [Edit] [Dismiss]` — pending candidates associated through `chat:{request_id}` or `evidence.request_id`. The tray refreshes without blocking sending and disappears when all of that turn's suggestions resolve.
+- `Edit` opens an inline, bounded textarea. Applying an edit revalidates only the proposed value and leaves evidence, category and expected revision intact; the user still chooses Save separately.
+- Correction-backed suggestions carry a visible high-priority badge. All candidate/model text is constructed with DOM nodes and `textContent`; no raw HTML or inline style is introduced.
 - Chip on the assistant message: `3 memories used ›` → receipt view.
-- Memory tab renamed **Inbox**: imports, backlog, conflicts only.
+- Memory tab renamed **Inbox**: import/backlog candidates only. Chat candidates do not appear twice.
 - Never a modal. Never blocks sending.
 
 ## Keyboard and commands (P2+)

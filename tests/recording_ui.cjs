@@ -17,6 +17,7 @@ const root=path.resolve(__dirname,'..'), out=path.join(root,'docs/qa');fs.mkdirS
    if(req.headers().authorization!=='Bearer fixture-token')return route.fulfill({status:401,json:{error:'Bearer token required'}});
    if(offline&&p.startsWith('/chat/requests/'))return route.abort('failed');
    if(p==='/memory/status')return route.fulfill({json:{active_memories:1,pending_confirmations:0,queued_jobs:1000,failed_jobs:0}});
+   if(p==='/memory/candidates')return route.fulfill({json:{candidates:[]}});
    if(p==='/scopes')return route.fulfill({json:{scopes:[{scope:'global',root_path:null,permission_mode:'ask'}]}});
    if(p==='/sessions')return route.fulfill({json:{sessions:[...records.values()].map(v=>({id:v.session_id,scope:v.scope,title:v.prompt,message_count:2})),has_more:false}});
    if(p.startsWith('/sessions/')){
@@ -70,7 +71,7 @@ const root=path.resolve(__dirname,'..'), out=path.join(root,'docs/qa');fs.mkdirS
   // Provider failure and restart interruption retain the captured user message.
   for(const state of ['failed','interrupted']){
    nextState=state;await page.click('#newchat');await page.fill('#prompt','This message survives '+state+'.');await page.click('#send');
-   await page.waitForFunction(s=>document.getElementById('capturestatus').textContent.includes(s==='failed'?'answer failed':'answer interrupted'),state);
+   await page.waitForFunction(s=>document.getElementById('capturestatus').textContent.includes(s==='failed'?'answer failed':'answer interrupted')&&document.getElementById('log').textContent.includes('This message survives'),state);
    assert((await page.locator('#log').innerText()).includes('This message survives'));
    assert.strictEqual(await page.evaluate(()=>sessionStorage.getItem('harness_pending')),null);
   }

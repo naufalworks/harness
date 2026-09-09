@@ -65,6 +65,7 @@ function message(m, target = $('log')) {
       button.addEventListener('click', () => showReceipt(m.request_id, content, button));
       detail.addEventListener('toggle', () => { if (detail.open && !content.childNodes.length && !button.disabled) showReceipt(m.request_id, content, button); });
       box.append(detail);
+      const tray = node('section', undefined, 'suggestion-tray'); tray.dataset.requestId = m.request_id; tray.hidden = true; box.append(tray);
     }
   }
   target.append(box);
@@ -93,6 +94,7 @@ async function loadHistory(older = false) {
     captureLabel(last ? stateLabels[last.generation_state] || '' : '');
     if (!pending && last?.request_id && ['captured','generating'].includes(last.generation_state)) rememberPending({request_id:last.request_id,session_id:session,scope});
   }
+  await refreshInlineSuggestions().catch(() => {});
 }
 async function loadSessions(older = false) {
   const myEpoch = epoch;
@@ -213,23 +215,47 @@ $('leavepending').addEventListener('click', () => {
 $('oldermessages').addEventListener('click', async () => { $('oldermessages').disabled = true; try { await loadHistory(true); } catch(e) { notice(e.message,true); } finally { $('oldermessages').disabled = false; } });
 $('oldersessions').addEventListener('click', () => loadSessions(true).catch(e=>notice(e.message,true)));
 $('sessionhistory').addEventListener('toggle', () => { if ($('sessionhistory').open) loadSessions().catch(e=>notice(e.message,true)); });
+async function refreshCandidateViews() {
+  await Promise.all([loadCandidates(), refreshInlineSuggestions(), refreshStatus()]);
+}
+function candidateCard(c) {
+  const card = node('article', undefined, `candidate${c.priority === 'high' ? ' high-priority' : ''}`);
+  const title = node('h3'); title.append(document.createTextNode(c.key));
+  if (c.priority === 'high') title.append(node('span', 'Correction', 'priority-badge'));
+  card.append(title, node('p', `${c.category} · ${c.scope} · based on revision ${c.expected_revision}`, 'muted'), node('p', `Previously: ${c.old_value ?? 'Not remembered'}`), node('p', `Proposed: ${c.value}`), node('blockquote', c.evidence?.quote || 'Legacy import: original evidence is unavailable.'));
+  const controls = node('div', undefined, 'row');
+  const setDisabled = value => { for (const button of controls.querySelectorAll('button')) button.disabled = value; };
+  const resolve = async confirm => {
+    setDisabled(true);
+    try { const out = await api('/memory/confirm', { confirmation_id: c.id, confirm, scope: c.scope }); notice(confirm ? `Memory ${out.status}.` : 'Suggestion dismissed.'); await refreshCandidateViews(); }
+    catch (error) { notice(error.message, true); setDisabled(false); }
+  };
+  const save = node('button', 'Save'); save.type = 'button'; save.addEventListener('click', () => resolve(true));
+  const edit = node('button', 'Edit', 'secondary'); edit.type = 'button'; edit.addEventListener('click', () => {
+    if (card.querySelector('.candidate-editor')) return;
+    const form = node('form', undefined, 'candidate-editor'); const label = node('label', 'Edit proposed memory'); const textarea = node('textarea'); textarea.value = c.value; textarea.maxLength = 1000; textarea.required = true;
+    const actions = node('div', undefined, 'row'); const apply = node('button', 'Apply edit'); apply.type = 'submit'; const cancel = node('button', 'Cancel', 'secondary'); cancel.type = 'button'; cancel.addEventListener('click', () => form.remove()); actions.append(apply, cancel); form.append(label, textarea, actions);
+    form.addEventListener('submit', async event => { event.preventDefault(); apply.disabled = true; cancel.disabled = true; try { await api(`/memory/candidates/${encodeURIComponent(c.id)}/edit`, { value: textarea.value, scope: c.scope }); notice('Suggestion edited. Review it before saving.'); await refreshCandidateViews(); } catch (error) { notice(error.message, true); apply.disabled = false; cancel.disabled = false; } });
+    card.append(form); textarea.focus();
+  });
+  const dismiss = node('button', 'Dismiss', 'secondary'); dismiss.type = 'button'; dismiss.addEventListener('click', () => resolve(false));
+  controls.append(save, edit, dismiss); card.append(controls); return card;
+}
 async function loadCandidates() {
-  const myEpoch = epoch; const data = await api(`/memory/candidates?scope=${encodeURIComponent(scope)}`);
+  const myEpoch = epoch; const data = await api(`/memory/candidates?scope=${encodeURIComponent(scope)}&imports_only=true`);
   if (!token || myEpoch !== epoch) return;
   $('candidates').replaceChildren();
-  if (!data.candidates.length) $('candidates').append(node('p', 'No pending suggestions in this scope. Extraction runs in the background; refresh after jobs finish.', 'empty'));
-  for (const c of data.candidates) {
-    const card = node('article', undefined, 'candidate'); card.append(node('h3', c.key), node('p', `${c.category} · ${c.scope} · based on revision ${c.expected_revision}`, 'muted'), node('p', `Previously: ${c.old_value ?? 'Not remembered'}`), node('p', `Proposed: ${c.value}`), node('blockquote', c.evidence?.quote || 'Legacy import: original evidence is unavailable.'));
-    const controls = node('div', undefined, 'row');
-    for (const [label, confirm] of [['Approve memory', true], ['Reject', false]]) {
-      const button = node('button', label, confirm ? '' : 'secondary'); button.type = 'button';
-      button.addEventListener('click', async () => {
-        for (const b of controls.querySelectorAll('button')) b.disabled = true;
-        try { const out = await api('/memory/confirm', { confirmation_id: c.id, confirm, scope: c.scope }); notice(`Memory ${out.status}.`); await loadCandidates(); await refreshStatus(); }
-        catch (error) { notice(error.message, true); for (const b of controls.querySelectorAll('button')) b.disabled = false; }
-      }); controls.append(button);
-    }
-    card.append(controls); $('candidates').append(card);
+  if (!data.candidates.length) $('candidates').append(node('p', 'No pending suggestions from transcript imports in this scope.', 'empty'));
+  for (const candidate of data.candidates) $('candidates').append(candidateCard(candidate));
+}
+async function refreshInlineSuggestions() {
+  const trays = [...document.querySelectorAll('.suggestion-tray[data-request-id]')]; if (!trays.length || !token) return;
+  const myEpoch = epoch; const data = await api(`/memory/candidates?scope=${encodeURIComponent(scope)}&chat_only=true`); if (!token || myEpoch !== epoch) return;
+  const grouped = new Map();
+  for (const candidate of data.candidates) { if (!candidate.request_id) continue; const list = grouped.get(candidate.request_id) || []; list.push(candidate); grouped.set(candidate.request_id, list); }
+  for (const tray of trays) {
+    const candidates = grouped.get(tray.dataset.requestId) || []; tray.replaceChildren(); tray.hidden = !candidates.length;
+    if (candidates.length) { tray.append(node('strong', 'Suggested memories from this turn')); for (const candidate of candidates) tray.append(candidateCard(candidate)); }
   }
 }
 async function loadJobs() {
@@ -256,7 +282,7 @@ for (const tab of document.querySelectorAll('[data-view]')) tab.addEventListener
   for (const t of document.querySelectorAll('[data-view]')) { const active = t === tab; t.classList.toggle('active', active); t.setAttribute('aria-pressed', String(active)); $(`view-${t.dataset.view}`).hidden = !active; }
   try { if (tab.dataset.view === 'memory') await loadCandidates(); if (tab.dataset.view === 'imports') await loadJobs(); if (tab.dataset.view === 'settings') { const data = await api('/config'); $('mainmodel').value = data.main || ''; $('extractmodel').value = data.extraction || ''; } } catch (error) { notice(error.message, true); }
 });
-setInterval(() => { if (token && !document.hidden) refreshStatus().catch(() => {}); }, 5000);
+setInterval(() => { if (token && !document.hidden) { refreshStatus().catch(() => {}); refreshInlineSuggestions().catch(() => {}); } }, 5000);
 
 // P1-T13: the agent activity view reads the recorded rows; the durable receipt remains the
 // source of truth, while these read-only endpoints make the current turn visible between model

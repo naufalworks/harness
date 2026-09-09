@@ -3,7 +3,7 @@
 ## Admission and generation
 `POST /chat/submit` accepts `{prompt, session_id?, request_id?, scope?, model?}` using the existing UUID/length/scope/auth/Origin validation. The browser always supplies stable IDs. A receipt (HTTP 202 for pending work, 200 for terminal replay) is returned only after sanitized message, receipt, outbox intent and capture event commit under SQLite WAL + synchronous=FULL. IDs are not authorization secrets; every endpoint requires authentication.
 
-A background serial worker claims captured turns, builds a deterministic initial window with independent budgets for system rules, tools, future skills/repo/compaction slots, active scoped FTS5 recall, plan, recent completed turns and the current message, then commits the exact prepared message/tool arrays plus the included/excluded byte ledger before calling the provider. A frontend disconnect has no ownership over this worker. One unresolved generation per session preserves pair ordering. Up to 100 outstanding generations globally; 1000 outstanding extraction jobs, with deferred recording outbox intents independent of that cap.
+A background serial worker claims captured turns, builds a deterministic initial window with independent budgets for system rules, tools, future skills, a scoped ≤8 KiB repository map, active scoped hybrid recall, plan, prior compacted history, recent completed turns and the current message, then commits the exact prepared message/tool arrays plus the included/excluded byte ledger before calling the provider. Old current-turn tool bodies compact only in later provider windows; a 70%-token turn compaction is a separate durable step and cannot rewrite the initial receipt. A frontend disconnect has no ownership over this worker. One unresolved generation per session preserves pair ordering. Up to 100 outstanding generations globally; 1000 outstanding extraction jobs, with deferred recording outbox intents independent of that cap.
 
 `POST /chat` remains a compatibility helper: wait about five seconds for a terminal result; otherwise return 202 + receipt. Clients MUST handle 202 and poll. This is a documented behavior change from the old blocking endpoint, not full legacy compatibility.
 
@@ -12,6 +12,8 @@ A background serial worker claims captured turns, builds a deterministic initial
 - `GET /chat/requests/{request_id}/context`: above plus event timeline, exact first-call message/tool arrays, included memory snapshots, and all nine category ledgers. Reference data only; not model-private reasoning or proof of provider delivery.
 - `GET /sessions/{id}/messages?before_seq=N`: up to 100 chronological messages, `has_more`, `next_before_seq`.
 - `GET /sessions?before_seq=N`: up to 50 most-recent sessions with saved title excerpt and message count. Keyset paging is not a frozen snapshot; concurrently updated sessions can move toward the newest page—refresh newest to see them.
+- `GET /memory/candidates?scope=&request_id=|chat_only=true|imports_only=true`: pending review candidates, filtered so inline chat suggestions and the import Inbox do not duplicate each other.
+- `POST /memory/candidates/{id}/edit`: revalidates and edits a still-pending value in the named scope; evidence/category/revision are unchanged. Save/Dismiss continue through `/memory/confirm`.
 
 ## State machine
 `captured → generating → complete | failed | interrupted`
@@ -25,7 +27,7 @@ A background serial worker claims captured turns, builds a deterministic initial
 Same ID + same sanitized request signature returns current receipt, including terminal failures. Different signature or reused old-message ID → 409. Signature binds session, scope, sanitized prompt, requested model override and redaction flag. It intentionally does not hash raw secret-bearing input. Different raw inputs redacted to identical text can compare equal for the SAME caller-supplied ID. A changed default model does not invalidate an existing submission.
 
 ## Memory independence
-The outbox is created at capture and dispatches only terminal turns. Even a failed provider turn can yield candidate suggestions based on its saved user message. Outbox insert into jobs + linking receipt + event commit atomically. If the queue is full, the intent remains deferred; if dispatch fails, it retries later. No auto-activation was added.
+The outbox is created at capture and dispatches only terminal turns. Even a failed provider turn can yield candidate suggestions based on its saved user message. Live jobs contain the exact user event plus separately labelled current-plan context; only an exact substring of the user event may be evidence. Corrections are deterministically high priority and decisions remain pending review. Outbox insert into jobs + linking receipt + event commit atomically. If the queue is full, the intent remains deferred; if dispatch fails, it retries later. No auto-activation was added.
 
 Legacy v1 messages are preserved without invented context receipts. Inherited v1 pending messages are marked failed on restart. The old memory importer still creates v1 schema output, upgraded additively on a successful v2 startup.
 

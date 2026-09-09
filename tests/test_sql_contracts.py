@@ -8,7 +8,7 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'scripts'))
 from backup import backup
 from migrate_legacy import migrate
-SCHEMA=(ROOT/'migrations/001_core.sql').read_text()
+MIGRATIONS=['001_core.sql','002_recording.sql','003_agentic.sql','004_memory_kinds.sql']
 RUST=(ROOT/'src/storage.rs').read_text()
 def sql_start(prefix):
     for raw in re.findall(r'(?:tx|c)\.execute\("((?:[^"\\]|\\.)*)"',RUST):
@@ -18,10 +18,17 @@ def sql_start(prefix):
 UPSERT=sql_start('INSERT INTO memories(')
 REVISION=sql_start('INSERT INTO memory_revisions(')
 APPROVE=sql_start("UPDATE candidates SET status='approved'")
-RECALL=re.search(r'c\.prepare\("(SELECT m.id,m.scope.*?)"\)',RUST).group(1)
+def prepared_start(prefix):
+    for raw in re.findall(r'(?:tx|c)\.prepare\("((?:[^"\\]|\\.)*)"',RUST):
+        sql=json.loads('"'+raw+'"')
+        if sql.startswith(prefix):return sql
+    raise AssertionError('prepared SQL not found: '+prefix)
+RECALL=prepared_start('SELECT m.id,m.scope,m.key,m.value')
 
 def connect(path=':memory:'):
-    c=sqlite3.connect(path,isolation_level=None,timeout=5);c.execute('PRAGMA foreign_keys=ON');c.executescript(SCHEMA);return c
+    c=sqlite3.connect(path,isolation_level=None,timeout=5);c.execute('PRAGMA foreign_keys=ON')
+    for name in MIGRATIONS:c.executescript((ROOT/'migrations'/name).read_text())
+    return c
 
 def proposal(c,identifier='p1',scope='global',key='language',value='Rust',revision=0,source='s1'):
     c.execute("INSERT INTO candidates(id,scope,key,value,category,source_id,evidence,expected_revision,status,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?,'pending','2026-09-08',?)",(identifier,scope,key,value,'preference',source,json.dumps({'quote':'I prefer '+value}),revision,int(time.time())+3600))
@@ -48,7 +55,7 @@ class Contracts(unittest.TestCase):
     def setUp(self):self.c=connect()
     def tearDown(self):self.c.close()
     def test_schema_version_and_integrity(self):
-        self.assertEqual(self.c.execute('PRAGMA user_version').fetchone()[0],1);self.assertEqual(self.c.execute('PRAGMA integrity_check').fetchone()[0],'ok')
+        self.assertEqual(self.c.execute('PRAGMA user_version').fetchone()[0],4);self.assertEqual(self.c.execute('PRAGMA integrity_check').fetchone()[0],'ok')
     def test_candidates_do_not_become_active(self):
         proposal(self.c);self.assertEqual(self.c.execute('SELECT count(*) FROM memories').fetchone()[0],0)
     def test_sensitive_category_is_rejected_by_schema(self):

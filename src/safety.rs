@@ -50,7 +50,7 @@ pub fn validate_fact(key: &str, value: &str, category: &str) -> Result<()> {
     if value.trim().is_empty() || value.chars().count() > 1000 || value.len() > 4000 {
         bail!("invalid memory value");
     }
-    if !["preference","fact","project","rule","skill"].contains(&category) || sensitive(key) || sensitive(value) {
+    if !["preference","fact","project","rule","skill","decision","episodic","procedural"].contains(&category) || sensitive(key) || sensitive(value) {
         bail!("sensitive or unsupported memory category");
     }
     Ok(())
@@ -66,6 +66,14 @@ pub fn fts_query(input: &str) -> String {
         if words.len() == 24 { break; }
     }
     words.iter().map(|w| format!("\"{w}\"")).collect::<Vec<_>>().join(" OR ")
+}
+
+/// Explicit user language that retracts or replaces a prior choice. This only changes review
+/// priority; exact user evidence and human approval remain mandatory.
+pub fn is_correction(input:&str)->bool{
+    let text=input.trim().to_lowercase();
+    ["no ","no,","no.","actually ","correction:","instead ","rather ","don't ","do not ","not that"].iter().any(|prefix|text.starts_with(prefix))
+        || ((text.starts_with("use ") || text.contains(" use ")) && text.contains(" instead"))
 }
 
 #[cfg(test)]
@@ -87,5 +95,9 @@ mod tests {
     #[test] fn credentials_cannot_be_facts() {
         assert!(validate_fact("api_key","synthetic","fact").is_err());
         assert!(validate_fact("editor","Rust","preference").is_ok());
+    }
+    #[test] fn extraction_corrections_are_detected_without_fuzzy_guessing() {
+        for text in ["No, use SQLite", "Actually use Rust", "Use Postgres instead"] {assert!(is_correction(text),"{text}");}
+        for text in ["I use SQLite", "This is not that large"] {assert!(!is_correction(text),"{text}");}
     }
 }

@@ -11,7 +11,7 @@ class Provider(BaseHTTPRequestHandler):
     def do_POST(self):
         body=json.loads(self.rfile.read(int(self.headers['Content-Length'])));requests.append(body)
         if body['messages'][0]['content'].startswith('Extract at most'):
-            events=json.loads(body['messages'][-1]['content']);text='[]'
+            payload=json.loads(body['messages'][-1]['content']);events=payload.get('evidence_events',payload) if isinstance(payload,dict) else payload;text='[]'
             for event in events:
                 if 'I prefer Rust' in event['content']:
                     text=json.dumps([{'key':'language','value':'Rust','category':'preference','evidence_id':event['id'],'quote':'I prefer Rust'}]);break
@@ -58,6 +58,12 @@ def main():
             else:raise AssertionError('No memory proposal created')
             assert call('/memory/status')[1]['active_memories']==0
             proposal=inbox[0]['id']
+            assert inbox[0]['request_id']==first['request_id']
+            assert call('/memory/candidates?scope=project-a&imports_only=true')[1]['candidates']==[]
+            assert call('/memory/candidates?scope=project-a&imports_only=true&chat_only=true')[0]==400
+            assert call(f'/memory/candidates/{proposal}/edit',{'value':'Rust systems','scope':'project-a'})[0]==200
+            edited=call(f"/memory/candidates?scope=project-a&request_id={first['request_id']}&chat_only=true")[1]['candidates'][0]
+            assert edited['value']=='Rust systems' and edited['evidence']['edited'] is True
             assert call('/memory/confirm',{'confirmation_id':proposal,'scope':'wrong','confirm':True})[0]==404
             assert call('/memory/confirm',{'confirmation_id':proposal,'scope':'project-a','confirm':True})[0]==200
             assert call('/memory/confirm',{'confirmation_id':proposal,'scope':'project-a','confirm':False})[0]==409
@@ -73,7 +79,7 @@ def main():
             assert call('/memory/ingest',{'path':'/unapproved/path'})[0] in (400,422)
             code,redacted=call('/chat',{'prompt':'api_key=synthetic-value','scope':'secret-test'});assert code==200 and redacted['redacted']
             assert all('synthetic-value' not in json.dumps(r) for r in requests)
-            print('PASS: authenticated API, origin protection, approval, scope, multi-turn recall, idempotent ingestion, path rejection, provider redaction')
+            print('PASS: authenticated API, origin protection, candidate filtering/editing, approval, scope, multi-turn recall, idempotent ingestion, path rejection, provider redaction')
         finally:
             app.terminate()
             try:app.wait(timeout=5)

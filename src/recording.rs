@@ -164,12 +164,18 @@ impl DbStore {
             let queued:i64=tx.query_row("SELECT count(*) FROM jobs WHERE status IN ('pending','running')",[],|r|r.get(0))?;
             let capacity=(1000-queued).clamp(0,32);
             let rows={
-                let mut stmt=tx.prepare("SELECT o.request_id,r.scope,m.content FROM recording_outbox o JOIN chat_receipts r ON r.request_id=o.request_id JOIN messages m ON m.id=o.request_id WHERE o.job_id IS NULL AND r.state IN ('complete','failed','interrupted') ORDER BY m.seq LIMIT ?1")?;
-                let rows=stmt.query_map([capacity],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?; rows
+                let mut stmt=tx.prepare("SELECT o.request_id,r.scope,r.session_id,m.content FROM recording_outbox o JOIN chat_receipts r ON r.request_id=o.request_id JOIN messages m ON m.id=o.request_id WHERE o.job_id IS NULL AND r.state IN ('complete','failed','interrupted') ORDER BY m.seq LIMIT ?1")?;
+                let rows=stmt.query_map([capacity],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?)))?.collect::<rusqlite::Result<Vec<_>>>()?; rows
             };
-            for (request,scope,prompt) in &rows {
+            for (request,scope,session,prompt) in &rows {
                 let job=uid();let source=format!("chat:{request}");let stamp=now();
-                let events=vec![Event{id:request.clone(),role:"user".into(),content:prompt.clone()}];
+                let plan={
+                    let mut stmt=tx.prepare("SELECT seq,status,text FROM plan_items WHERE session_id=?1 ORDER BY seq")?;
+                    let collected=stmt.query_map([session],|r|Ok(json!({"seq":r.get::<_,i64>(0)?,"status":r.get::<_,String>(1)?,"text":r.get::<_,String>(2)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
+                    collected
+                };
+                let mut events=vec![Event{id:request.clone(),role:"user".into(),content:prompt.clone()}];
+                if !plan.is_empty(){events.push(Event{id:format!("plan:{request}"),role:"plan".into(),content:serde_json::to_string(&plan)?});}
                 tx.execute(sql::ENQUEUE,params![job,source,scope,source,serde_json::to_string(&events)?,chrono::Utc::now().timestamp(),stamp])?;
                 if tx.execute(sql::LINK_JOB,params![request,job])?!=1 {bail!("outbox already dispatched");}
                 tx.execute(sql::EVENT,params![request,"extraction_queued",stamp])?;
@@ -210,6 +216,12 @@ pub(crate) async fn generate(store:&DbStore,agents:&MemoryAgents,turn:Generation
         Ok(found)=>found.unwrap_or_else(||ScopeConfig::blank(&turn.scope)),
         Err(_)=>return store.fail_recording(turn.request,"context_failed").await,
     };
+    let repo_parts=if let Some(root)=scope.root_path.clone() {
+        match tokio::task::spawn_blocking(move||crate::repo_map::load_or_refresh(std::path::Path::new(&root))).await {
+            Ok(Ok(map))=>vec![context::NamedPart{id:map.id,text:map.text}],
+            _=>return store.fail_recording(turn.request,"context_failed").await,
+        }
+    } else {Vec::new()};
     let plan=match store.plan(turn.session.clone()).await {
         Ok(plan)=>plan,Err(_)=>return store.fail_recording(turn.request,"context_failed").await,
     };
@@ -222,8 +234,9 @@ pub(crate) async fn generate(store:&DbStore,agents:&MemoryAgents,turn:Generation
     if user_message.id!=turn.request {
         return store.fail_recording(turn.request,"context_failed").await;
     }
+    let sources=context::Sources{repo_map:repo_parts,..context::Sources::default()};
     let built=match context::build(context::BuildInput {scope:&scope,tools:&offered_tools,
-        sources:&context::Sources::default(),memories:&recalled,plan:&plan,recent_steps,user_message,
+        sources:&sources,memories:&recalled,plan:&plan,recent_steps,user_message,
         budgets:context::Budgets::default()}) {
         Ok(window)=>window,Err(_)=>return store.fail_recording(turn.request,"context_failed").await,
     };

@@ -32,24 +32,24 @@ A single chat mutex rejects concurrent chat requests with a conflict response. T
 
 Only user quotes qualify as extraction evidence. Types, sizes, categories, sensitivity and quote membership are validated before candidate insertion. A model can still misinterpret a correct quote, so every candidate requires review.
 
-Candidates have a 30-day expiry and an expected memory revision. One immediate transaction checks scope/status/expiry/revision, writes the current value and immutable revision, and resolves approval. Rejection never writes active memory. Conflicts are retained as conflict records instead of silently rebasing to a new value. Conflict editing/reproposal UI is backlog work.
+Candidates have a 30-day expiry and an expected memory revision. One immediate transaction checks scope/status/expiry/revision, writes the current value and immutable revision, and resolves approval. Rejection never writes active memory. Pending candidates may be edited after the replacement value is revalidated; evidence, category and expected revision stay fixed. Conflicts are retained instead of silently rebasing.
 
-No extraction call can directly activate or overwrite a memory. Legacy imports start in a separate review scope with explicitly unknown provenance. The old confidence value is not treated as approval or a calibrated probability.
+No extraction call can directly activate or overwrite a memory. Chat candidates are associated with their request and shown inline; the Inbox filters to imports/backlog. Legacy imports retain explicitly unknown provenance. The old confidence value is not treated as approval or a calibrated probability.
 
 ## Recall
 
-FTS5 token matching includes short words and punctuation normalization, unlike the old substring prefilter. Search matches approved active heads in the requested scope and global scope. A project-specific active key suppresses its global counterpart. BM25 ranks candidates; deterministic byte/count budgets limit injected evidence.
+Recall lazily persists 256-dimensional normalized vectors from the bundled deterministic `harness-local-hash-v1` word/character/bigram feature hasher. It requires no network, model download, native runtime or provider call. Each vector is keyed by model and memory content hash, so stale values refresh before ranking.
 
-The output contains record identity, revision, scope and source evidence. It is supplied as untrusted reference data under fixed system policy; approval does not turn source instructions into system authority. No tools are executed by this release. This reduces a risky path, but prompt injection resistance is not proven solely by delimiting data.
+Retrieval unions FTS5 top 20 with cosine top 20, then deterministically reranks by lexical position, cosine score, project scope, recency and prior usefulness. A project-specific active key suppresses its global counterpart. At most 20 snapshots and 6,000 serialized bytes are returned; sensitive values are skipped. Record identity, revision, scope and evidence remain untrusted reference data under fixed system policy.
 
-No semantic synonym expansion, episode/archive search, global profile pinning, reranking model, graph traversal or persisted retrieval traces is provided yet. Evaluate those changes using task-success and stale-memory baselines before adding infrastructure.
+The local feature hasher improves spelling/morphology overlap but is not a semantic language model and makes no synonym-quality claim. Episode/archive search, global profile pinning, graph traversal and full persisted retrieval traces remain future work.
 
 ## Durable extraction
 
 A source and all chunk jobs are inserted in one transaction. Idempotency is per original-content hash, explicit format selection, scope and parser version. Accepted jobs survive crashes; running jobs reset on a single-process restart. Candidate insertion and job completion are atomic, with source-scoped uniqueness for retries. Provider calls themselves are at-least-once across crashes and may be charged more than once.
 
-The single worker processes up to 1,000 outstanding jobs with a 45-second provider limit and up to three attempts. A failed job can be retried in the UI. Invalid model output is a failed job, not a successful extraction of zero memories. Disk/storage errors during job-state recovery are logged and can require restart/operator intervention.
+The single worker processes up to 1,000 outstanding jobs with a 45-second provider limit and up to three attempts. Live extraction sends exact user events as evidence plus separately labelled, untrusted current-plan context. Plan/assistant/tool text cannot be cited. Explicit corrections are deterministically marked high priority, and decisions/procedures remain review-only. A failed job can be retried in the UI. Invalid model output is a failed job, not a successful extraction of zero memories.
 
 ## Compatibility
 
-This is a text-only custom service. The upstream wire format is OpenAI-style, but the public API is not a standards-compatible OpenAI proxy. Tool calls are explicitly rejected. A future compatibility adapter must preserve complete messages, tool-call IDs/results, cancellation, streaming completion markers, and provider-specific errors without fabricating success.
+This is a custom service, not a standards-compatible OpenAI proxy. The main-agent adapter supports OpenAI-style function tool calls and records complete assistant/tool replay. Extraction and compaction roles are deliberately text-only and reject tool calls. Provider-specific errors and unsupported-tool fallback never fabricate success.
