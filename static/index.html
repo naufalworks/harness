@@ -2,21 +2,214 @@
 <html lang="en">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Harness</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
 <body>
-<div class="shell">
-<header><div><p class="eyebrow">LOCAL-FIRST · PRIVATE BY DEFAULT</p><h1>Harness</h1><p class="muted">Just chat — Harness quietly keeps track of what matters for next time.</p></div><span id="connection" class="badge">Locked</span></header>
-<section id="auth" class="panel"><h2>Connect to your local harness</h2><p class="muted">Enter your local access token. It stays in this tab only and is cleared on reload.</p><form id="authform"><label for="token">Access token</label><div class="row"><input id="token" type="password" required autocomplete="off" placeholder="Local access token"><button type="submit">Connect</button></div></form></section>
+<div class="app">
+
+<section id="auth" class="authscreen">
+  <div class="authcard">
+    <div class="mark" aria-hidden="true">h</div>
+    <h1>harness</h1>
+    <p class="muted">Local-first · private by default. Enter your local access token — it stays in this tab only and is cleared on reload.</p>
+    <form id="authform">
+      <label for="token">Access token</label>
+      <div class="row">
+        <input id="token" type="password" required autocomplete="off" placeholder="Local access token">
+        <button type="submit">Connect</button>
+      </div>
+    </form>
+  </div>
+</section>
+
 <p id="notice" role="status" aria-live="polite"></p>
+
 <div id="workspace" hidden>
-<section class="toolbar"><label for="scope">Project scope</label><input id="scope" value="global" maxlength="80" list="scopelist" aria-describedby="scopehint"><datalist id="scopelist"></datalist><button id="newchat" class="secondary" type="button">New conversation</button><button id="lock" class="secondary" type="button">Lock</button><p id="scopehint" class="muted">Start a new conversation to apply a changed scope. A scope with no project root can talk, but has no file or command tools.</p></section>
-<details id="sessionhistory"><summary>History · Reopen a conversation</summary><div id="sessionlist"></div><button id="oldersessions" class="secondary" type="button" hidden>Older conversations</button></details>
-<nav aria-label="Workspace views"><button class="tab active" data-view="chat" type="button" aria-pressed="true">Conversation</button><button class="tab" data-view="memory" type="button" aria-pressed="false">Memory <span id="pending">0</span></button><button class="tab" data-view="imports" type="button" aria-pressed="false">Imports & jobs</button><button class="tab" data-view="settings" type="button" aria-pressed="false">Project & models</button></nav>
-<section id="view-chat"><div class="sectionhead"><h2>Chat</h2><span class="recording-label muted" id="capturestatus" role="status"></span></div><p class="privacy">Chats are saved on this device as you go. When Harness spots something worth remembering, it asks for your OK in the Memory tab first — nothing is remembered without you.</p>
-<section id="setup-banner" class="panel setup-banner" hidden><h2>Tools are off in this scope</h2><p id="setup-banner-text" class="muted"></p><button id="setup-open" class="secondary" type="button">Set a project root</button></section>
-<section id="agent-turn" class="agent-panel" hidden aria-live="polite"><div class="agent-panel-head"><div><p class="eyebrow">TURN RECORD</p><h2>Agent activity</h2></div><span id="agent-turn-status" class="badge">Saved</span></div><section id="agent-permission" class="permission-card" hidden><div class="permission-title">Awaiting your approval</div><p id="permission-summary"></p><pre id="permission-detail"></pre><div class="row"><button id="permission-approve" type="button">Approve</button><button id="permission-deny" class="secondary" type="button">Deny</button></div></section><section id="agent-plan" class="plan-strip" hidden><div class="subhead"><strong>Plan</strong><span id="plan-count" class="muted"></span></div><div id="plan-items"></div></section><section id="agent-steps" class="steps-panel" hidden><div class="subhead"><strong>Steps</strong><span id="steps-count" class="muted"></span></div><div id="steps-list"></div></section></section>
-<button id="oldermessages" class="secondary" type="button" hidden>Load earlier messages</button><div id="log" aria-live="polite"><p class="empty">Say hi to get started. Harness keeps up with the conversation and remembers what matters.</p></div><form id="chatform"><label for="prompt">Your message</label><textarea id="prompt" rows="3" maxlength="16000" placeholder="What are we working on?" required></textarea><div class="row end"><span class="muted">Your messages are saved on this device as you chat.</span><div class="send-actions"><button id="checkrecording" class="secondary" type="button" hidden>Check status</button><button id="leavepending" class="secondary" type="button" hidden>Leave for later</button><button id="retryrequest" class="secondary" type="button" hidden>Retry same message</button><button id="send" type="submit">Send message</button></div></div></form><details id="recalltrace" hidden><summary>Context used for this answer</summary><div id="recalled"></div></details></section>
-<section id="view-memory" hidden><div class="sectionhead"><h2>Review before remembering</h2><button id="refreshmemory" class="secondary" type="button">Refresh inbox</button></div><p class="muted">Imports never activate memories automatically. Check the proposed value and its evidence. Approval may replace an existing value in this scope; a newer revision blocks stale approval.</p><div id="candidates"><p class="empty">No pending suggestions in this scope.</p></div></section>
-<section id="view-imports" hidden><h2>Bring a conversation with you</h2><p class="muted">Upload a transcript—not a server-side path. Sanitized source text is retained locally. Every normalized chunk is queued for provider extraction.</p><form id="importform" class="panel"><label for="file">Transcript file · up to 1 MiB</label><input id="file" type="file" accept=".jsonl,.md,.txt" required><label for="format">Source format</label><select id="format"><option value="">Detect automatically</option><option value="claude">Claude Code</option><option value="codex">Codex</option><option value="omp">OMP</option><option value="junie">Junie</option></select><label class="check"><input id="consent" type="checkbox" required> I understand sanitized user messages will be sent to the configured provider for extraction.</label><button type="submit" id="importbutton">Queue import</button></form><div class="sectionhead"><h2>Processing jobs</h2><button id="refreshjobs" class="secondary" type="button">Refresh jobs</button></div><div id="jobs"><p class="empty">No processing jobs yet.</p></div></section>
-<section id="view-settings" hidden><h2>Project & models</h2><p class="muted">The main model answers. The extraction model proposes memories. Recall uses local FTS5 search—no extra recall model call.</p><form id="settingsform" class="panel"><label for="mainmodel">Main model</label><input id="mainmodel" maxlength="128" placeholder="Use server default"><label for="extractmodel">Extraction model</label><input id="extractmodel" maxlength="128" placeholder="Use server default"><button type="submit">Save models</button></form><form id="projectform" class="panel project-settings"><h2>Project scope settings</h2><p class="muted">Tools stay disabled until this scope has a valid project root.</p><label for="rootpath">Root path</label><input id="rootpath" maxlength="4096" placeholder="/absolute/path/to/project"><label for="permissionmode">Permission mode</label><select id="permissionmode"><option value="ask">Ask before side effects</option><option value="auto_edit">Auto-approve edits, ask for commands</option><option value="auto_all">Auto-approve all allowed tools</option></select><label for="diagnosticscmd">Diagnostics command</label><input id="diagnosticscmd" maxlength="512" placeholder="Optional, for example cargo check -q"><div class="settings-grid"><div><label for="maxsteps">Max steps</label><input id="maxsteps" type="number" min="1" max="500"></div><div><label for="maxtoolbytes">Max tool output bytes</label><input id="maxtoolbytes" type="number" min="1024" max="50000000"></div><div><label for="maxwallseconds">Max wall time (seconds)</label><input id="maxwallseconds" type="number" min="10" max="86400"></div></div><button type="submit">Save project settings</button></form><button id="loadmodels" class="secondary" type="button">Show provider model names</button><pre id="modelnames"></pre></section>
-<footer><span id="stats">Local only</span><span>Single user · one local process</span></footer>
-</div></div>
-</body></html>
+  <header class="topbar">
+    <button id="navtoggle" class="iconbtn" type="button" title="Toggle navigation" aria-label="Toggle navigation"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M2 4h12M2 8h12M2 12h12"/></svg></button>
+    <div class="brand"><span class="mark sm" aria-hidden="true">h</span><span class="brandname">harness</span></div>
+    <div class="spacer"></div>
+    <button id="newchat" class="chipbtn" type="button"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg><span>New chat</span></button>
+    <button id="railbtn" class="iconbtn" type="button" title="Toggle agent activity panel" aria-label="Toggle agent activity panel"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="2" y="3" width="12" height="10" rx="2"/><path d="M10 3v10"/></svg></button>
+    <button id="themebtn" class="iconbtn" type="button" title="Toggle light / dark theme" aria-label="Toggle light or dark theme"><svg class="moon" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13.5 9.5A5.5 5.5 0 0 1 6.5 2.5a5.5 5.5 0 1 0 7 7z"/></svg><svg class="sun" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="8" cy="8" r="3"/><path d="M8 1.5v1.5M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1 1M11.6 11.6l1 1M12.6 3.4l-1 1M4.4 11.6l-1 1"/></svg></button>
+    <button id="lock" class="iconbtn" type="button" title="Lock — clears the token from this tab" aria-label="Lock"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="3.5" y="7" width="9" height="6.5" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/></svg></button>
+    <span id="connection" class="badge">Locked</span>
+  </header>
+
+  <div class="bodywrap">
+    <aside id="sidebar">
+      <div class="sideblock">
+        <label for="scope" class="sidehead">Project scope</label>
+        <input id="scope" value="global" maxlength="80" list="scopelist" aria-describedby="scopehint" spellcheck="false">
+        <datalist id="scopelist"></datalist>
+        <p id="scopehint" class="muted small">Start a new conversation to apply a changed scope. A scope with no project root can talk, but has no file or command tools.</p>
+      </div>
+
+      <details id="sessionhistory">
+        <summary>Conversations</summary>
+        <div id="sessionlist"></div>
+        <button id="oldersessions" class="secondary wide" type="button" hidden>Older conversations</button>
+      </details>
+
+      <nav class="sidenav" aria-label="Workspace views">
+        <button class="tab active" data-view="chat" type="button" aria-pressed="true"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 10a1.5 1.5 0 0 1-1.5 1.5H5L2 14V3.5A1.5 1.5 0 0 1 3.5 2h9A1.5 1.5 0 0 1 14 3.5z"/></svg>Chat</button>
+        <button class="tab" data-view="memory" type="button" aria-pressed="false"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 5.5 8 2l6 3.5M2 5.5V11a1 1 0 0 0 .6.9L8 14.5l5.4-2.6a1 1 0 0 0 .6-.9V5.5M8 8.5v6"/></svg>Inbox <span id="pending" class="count">0</span></button>
+        <button class="tab" data-view="imports" type="button" aria-pressed="false"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 10V2M5 5l3-3 3 3M3 10v3.5A1.5 1.5 0 0 0 4.5 15h7a1.5 1.5 0 0 0 1.5-1.5V10"/></svg>Imports &amp; jobs</button>
+        <button class="tab" data-view="settings" type="button" aria-pressed="false"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.8v1.6M8 12.6v1.6M1.8 8h1.6M12.6 8h1.6M3.6 3.6l1.1 1.1M11.3 11.3l1.1 1.1M12.4 3.6l-1.1 1.1M4.7 11.3l-1.1 1.1"/></svg>Project &amp; models</button>
+      </nav>
+
+      <footer class="sidefoot">
+        <span id="stats">Local only</span>
+        <span class="muted small">Single user · one local process</span>
+      </footer>
+    </aside>
+    <div id="drawerbg"></div>
+
+    <main id="main">
+      <section id="view-chat" class="view chatview">
+        <div id="chatscroll">
+          <div class="chatcol">
+            <section id="setup-banner" class="setup-banner" hidden>
+              <div class="setup-text">
+                <strong>Tools are off in this scope</strong>
+                <p id="setup-banner-text" class="muted"></p>
+              </div>
+              <button id="setup-open" class="secondary" type="button">Set a project root</button>
+            </section>
+            <button id="oldermessages" class="secondary wide" type="button" hidden>Load earlier messages</button>
+            <div id="log" aria-live="polite"><p class="empty">Say hi to get started. Harness keeps up with the conversation and remembers what matters.</p></div>
+            <details id="recalltrace" hidden><summary>Context used for this answer</summary><div id="recalled"></div></details>
+          </div>
+        </div>
+        <div class="composerwrap">
+          <div class="chatcol">
+            <section id="agent-permission" class="permission-card" hidden>
+              <div class="permission-title">Awaiting your approval</div>
+              <p id="permission-summary"></p>
+              <pre id="permission-detail"></pre>
+              <div class="row actions">
+                <button id="permission-approve" type="button">Approve</button>
+                <button id="permission-deny" class="secondary" type="button">Deny</button>
+              </div>
+            </section>
+            <form id="chatform">
+              <label for="prompt" class="sr-only">Your message</label>
+              <textarea id="prompt" rows="2" maxlength="16000" placeholder="What are we working on?" required></textarea>
+              <div class="sendrow">
+                <span class="composer-meta"><span id="capturestatus" class="statusline" role="status"></span><span class="muted small footnote">Enter to send · Shift+Enter for a new line · saved on this device</span></span>
+                <div class="send-actions">
+                  <button id="checkrecording" class="secondary" type="button" hidden>Check status</button>
+                  <button id="leavepending" class="secondary" type="button" hidden>Leave for later</button>
+                  <button id="retryrequest" class="secondary" type="button" hidden>Retry same message</button>
+                  <button id="send" type="submit">Send</button>
+                </div>
+              </div>
+            </form>
+          </div>
+        </div>
+      </section>
+
+      <section id="view-memory" class="view pageview" hidden>
+        <div class="pagecol">
+          <div class="sectionhead">
+            <h2>Review before remembering</h2>
+            <button id="refreshmemory" class="secondary" type="button">Refresh inbox</button>
+          </div>
+          <p class="muted">Imports never activate memories automatically. Check the proposed value and its evidence. Approval may replace an existing value in this scope; a newer revision blocks stale approval.</p>
+          <div id="candidates"><p class="empty">No pending suggestions in this scope.</p></div>
+        </div>
+      </section>
+
+      <section id="view-imports" class="view pageview" hidden>
+        <div class="pagecol">
+          <h2>Bring a conversation with you</h2>
+          <p class="muted">Upload a transcript—not a server-side path. Sanitized source text is retained locally. Every normalized chunk is queued for provider extraction.</p>
+          <form id="importform" class="panel">
+            <label for="file">Transcript file · up to 1 MiB</label>
+            <input id="file" type="file" accept=".jsonl,.md,.txt" required>
+            <label for="format">Source format</label>
+            <select id="format">
+              <option value="">Detect automatically</option>
+              <option value="claude">Claude Code</option>
+              <option value="codex">Codex</option>
+              <option value="omp">OMP</option>
+              <option value="junie">Junie</option>
+            </select>
+            <label class="check"><input id="consent" type="checkbox" required> I understand sanitized user messages will be sent to the configured provider for extraction.</label>
+            <button type="submit" id="importbutton">Queue import</button>
+          </form>
+          <div class="sectionhead">
+            <h2>Processing jobs</h2>
+            <button id="refreshjobs" class="secondary" type="button">Refresh jobs</button>
+          </div>
+          <div id="jobs"><p class="empty">No processing jobs yet.</p></div>
+        </div>
+      </section>
+
+      <section id="view-settings" class="view pageview" hidden>
+        <div class="pagecol">
+          <h2>Project &amp; models</h2>
+          <p class="muted">The main model answers. The extraction model proposes memories. Recall uses local FTS5 search—no extra recall model call.</p>
+          <form id="settingsform" class="panel">
+            <label for="mainmodel">Main model</label>
+            <input id="mainmodel" maxlength="128" placeholder="Use server default">
+            <label for="extractmodel">Extraction model</label>
+            <input id="extractmodel" maxlength="128" placeholder="Use server default">
+            <button type="submit">Save models</button>
+          </form>
+          <form id="projectform" class="panel">
+            <h3>Project scope settings</h3>
+            <p class="muted small">Tools stay disabled until this scope has a valid project root.</p>
+            <label for="rootpath">Root path</label>
+            <input id="rootpath" maxlength="4096" placeholder="/absolute/path/to/project" spellcheck="false">
+            <label for="permissionmode">Permission mode</label>
+            <select id="permissionmode">
+              <option value="ask">Ask before side effects</option>
+              <option value="auto_edit">Auto-approve edits, ask for commands</option>
+              <option value="auto_all">Auto-approve all allowed tools</option>
+            </select>
+            <label for="diagnosticscmd">Diagnostics command</label>
+            <input id="diagnosticscmd" maxlength="512" placeholder="Optional, for example cargo check -q" spellcheck="false">
+            <div class="settings-grid">
+              <div><label for="maxsteps">Max steps</label><input id="maxsteps" type="number" min="1" max="500"></div>
+              <div><label for="maxtoolbytes">Max tool output bytes</label><input id="maxtoolbytes" type="number" min="1024" max="50000000"></div>
+              <div><label for="maxwallseconds">Max wall time (seconds)</label><input id="maxwallseconds" type="number" min="10" max="86400"></div>
+            </div>
+            <button type="submit">Save project settings</button>
+          </form>
+          <button id="loadmodels" class="secondary" type="button">Show provider model names</button>
+          <pre id="modelnames"></pre>
+        </div>
+      </section>
+    </main>
+
+    <aside id="rail" aria-label="Agent activity" hidden>
+      <section id="agent-turn" hidden aria-live="polite">
+        <div class="agent-panel-head">
+          <div>
+            <p class="eyebrow">TURN RECORD</p>
+            <h2>Agent activity</h2>
+          </div>
+          <div class="head-actions">
+            <span id="agent-turn-status" class="badge">Saved</span>
+            <button id="railclose" class="iconbtn" type="button" title="Close panel" aria-label="Close activity panel"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 3l10 10M13 3L3 13"/></svg></button>
+          </div>
+        </div>
+        <section id="agent-plan" class="plan-strip" hidden>
+          <div class="subhead"><strong>Plan</strong><span id="plan-count" class="muted"></span></div>
+          <div id="plan-items"></div>
+        </section>
+        <section id="agent-steps" class="steps-panel" hidden>
+          <div class="subhead"><strong>Steps</strong><span id="steps-count" class="muted"></span></div>
+          <div id="steps-list"></div>
+        </section>
+        <section class="context-meter">
+          <div class="subhead"><strong>Context</strong><span id="context-tokens" class="muted">—</span></div>
+          <div class="meter" aria-hidden="true"><span class="meter-fill"></span></div>
+        </section>
+      </section>
+      <p class="rail-empty muted small">No agent activity yet. Plans, running tools and approvals show up here while a turn runs.</p>
+    </aside>
+  </div>
+</div>
+
+</div>
+</body>
+</html>

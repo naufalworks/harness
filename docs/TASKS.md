@@ -180,12 +180,14 @@ Each task has: `status`, `depends`, `design` (doc section), `files` (touched),
 - verify: python3 tests/recording_integration.py
 
 ### P2-T02 · Three-pane layout and activity rail
-- status: todo
+- status: done
 - depends: P2-T01, P1-T13
 - design: docs/design/ui.md#p2-layout
 - files: static/*
 - done-when: sessions/scopes left, chat center, activity right (plan, running step with elapsed time, context meter placeholder, permission prompt); mobile collapses panes; light/dark themes ported from `reference/renewed-ui-original`.
 - verify: node --check static/app.js && node tests/ui_smoke.cjs
+- note (reorder): owner asked for a full UI redesign before P2-T01, so this runs ahead of the SSE endpoint with the existing P1-T13 polling; T01 then only swaps the transport. Owner direction (2026-09-09): terminal-flat chat (no bubbles), right activity rail, dark-first theme with a light toggle, cozy density. Scope widened from the original three-pane ticket to a full reskin of auth, chat, inbox, imports and settings under one theme. Hard constraints discovered: every element id in static/app.js and the browser suites is a contract; `<link rel="stylesheet" href="/style.css">` must stay byte-identical for tests/recording_ui.cjs snapshots; ui_smoke asserts zero horizontal overflow at 1120px and 390px in light and dark; CSP is style-src 'self' so no inline style attributes anywhere.
+- note (done): all done-when met — sidebar sessions/scopes, chat center, right rail with plan, running step with live m:ss elapsed from `started_at`, context meter placeholder showing real tokens-so-far from step receipts, permission prompt above the composer; panes collapse (sidebar drawer ≤920 px, rail overlay ≤1100 px, both toggleable); dark/light themes ported from the reference with a header toggle persisted to localStorage. verify passed: node --check + ui_smoke (14/14) + recording_ui (14/14, needed the same `/scopes` mock fix) + `bash scripts/verify_release.sh` exit 0 (83 Rust, clippy, build, 50 Python contracts, migrations, both HTTP suites). Playwright was not installed on this machine; installed `playwright-core` to /tmp/harness-qa and symlinked it as `playwright`, Chrome via CHROMIUM_PATH. Composer has no auto-grow (CSP blocks inline style); Enter-to-send added per ui.md#keyboard. Assistant markdown rendering intentionally not in this pass.
 
 ### P2-T03 · Diff cards with accept/reject and undo
 - status: todo

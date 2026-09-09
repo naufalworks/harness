@@ -17,6 +17,7 @@ const root=path.resolve(__dirname,'..'), out=path.join(root,'docs/qa');fs.mkdirS
    if(req.headers().authorization!=='Bearer fixture-token')return route.fulfill({status:401,json:{error:'Bearer token required'}});
    if(offline&&p.startsWith('/chat/requests/'))return route.abort('failed');
    if(p==='/memory/status')return route.fulfill({json:{active_memories:1,pending_confirmations:0,queued_jobs:1000,failed_jobs:0}});
+   if(p==='/scopes')return route.fulfill({json:{scopes:[{scope:'global',root_path:null,permission_mode:'ask'}]}});
    if(p==='/sessions')return route.fulfill({json:{sessions:[...records.values()].map(v=>({id:v.session_id,scope:v.scope,title:v.prompt,message_count:2})),has_more:false}});
    if(p.startsWith('/sessions/')){
     const sid=p.split('/')[2];const msgs=[];let seq=0;

@@ -18,6 +18,24 @@ Suggested first message to an AI continuing this work:
 
 ---
 
+## 2026-09-09 · AI session (Notion AI via Local) · P2-T02 full UI redesign
+
+**Why.** The owner's verdict on the P1 minimal UI: too rigid, too bland, too much chrome on the chat. They asked for a full redesign before P2-T01 and picked the direction by survey: terminal-flat chat (no bubbles, like omp/claude-code), a collapsible right activity rail, dark-first theme with a light toggle, cozy 15px density. Task was reordered ahead of P2-T01 with the owner; the rail still uses the P1-T13 polling and T01 now only swaps the transport.
+
+**Changed.**
+- `static/index.html` — new shell: topbar (nav drawer button, brand, New chat, rail toggle, theme toggle, lock, connection badge) + left sidebar (scope picker with datalist, Conversations, nav: Chat/Inbox/Imports/Settings, stats footer) + centered chat column + right `#rail` hosting `#agent-turn` (plan, steps, context placeholder). Auth is a centered card. The permission card moved out of the agent panel to sit sticky above the composer (ui.md: "impossible to miss"). Every element id referenced by app.js and the browser suites is preserved (checked programmatically, 69/69); the stylesheet link tag stays byte-identical for recording_ui snapshots.
+- `static/style.css` — full rewrite. Palette/typography ported from `reference/renewed-ui-original` into `:root` (dark default) and `:root[data-theme="light"]`; mono accents for roles/tools/timestamps. `.message` is now a flat grid row (label gutter + hairline separator), `#notice` is a floating toast (pointer-events:none so it never blocks clicks), sidebar drawer ≤920px, rail overlay ≤1100px.
+- `static/app.js` — additive shell block only: theme init/toggle (localStorage `harness_theme`; not sensitive — tokens and drafts still never persist), drawer + rail toggles, Enter-to-send with Shift+Enter newline (ui.md#keyboard). Behavior edits: session list only auto-closes in drawer mode; rail auto-opens on wide screens while a turn is active and closes when it ends; chat scroll now targets the new `#chatscroll` container (loadHistory used to scroll `#log`, which no longer scrolls); a running step's meta shows live elapsed m:ss from `started_at`, re-rendered by the existing 1s poll; the rail context line shows real tokens-so-far summed from step receipts.
+- `tests/ui_smoke.cjs`, `tests/recording_ui.cjs` — added the missing `/scopes` mock route. Pre-existing gap since P1-T15: `refreshScopeSetup()` 404'd in the mock and the auth handler re-hid the workspace, so both suites timed out at connect. The browser suites had never actually run; they pass now.
+
+**Verified.** `node --check static/app.js` OK. `node tests/ui_smoke.cjs` → passed (14 checks). `node tests/recording_ui.cjs` → passed (14 checks). `bash scripts/verify_release.sh` → exit 0 (83 Rust tests, clippy, release build, migrations 001→003, 8 schemas, 50 Python contracts, both mock-provider HTTP suites). Browser suites ran with playwright-core in /tmp/harness-qa (symlinked as `playwright`) and `CHROMIUM_PATH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"`. Screenshots in docs/qa reviewed across desktop dark/light, 820px rail overlay and 390px mobile.
+
+**Gotchas found.** (1) Playwright fullPage screenshots paint a transform-hidden fixed sidebar — the closed drawer is now `visibility:hidden` as well, which is also more robust for real renderers. (2) While QA-ing, a scope-mismatched mock made `loadHistory` refuse to render another scope's messages — the guard worked as designed; mock data just has to match the page scope. (3) CSP `style-src 'self'` forbids inline style attributes, so all presentation state moves via classes/hidden/data-theme; composer auto-grow skipped for that reason.
+
+**Open / deferred.** Assistant markdown rendering (ui.md allows in P2 with a sanitizing renderer); context budget bar fills in P3; diff cards are P2-T03. QA screenshots under emulated light scheme show dark unless the toggle is clicked — tests assert overflow/behavior, not palette.
+
+**Next.** P2-T01 SSE endpoint over `activity_events` — `refreshAgentTurn`'s 1s poll is the single call site to swap; then P2-T03 diff cards.
+
 ## 2026-09-09 · AI session (Notion AI via Local) · P1-T15 first-run project setup
 
 **Why.** The owner ran the finished P1 harness for the first time and it looked broken: in the default `global` scope the agent answered "I don't have access to a terminal or file system tools in this conversation." Nothing was broken — `global` had no `root_path`, so the loop attached zero tools exactly as P1-T04 requires. The defect was that no layer said so. The workaround was a hand-written `curl POST /scopes/myharness`, which is not a product.

@@ -83,8 +83,9 @@ async function loadHistory(older = false) {
   if (data.scope && data.scope !== scope) { notice('This conversation belongs to another scope. Reopen it from History.', true); return; }
   const fragment = document.createDocumentFragment();
   for (const m of data.messages) message(m, fragment);
-  if (older) { const top = $('log').scrollHeight; $('log').prepend(fragment); $('log').scrollTop += $('log').scrollHeight - top; }
-  else { $('log').replaceChildren(fragment); $('log').scrollTop = $('log').scrollHeight; }
+  // P2-T02: the scroll container is #chatscroll now; #log is a plain flow child of it.
+  if (older) { const top = $('chatscroll').scrollHeight; $('log').prepend(fragment); $('chatscroll').scrollTop += $('chatscroll').scrollHeight - top; }
+  else { $('log').replaceChildren(fragment); $('chatscroll').scrollTop = $('chatscroll').scrollHeight; }
   if (!data.messages.length && !older) $('log').append(node('p', 'Say hi to get started. Harness keeps up with the conversation and remembers what matters.', 'empty'));
   historyCursor = data.next_before_seq; $('oldermessages').hidden = !data.has_more;
   if (!older) {
@@ -103,7 +104,9 @@ async function loadSessions(older = false) {
     button.append(node('strong', item.title), node('span', `${item.scope} · ${item.message_count} messages`, 'muted'));
     button.addEventListener('click', async () => {
       if (busy || pending) return notice('Let the current message finish before switching conversations.', true);
-      session = item.id; scope = item.scope; epoch++; $('scope').value = scope; persistSession(); $('sessionhistory').open = false;
+      session = item.id; scope = item.scope; epoch++; $('scope').value = scope; persistSession();
+      // P2-T02: in the wide three-pane layout the sidebar stays put; only the mobile drawer closes.
+      if (window.matchMedia('(max-width: 920px)').matches) { $('sessionhistory').open = false; $('sidebar').classList.remove('open'); $('drawerbg').classList.remove('show'); }
       await loadHistory().catch(e => notice(e.message, true)); refreshScopeSetup().catch(() => {}); if (pending) await resumeRecording();
     }); $('sessionlist').append(button);
   }
@@ -266,7 +269,15 @@ function agentIcon(status) {
 }
 
 function agentMeta(step) {
-  if (step.status === 'running') return 'running';
+  if (step.status === 'running') {
+    // Elapsed time from the recorded start; the 1 s turn poll re-renders it.
+    const started = new Date(step.started_at);
+    if (!Number.isNaN(started.getTime())) {
+      const secs = Math.max(0, Math.round((Date.now() - started.getTime()) / 1000));
+      return `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
+    }
+    return 'running';
+  }
   if (step.status === 'queued') return 'queued';
   if (step.finished_at) {
     const date = new Date(step.finished_at);
@@ -356,12 +367,17 @@ async function refreshAgentTurn(receipt) {
   if (!token || requestId !== (pending?.request_id || requestId) || sessionId !== session) return;
   agentState.requestId = requestId; agentState.sessionId = sessionId; agentState.scope = turnScope;
   $('agent-turn').hidden = false;
+  // P2-T02: the turn record lives in the right rail; auto-open it on wide screens only.
+  if (!window.matchMedia('(max-width: 1100px)').matches) $('rail').hidden = false;
   $('agent-turn-status').textContent = agentStatusLabel(receipt?.state);
   renderAgentSteps(data[0].steps || []);
   renderAgentPlan(data[1]);
+  // P2 context meter placeholder: real tokens-so-far from step receipts; the budget bar lands in P3.
+  const tokens = (data[0].steps || []).reduce((sum, s) => sum + (s.tokens_in || 0) + (s.tokens_out || 0), 0);
+  $('context-tokens').textContent = tokens ? `${tokens.toLocaleString()} tokens so far` : 'meter lands in P3';
   const match = (data[2].permissions || []).find(item => item.request_id === requestId);
   renderAgentPermission(match || null);
-  if (!match && !(data[0].steps || []).length && !(data[1].items || []).length) $('agent-turn').hidden = true;
+  if (!match && !(data[0].steps || []).length && !(data[1].items || []).length) { $('agent-turn').hidden = true; $('rail').hidden = true; }
 }
 
 async function decideAgentPermission(decision) {
@@ -460,3 +476,25 @@ $('setup-open').addEventListener('click', () => {
   $('rootpath').focus();
 });
 $('scope').addEventListener('change', () => refreshScopeSetup().catch(() => {}));
+
+// P2-T02 shell: theme toggle, mobile navigation drawer, activity rail, Enter-to-send.
+// CSP is style-src 'self', so presentation state moves via classes, the hidden property
+// and data-theme on <html> — never inline style attributes. The theme choice is not
+// sensitive, so it may persist in localStorage; tokens and drafts still never persist.
+try {
+  const savedTheme = localStorage.getItem('harness_theme');
+  if (savedTheme === 'light' || savedTheme === 'dark') document.documentElement.dataset.theme = savedTheme;
+} catch { /* storage unavailable; default theme stays */ }
+$('themebtn').addEventListener('click', () => {
+  const next = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
+  document.documentElement.dataset.theme = next;
+  try { localStorage.setItem('harness_theme', next); } catch { /* ignore */ }
+});
+$('navtoggle').addEventListener('click', () => { $('sidebar').classList.toggle('open'); $('drawerbg').classList.toggle('show'); });
+$('drawerbg').addEventListener('click', () => { $('sidebar').classList.remove('open'); $('drawerbg').classList.remove('show'); });
+$('railbtn').addEventListener('click', () => { $('rail').hidden = !$('rail').hidden; });
+$('railclose').addEventListener('click', () => { $('rail').hidden = true; });
+// CLI-style composer: Enter sends, Shift+Enter keeps the newline (design: ui.md#keyboard).
+$('prompt').addEventListener('keydown', event => {
+  if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); $('chatform').requestSubmit(); }
+});

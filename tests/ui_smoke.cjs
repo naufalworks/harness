@@ -16,6 +16,7 @@ const root=path.resolve(__dirname,'..');const out=process.env.QA_DIR || path.joi
    if(req.headers().authorization!=='Bearer test-token'){return route.fulfill({status:401,json:{error:'Bearer token required'}});}
    let result={};
    if(p==='/memory/status')result={active_memories:candidate?1:2,pending_confirmations:candidate?1:0,queued_jobs:0,failed_jobs:1};
+   else if(p==='/scopes')result={scopes:[{scope:'global',root_path:null,permission_mode:'ask'}]};
    else if(p==='/sessions')result={sessions:[]};
    else if(p.startsWith('/sessions/'))result={scope:'global',messages:chatHistory,has_more:false};
    else if(p.startsWith('/chat/requests/'))result=receipt;
