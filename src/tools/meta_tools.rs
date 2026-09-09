@@ -3,7 +3,7 @@
 //!
 //! Neither is side-effecting, so neither ever waits for an approval — a scratchpad note and a
 //! plan update must not be able to stall a turn. `todo_write` validates and normalizes here and
-//! hands the result to the loop as `Artifact::Plan`; `DbStore::replace_plan` does the writing,
+//! hands the result to the loop as `Artifact::Plan`; the loop writes it while finishing the step,
 //! so tools still never touch the database.
 use serde_json::{json, Value};
 

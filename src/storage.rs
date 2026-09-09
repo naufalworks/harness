@@ -70,7 +70,7 @@ fn scope_row(r: &rusqlite::Row) -> rusqlite::Result<ScopeConfig> {
 }
 
 /// An absent field leaves the stored column alone; an explicit `null` clears it.
-/// The session plan in `seq` order. Shared by `plan` and `replace_plan` so the value the tool
+/// The session plan in `seq` order. Shared by `plan` and `write_plan` so the value the tool
 /// returns to the model is read back from the same rows the UI will show.
 fn plan_rows(c: &Connection, session_id: &str) -> Result<Value> {
     let mut stmt = c.prepare(crate::agentic_sql::PLAN_LIST)?;
@@ -79,6 +79,29 @@ fn plan_rows(c: &Connection, session_id: &str) -> Result<Value> {
         "status": r.get::<_, String>(2)?, "updated_at": r.get::<_, String>(3)?,
     })))?;
     Ok(json!({ "items": rows.collect::<rusqlite::Result<Vec<_>>>()? }))
+}
+
+/// The plan limits from docs/design/tools.md#todo_write, checked before SQLite so a CHECK
+/// failure never reaches the caller as an opaque database error.
+pub(crate) fn validate_plan(items: &[(String, String)]) -> Result<()> {
+    if items.len() > MAX_PLAN_ITEMS { bail!("a plan holds at most {MAX_PLAN_ITEMS} items"); }
+    if items.iter().any(|(text, _)| text.trim().is_empty() || text.trim().chars().count() > MAX_PLAN_TEXT) { bail!("every plan item needs 1..{MAX_PLAN_TEXT} characters of text"); }
+    if items.iter().any(|(_, status)| !PLAN_STATUSES.contains(&status.as_str())) { bail!("unknown plan item status"); }
+    if items.iter().filter(|(_, status)| status == "in_progress").count() > 1 { bail!("only one plan item may be in_progress"); }
+    Ok(())
+}
+
+/// Clear-and-insert inside the caller's transaction, returning the stored plan. The agent loop
+/// calls this while finishing the step that produced the plan, so a plan and the step that
+/// produced it become visible together or not at all.
+pub(crate) fn write_plan(c: &Connection, session_id: &str, items: &[(String, String)]) -> Result<Value> {
+    validate_plan(items)?;
+    c.execute(crate::agentic_sql::PLAN_CLEAR, [session_id])?;
+    let stamp = now();
+    for (i, (text, status)) in items.iter().enumerate() {
+        c.execute(crate::agentic_sql::PLAN_INSERT, params![uid(), session_id, i as i64 + 1, text.trim(), status, stamp])?;
+    }
+    plan_rows(c, session_id)
 }
 
 fn patch_field<'de, D, T>(d: D) -> std::result::Result<Option<Option<T>>, D::Error>
@@ -317,25 +340,6 @@ impl DbStore {
             tx.commit()?;Ok(stored)
         }).await
     }
-    /// Replace a session's plan in one transaction. `todo_write` is a whole-plan replacement, so
-    /// a half-written plan must never be observable. The limits are re-checked here because a
-    /// CHECK failure would otherwise reach the caller as an opaque database error.
-    pub async fn replace_plan(&self,session_id:String,items:Vec<(String,String)>)->Result<Value>{
-        if items.len()>MAX_PLAN_ITEMS {bail!("a plan holds at most {MAX_PLAN_ITEMS} items");}
-        if items.iter().any(|(text,_)|text.trim().is_empty()||text.trim().chars().count()>MAX_PLAN_TEXT) {bail!("every plan item needs 1..{MAX_PLAN_TEXT} characters of text");}
-        if items.iter().any(|(_,status)|!PLAN_STATUSES.contains(&status.as_str())) {bail!("unknown plan item status");}
-        if items.iter().filter(|(_,status)|status=="in_progress").count()>1 {bail!("only one plan item may be in_progress");}
-        self.run(move|c|{
-            let tx=c.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            tx.execute(crate::agentic_sql::PLAN_CLEAR,[&session_id])?;
-            let stamp=now();
-            for (i,(text,status)) in items.iter().enumerate(){
-                tx.execute(crate::agentic_sql::PLAN_INSERT,params![uid(),session_id,i as i64+1,text.trim(),status,stamp])?;
-            }
-            let stored=plan_rows(&tx,&session_id)?;
-            tx.commit()?;Ok(stored)
-        }).await
-    }
     /// The stored plan, for the `plan_updated` event and the UI's plan panel.
     pub async fn plan(&self,session_id:String)->Result<Value>{
         self.run(move|c|plan_rows(c,&session_id)).await
@@ -408,10 +412,10 @@ mod tests {
         let db = DbStore::init(":memory:").unwrap();
         db.run(|c| { c.execute("INSERT INTO sessions VALUES('s','global','now')", [])?; Ok(()) }).await.unwrap();
         assert!(db.plan("s".into()).await.unwrap()["items"].as_array().unwrap().is_empty(), "a session starts without a plan");
-        let first = db.replace_plan("s".into(), vec![("  read the failing test  ".into(), "done".into()), ("fix the anchor".into(), "in_progress".into())]).await.unwrap();
+        let first = replace(&db, vec![("  read the failing test  ".into(), "done".into()), ("fix the anchor".into(), "in_progress".into())]).await.unwrap();
         assert_eq!(first["items"][0]["text"], "read the failing test");
         assert_eq!((&first["items"][1]["seq"], &first["items"][1]["status"]), (&json!(2), &json!("in_progress")));
-        let second = db.replace_plan("s".into(), vec![("ship it".into(), "pending".into())]).await.unwrap();
+        let second = replace(&db, vec![("ship it".into(), "pending".into())]).await.unwrap();
         assert_eq!(second["items"].as_array().unwrap().len(), 1, "a replacement plan must not merge with the previous one");
         for bad in [
             vec![("a".into(), "in_progress".into()), ("b".into(), "in_progress".into())],
@@ -420,8 +424,20 @@ mod tests {
             vec![("x".into(), "blocked".into())],
             (0..=MAX_PLAN_ITEMS).map(|i| (format!("step {i}"), "pending".to_string())).collect::<Vec<_>>(),
         ] {
-            assert!(db.replace_plan("s".into(), bad).await.is_err());
+            assert!(replace(&db, bad).await.is_err());
         }
         assert_eq!(db.plan("s".into()).await.unwrap()["items"], second["items"], "a refused plan leaves the stored one untouched");
+    }
+
+    /// `write_plan` always runs inside the caller's transaction — for the agent loop that is the
+    /// transaction finishing the step that produced the plan. This mirrors that shape without
+    /// pulling the loop into a storage test.
+    async fn replace(db: &DbStore, items: Vec<(String, String)>) -> Result<Value> {
+        db.run(move |c| {
+            let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let stored = write_plan(&tx, "s", &items)?;
+            tx.commit()?;
+            Ok(stored)
+        }).await
     }
 }

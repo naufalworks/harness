@@ -97,9 +97,6 @@ impl MemoryAgents {
         for event in events {messages.push(json!({"role":event.role,"content":event.content}));}
         Ok(messages)
     }
-    pub async fn chat_prepared(&self,model:&str,messages:Vec<Value>)->Result<String>{
-        Ok(safety::redact(&self.complete(model,messages,90).await?))
-    }
     pub async fn extract(&self,model:&str,events:&[Event])->Result<Vec<Proposal>>{
         // Only user statements are eligible evidence; assistant/tool claims cannot become facts.
         let user_events=events.iter().filter(|e|e.role=="user").collect::<Vec<_>>();

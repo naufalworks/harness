@@ -18,6 +18,34 @@ Suggested first message to an AI continuing this work:
 
 ---
 
+## 2026-09-09 · AI session (Notion AI via Local) · P1-T10 agent loop
+
+**Changed.**
+- `src/agent_loop.rs` (new) is the whole turn: `window()` renders `prompts/main_agent.md` with the scope root, recall and plan as the system message, and `run()` drives model call → tool calls → model call until the provider returns text with no tool calls.
+- The storage half lives in the same file, next to its only caller. `begin_step` (next sequence, step row, activity event) and `finish_step` (result, event, artifacts) each commit in ONE Immediate transaction, so a step is never readable without the event that announces it.
+- `Artifact::FileChange` writes `file_changes` with **`applied=1`**: the tool has already written the file by the time the loop sees the artifact. The design doc's plan → approve → write ordering needs a dry-run tool contract, so `PendingChange` and `Tool::plan` stay unused until P1-T11 — they warn as dead code today, deliberately.
+- `Artifact::Plan` now goes through a new `storage::write_plan`; `DbStore::replace_plan` is gone. The plan lands in the same transaction as the step that produced it instead of a second one that could fail on its own.
+- Budget is checked before every provider call, and the answer an exhausted turn returns says in as many words that the task is **not** finished — an out-of-budget stop must not read as success.
+- `context_json` keeps the first window only, as the contract says; each `model_call` step then stores its own message array plus the tool **names**. Storing the schemas per step would have multiplied ~8 KB of JSON by up to 40 steps.
+- Tool arguments that are not a JSON object fail the step as `invalid_arguments` before any tool runs. A provider that rejects the `tools` field once is retried without tools (`tools_unsupported`); a provider that fails otherwise fails the turn rather than inventing an answer.
+- Text-only turns (no scope root) run the same loop with an empty tools array, so `memory_agents::chat_prepared` was deleted rather than left as a second code path.
+- `recording.rs`: `recover()` also marks running steps `interrupted`, denies orphaned permissions and writes the activity rows; `complete_recording` writes `answer_saved`; `fail_recording` writes `turn_failed {error_code}`. All 13 activity kinds in the events contract are now emitted by something.
+- The permission gate is built as far as this task reaches: create the `pending` row plus `permission_requested`, poll every 500 ms, expire on timeout, and hand the denial to the model as a tool error it can adapt to. P1-T11 owns the endpoints and the approval path.
+
+**Verified.**
+- `cargo test --locked agent_loop` → 7 passed, against an in-process scripted provider on loopback and the real `recording::generate`: a tool turn records every step and change before answering, an exhausted budget answers without claiming success, unreadable arguments never reach a tool, a denied tool changes nothing and is reported to the model, a provider without tool support falls back to text, a provider failure fails the turn, and a restart interrupts running work and reruns nothing.
+- `bash scripts/verify_release.sh` → exit 0: 71 Rust tests, clippy, release build, 50 Python contracts, migrations, 8 tool schemas, and both mock-provider HTTP suites — including `recording_integration.py`'s SIGKILL-and-restart check that no tool is replayed.
+
+**Open.**
+- In `ask` mode nothing can approve a request until P1-T11's endpoints exist, so a side-effecting call waits out the turn's wall budget (15 min) and is then denied. The row's own TTL is 30 min and therefore unreachable from the loop; T11 should decide which limit wins.
+- Dead-code warnings that P1-T11/T12 will consume: `STEPS_LIST`, `EVENTS_AFTER`, `PERMISSION_GET`, `PERMISSION_RESOLVE`, `PERMISSIONS_PENDING`, `FILE_CHANGES_LIST`, `ToolCtx.request_id`, `Tool::plan`.
+- `.harness/logs/` still grows without pruning; the background `pid` is the owning shell, not the job; `permission_payload` diffs are capped at 64 KiB; the browser suites (`tests/ui_smoke.cjs`, `tests/recording_ui.cjs`) were not run.
+
+**Next.**
+- P1-T11 permission gate — its only dependency (T10) is now done.
+
+---
+
 ## 2026-09-09 · AI session (Notion AI via Local Ops) · P1-T09 think / todo_write
 
 **Changed.**

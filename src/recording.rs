@@ -3,8 +3,8 @@
 use anyhow::{bail, Result};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde_json::{json, Value};
-use crate::{ingest::Event, memory_agents::MemoryAgents, recording_sql as sql,
-    storage::{now, uid, DbStore, Recall}};
+use crate::{agent_loop, agentic_sql as agentic, ingest::Event, memory_agents::MemoryAgents,
+    recording_sql as sql, safety, storage::{now, uid, DbStore, Recall, ScopeConfig}};
 
 pub struct CaptureInput {
     pub request: String, pub session: String, pub scope: String, pub prompt: String,
@@ -12,7 +12,7 @@ pub struct CaptureInput {
 }
 pub enum Admission { Saved(Value), Conflict, ScopeConflict, Busy, Full }
 pub struct Generation {
-    pub request: String, pub scope: String, pub model: String, pub prompt: String,
+    pub request: String, pub session: String, pub scope: String, pub model: String, pub prompt: String,
     pub events: Vec<Event>,
 }
 
@@ -20,6 +20,14 @@ pub fn recover(c: &mut Connection) -> Result<()> {
     let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let stamp = now();
     tx.execute(sql::RECOVER_EVENTS, [&stamp])?;
+    // Agentic rows first: both `RECOVER_ACTIVITY` and `RECOVER_EVENTS` select the receipts that
+    // are still `generating`, so they have to run before the receipt itself is interrupted.
+    // A `running` step becomes `interrupted`, a pending approval expires, and nothing is
+    // retried: `claim_recording` only ever claims a `captured` receipt, so no tool and no
+    // possibly billed provider call is repeated after a restart.
+    tx.execute(agentic::RECOVER_STEPS, [&stamp])?;
+    tx.execute(agentic::RECOVER_PERMISSIONS, [&stamp])?;
+    tx.execute(agentic::RECOVER_ACTIVITY, [&stamp])?;
     tx.execute(sql::RECOVER, [&stamp])?;
     tx.execute(sql::RECOVER_MESSAGES, [])?;
     tx.execute("UPDATE jobs SET status='pending' WHERE status='running'", [])?;
@@ -108,7 +116,7 @@ impl DbStore {
             if tx.execute(sql::CLAIM,params![request,now()])?!=1 {bail!("recording was not captured");}
             tx.execute(sql::EVENT,params![request,"generation_started",now()])?;
             tx.commit()?;
-            Ok(Some(Generation{request,scope,model,prompt,events}))
+            Ok(Some(Generation{request,session,scope,model,prompt,events}))
         }).await
     }
     pub async fn save_recording_context(&self,request:String,context:Value)->Result<()> {
@@ -128,6 +136,9 @@ impl DbStore {
             tx.execute(sql::ANSWER,params![answer_id,session,answer,stamp])?;
             if tx.execute(sql::COMPLETE,params![request,answer_id,stamp])?!=1 {bail!("generation not ready to complete");}
             tx.execute(sql::EVENT,params![request,"answer_saved",stamp])?;
+            // The activity feed is written here so a saved answer and its `answer_saved` row
+            // can never disagree about whether this turn finished.
+            tx.execute(agentic::EVENT,params![request,session,None::<String>,"answer_saved","{}",stamp])?;
             // No job insert here. A full/failed extraction queue cannot undo this answer.
             tx.commit()?;Ok(())
         }).await
@@ -139,6 +150,11 @@ impl DbStore {
             if tx.execute(sql::FAIL,params![request,code,stamp])?==1 {
                 tx.execute(sql::FAIL_MESSAGE,[&request])?;
                 tx.execute(sql::EVENT,params![request,"generation_failed",stamp])?;
+                // Every failure path, including the worker's panic guard, lands in the feed.
+                let session:Option<String>=tx.query_row(agentic::SESSION_OF_REQUEST,[&request],|r|r.get(0)).optional()?;
+                if let Some(session)=session {
+                    tx.execute(agentic::EVENT,params![request,session,None::<String>,"turn_failed",json!({"error_code":code}).to_string(),stamp])?;
+                }
             }
             tx.commit()?;Ok(())
         }).await
@@ -183,19 +199,37 @@ impl DbStore {
     }
 }
 
-async fn generate(store:&DbStore,agents:&MemoryAgents,turn:Generation)->Result<()> {
+/// Prepare the turn, persist the window once, then hand the conversation to the agent loop.
+/// This function owns the receipt state machine; `agent_loop` owns steps, tools and events.
+pub(crate) async fn generate(store:&DbStore,agents:&MemoryAgents,turn:Generation)->Result<()> {
     let recalled:Vec<Recall>=match store.recall(turn.scope.clone(),turn.prompt.clone()).await {
         Ok(r)=>r,Err(_)=>return store.fail_recording(turn.request,"context_failed").await,
     };
-    let messages=agents.chat_messages(&turn.events,&recalled)?;
-    let context=json!({"format_version":1,"adapter":"text_completion_v1","model":turn.model,"provider_messages":messages,"memories":recalled,
-        "note":"Exact sanitized message array prepared for the provider, not model reasoning or proof of provider receipt."});
+    // The scope decides whether this turn has tools at all (P1-T04). Without a configured
+    // `root_path` the turn stays on the text-only path instead of guessing a project root.
+    let scope=match store.scope_config(turn.scope.clone()).await {
+        Ok(found)=>found.unwrap_or_else(||ScopeConfig::blank(&turn.scope)),
+        Err(_)=>return store.fail_recording(turn.request,"context_failed").await,
+    };
+    let plan=match store.plan(turn.session.clone()).await {
+        Ok(plan)=>plan,Err(_)=>return store.fail_recording(turn.request,"context_failed").await,
+    };
+    let agentic_turn=scope.root_path.is_some();
+    let messages=if agentic_turn {agent_loop::window(&scope,&recalled,&plan,&turn.events)?} else {agents.chat_messages(&turn.events,&recalled)?};
+    let context=json!({"format_version":1,"adapter":if agentic_turn {"tool_calls_v1"} else {"text_completion_v1"},
+        "model":turn.model,"provider_messages":messages.clone(),"memories":recalled,
+        "scope":{"root_path":scope.root_path.clone(),"permission_mode":scope.permission_mode.clone(),"diagnostics_cmd":scope.diagnostics_cmd.clone(),"tools_enabled":agentic_turn},
+        "note":"Exact sanitized message array prepared for the provider's FIRST call in this turn, not model reasoning or proof of provider receipt. Later calls append tool results; each one stores its own full array in turn_steps.input_json."});
     if store.save_recording_context(turn.request.clone(),context).await.is_err() {
         return store.fail_recording(turn.request,"context_failed").await;
     }
     // No provider call is allowed before context persistence succeeds.
-    let answer=match agents.chat_prepared(&turn.model,messages).await {
-        Ok(text)=>text,Err(_)=>return store.fail_recording(turn.request,"provider_failed").await,
+    let outcome=agent_loop::run(agent_loop::Turn{
+        store,agents,request:turn.request.clone(),session:turn.session.clone(),model:turn.model.clone(),scope,messages,
+    }).await?;
+    let answer=match outcome {
+        agent_loop::Outcome::Answer(text)=>safety::redact(&text),
+        agent_loop::Outcome::ProviderFailed=>return store.fail_recording(turn.request,"provider_failed").await,
     };
     if store.complete_recording(turn.request.clone(),answer).await.is_err() {
         return store.fail_recording(turn.request,"answer_save_failed").await;
