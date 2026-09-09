@@ -144,6 +144,11 @@ async fn set_scope(State(h):State<Harness>,Path(scope):Path<String>,Json(patch):
     let patch=patch.validate().map_err(invalid)?;
     Ok(Json(h.store.upsert_scope(scope,patch).await.map_err(db_error)?))
 }
+// P1-T15: without this the scope name was an unguessable free-text field, so a first-run user
+// chatted in an unconfigured scope and got a tool-less agent with no way to see that.
+async fn list_scopes(State(h):State<Harness>)->ApiResult<Json<Value>>{
+    Ok(Json(json!({"scopes":h.store.scopes().await.map_err(db_error)?})))
+}
 
 // P1-T11: the human half of the permission gate. The turn loop only ever reads the row's status,
 // so these two endpoints are the only thing that can let a side-effecting tool run.
@@ -227,7 +232,7 @@ fn router(state:Harness)->Router{
         .route("/memory/status",get(status)).route("/memory/candidates",get(candidates)).route("/memory/confirm",post(confirm))
         .route("/memory/ingest",post(ingest_memory)).route("/sessions/{id}/messages",get(history))
         .route("/jobs",get(jobs)).route("/jobs/{id}/retry",post(retry_job))
-        .route("/scopes/{scope}",get(get_scope).post(set_scope))
+        .route("/scopes",get(list_scopes)).route("/scopes/{scope}",get(get_scope).post(set_scope))
         .route("/permissions",get(permissions)).route("/permissions/{id}",post(decide_permission))
         .route("/chat/requests/{id}/steps",get(request_steps)).route("/sessions/{id}/plan",get(session_plan))
         .route("/activity",get(activity)).route("/changes",get(request_changes))
@@ -290,6 +295,26 @@ mod tests{
         let request=json!({"root_path":"/definitely/not/a/real/harness/project/root"}).to_string();
         let response=app().oneshot(authorized("POST","/scopes/global").header("content-type","application/json").body(Body::from(request)).unwrap()).await.unwrap();
         assert_eq!(response.status(),StatusCode::BAD_REQUEST);
+    }
+    /// P1-T15: the picker's data. A fresh install lists nothing (so the UI can say "set one up")
+    /// and a configured scope is listed with the root path that decides whether tools exist.
+    #[tokio::test]async fn configured_scopes_are_listed_for_the_picker(){
+        let app=app();
+        let empty=app.clone().oneshot(authorized("GET","/scopes").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(empty.status(),StatusCode::OK);
+        assert_eq!(body_json(empty).await["scopes"],json!([]));
+        let dir=std::env::temp_dir().join(format!("harness-api-list-{}",storage::uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let canonical=std::fs::canonicalize(&dir).unwrap();
+        let request=json!({"root_path":dir.to_string_lossy()}).to_string();
+        app.clone().oneshot(authorized("POST","/scopes/myproject").header("content-type","application/json").body(Body::from(request)).unwrap()).await.unwrap();
+        app.clone().oneshot(authorized("POST","/scopes/blank").header("content-type","application/json").body(Body::from(json!({"permission_mode":"ask"}).to_string())).unwrap()).await.unwrap();
+        let listed=body_json(app.clone().oneshot(authorized("GET","/scopes").body(Body::empty()).unwrap()).await.unwrap()).await;
+        let rows=listed["scopes"].as_array().unwrap();
+        assert_eq!(rows.iter().map(|row|row["scope"].as_str().unwrap()).collect::<Vec<_>>(),vec!["blank","myproject"]);
+        assert_eq!(rows[0]["root_path"],Value::Null,"a scope with no root must still be listed, as a scope that cannot run tools");
+        assert_eq!(rows[1]["root_path"],json!(canonical.to_string_lossy()));
+        std::fs::remove_dir_all(dir).ok();
     }
 
     /// P1-T11: one pending approval, listed and then decided over HTTP. The loop is not involved;

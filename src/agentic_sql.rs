@@ -2,6 +2,9 @@
 // against the migrated schema: tests/test_agentic_sql.py.
 pub const SCOPE_GET: &str = r#"SELECT scope,root_path,permission_mode,diagnostics_cmd,max_steps,max_tool_bytes,max_wall_seconds,created_at,updated_at FROM scopes WHERE scope=?1"#;
 pub const SCOPE_UPSERT: &str = r#"INSERT INTO scopes(scope,root_path,permission_mode,diagnostics_cmd,max_steps,max_tool_bytes,max_wall_seconds,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?8) ON CONFLICT(scope) DO UPDATE SET root_path=excluded.root_path,permission_mode=excluded.permission_mode,diagnostics_cmd=excluded.diagnostics_cmd,max_steps=excluded.max_steps,max_tool_bytes=excluded.max_tool_bytes,max_wall_seconds=excluded.max_wall_seconds,updated_at=excluded.updated_at"#;
+// P1-T15: every configured scope, so the UI can offer the ones that exist instead of asking the
+// user to guess a name. Same column order as SCOPE_GET; a fresh install returns no rows.
+pub const SCOPES_LIST: &str = r#"SELECT scope,root_path,permission_mode,diagnostics_cmd,max_steps,max_tool_bytes,max_wall_seconds,created_at,updated_at FROM scopes ORDER BY scope"#;
 
 pub const STEP_BEGIN: &str = r#"INSERT INTO turn_steps(id,request_id,parent_step_id,seq,kind,status,tool_name,tool_call_id,input_json,started_at) VALUES(?1,?2,NULL,?3,?4,'running',?5,?6,?7,?8)"#;
 pub const STEP_FINISH: &str = r#"UPDATE turn_steps SET status=?2,output_json=?3,output_bytes=?4,truncated=?5,tokens_in=?6,tokens_out=?7,error_code=?8,finished_at=?9 WHERE id=?1 AND status='running'"#;

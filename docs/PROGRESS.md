@@ -18,6 +18,27 @@ Suggested first message to an AI continuing this work:
 
 ---
 
+## 2026-09-09 · AI session (Notion AI via Local) · P1-T15 first-run project setup
+
+**Why.** The owner ran the finished P1 harness for the first time and it looked broken: in the default `global` scope the agent answered "I don't have access to a terminal or file system tools in this conversation." Nothing was broken — `global` had no `root_path`, so the loop attached zero tools exactly as P1-T04 requires. The defect was that no layer said so. The workaround was a hand-written `curl POST /scopes/myharness`, which is not a product.
+
+**Changed.**
+- `prompts/main_agent.md` line 2 is now `{{tools}}`. `window()` fills it with `TOOLS_ATTACHED` (the old sentence) or `TOOLS_WITHHELD`, which tells the model to blame the missing project root, name `Project & models → Project scope settings` / `POST /scopes/{scope}`, and *not* to claim the conversation or provider lacks tool support.
+- `agent_loop::run` records one `tools_withheld` activity event (`reason: no_root_path`) beside `turn_started` when the tool list is empty, so `/activity` and the UI carry the same fact as the answer.
+- New `GET /scopes` (`SCOPES_LIST`, `DbStore::scopes`, `list_scopes`) lists every configured scope, a null `root_path` included — that scope exists, it just cannot run tools.
+- UI: the scope field is backed by a `datalist` of real scopes (each labelled with its root path, or "no project root · tools off"), and the chat view shows a `#setup-banner` whenever the current scope has no root, with a button that jumps to the existing project form and focuses `Root path`. Refreshed on connect, on scope change, on New conversation, on reopening a conversation, and after saving project settings; cleared on Lock.
+
+**Verified.** `bash scripts/verify_release.sh` → exit 0: 83 Rust tests (up from 81), clippy, release build, migrations, 8 tool schemas, 50 Python contracts, both mock-provider HTTP suites. New tests: `configured_scopes_are_listed_for_the_picker` (empty on a fresh install; ordered; a rootless scope is still listed) and `the_prompt_names_the_missing_project_root_instead_of_promising_tools` (withheld text names scope and fix; the configured prompt still says "You have tools." and never says "NO tools"). `SCOPES_LIST` gained a contract assertion in `tests/test_agentic_sql.py`. `node --check static/app.js` → OK.
+
+**Not verified.** The banner and datalist are not exercised by the gate — `tests/ui_smoke.cjs` / `tests/recording_ui.cjs` need a running server and are still run by hand.
+
+**Decisions.**
+- The tool gate itself did not move. An unconfigured scope still gets no tools; only the explanation changed. Making `global` auto-adopt a working directory would have turned a safety property into a surprise.
+- The banner reads the same `/scopes` data the picker uses, so it cannot disagree with what the loop will do; it does not ask the server "are tools on?" as a separate opinion.
+- Still open: the two clippy warnings (`ToolCtx.request_id`, `Tool::plan`) remain parked on P2-T03, and `GET /scopes` has no pagination — a single-user install with hundreds of scopes is not a case worth code yet.
+
+---
+
 ## 2026-09-09 · AI session (Notion AI via Local) · P1 review pass before P2
 
 **Changed.** No behaviour; this is the review of P1-T10…T14 read back as a whole.

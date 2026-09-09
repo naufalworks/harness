@@ -104,7 +104,7 @@ async function loadSessions(older = false) {
     button.addEventListener('click', async () => {
       if (busy || pending) return notice('Let the current message finish before switching conversations.', true);
       session = item.id; scope = item.scope; epoch++; $('scope').value = scope; persistSession(); $('sessionhistory').open = false;
-      await loadHistory().catch(e => notice(e.message, true)); if (pending) await resumeRecording();
+      await loadHistory().catch(e => notice(e.message, true)); refreshScopeSetup().catch(() => {}); if (pending) await resumeRecording();
     }); $('sessionlist').append(button);
   }
   if (!$('sessionlist').childNodes.length) $('sessionlist').append(node('p', 'Your saved conversations will appear here.', 'muted'));
@@ -177,7 +177,7 @@ $('authform').addEventListener('submit', async event => {
   try {
     await api('/memory/status'); if (myEpoch !== epoch) return;
     $('auth').hidden = true; $('workspace').hidden = false; $('connection').textContent = 'Connected'; $('token').value = '';
-    notice('Connected — pick up where you left off.'); persistSession(); await loadHistory(); await loadSessions(); await refreshStatus();
+    notice('Connected — pick up where you left off.'); persistSession(); await loadHistory(); await loadSessions(); await refreshStatus(); await refreshScopeSetup();
     rememberPending(pending); if (pending) await resumeRecording();
   } catch (error) { token = ''; $('workspace').hidden = true; $('auth').hidden = false; notice(error.message, true); }
 });
@@ -186,6 +186,7 @@ $('lock').addEventListener('click', () => {
   $('workspace').hidden = true; $('auth').hidden = false; $('connection').textContent = 'Locked';
   for (const id of ['log','candidates','jobs','recalled','sessionlist']) $(id).replaceChildren();
   $('modelnames').textContent = ''; $('stats').textContent = ''; $('mainmodel').value = ''; $('extractmodel').value = ''; $('prompt').value = ''; $('file').value = ''; $('consent').checked = false;
+  $('setup-banner').hidden = true; $('scopelist').replaceChildren();
   notice('Locked. Unsaved draft text was cleared; recorded work stays on the server.');
 });
 $('newchat').addEventListener('click', () => {
@@ -193,7 +194,7 @@ $('newchat').addEventListener('click', () => {
   const next = $('scope').value.trim();
   if (!/^[A-Za-z0-9_.:-]{1,80}$/.test(next)) return notice('Use a scope of 1–80 letters, digits, _, -, . or :.', true);
   scope = next; session = crypto.randomUUID(); epoch++; persistSession(); historyCursor = null; $('oldermessages').hidden = true;
-  $('log').replaceChildren(node('p', 'New conversation. Earlier work is available in History.', 'empty')); $('recalltrace').hidden = true; captureLabel(''); notice(`New conversation in ${scope}.`);
+  $('log').replaceChildren(node('p', 'New conversation. Earlier work is available in History.', 'empty')); $('recalltrace').hidden = true; captureLabel(''); notice(`New conversation in ${scope}.`); refreshScopeSetup().catch(() => {});
 });
 $('chatform').addEventListener('submit', event => { event.preventDefault(); sendAttempt(); });
 $('checkrecording').addEventListener('click', resumeRecording);
@@ -421,9 +422,41 @@ $('projectform').addEventListener('submit', async event => {
   try {
     await api(`/scopes/${encodeURIComponent(scope)}`, payload);
     notice(`Project settings saved for ${scope}.`);
+    await refreshScopeSetup();
   } catch (error) { notice(error.message, true); }
 });
 
 for (const tab of document.querySelectorAll('[data-view]')) tab.addEventListener('click', () => {
   if (tab.dataset.view === 'settings' && token) loadProjectSettings().catch(error => notice(error.message, true));
 });
+
+// P1-T15 first run. Tools exist only for a scope with a project root, so the chat view has to say
+// that before the model does: a tool-less turn used to come back as "I have no terminal in this
+// conversation", which reads as a broken product rather than one unset field.
+async function refreshScopeSetup() {
+  if (!token) return;
+  const myEpoch = epoch;
+  const data = await api('/scopes');
+  if (!token || myEpoch !== epoch) return;
+  const scopes = Array.isArray(data.scopes) ? data.scopes : [];
+  const options = document.createDocumentFragment();
+  for (const item of scopes) {
+    const option = document.createElement('option');
+    option.value = String(item.scope);
+    option.label = item.root_path ? String(item.root_path) : 'no project root · tools off';
+    options.append(option);
+  }
+  $('scopelist').replaceChildren(options);
+  const current = scopes.find(item => item.scope === scope);
+  $('setup-banner').hidden = !!current?.root_path;
+  const ready = scopes.filter(item => item.root_path).map(item => item.scope);
+  $('setup-banner-text').textContent = `Scope “${scope}” has no project root, so the file and command tools are not attached and the agent can only talk. Set a root path to turn them on.`
+    + (ready.length ? ` Scopes already set up: ${ready.join(', ')}.` : '');
+}
+
+$('setup-open').addEventListener('click', () => {
+  const tab = document.querySelector('[data-view="settings"]');
+  if (tab) tab.click();
+  $('rootpath').focus();
+});
+$('scope').addEventListener('change', () => refreshScopeSetup().catch(() => {}));

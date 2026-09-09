@@ -30,7 +30,7 @@ def seed_turn(c, request="r1", session="s1", scope="proj"):
 
 class AgenticSql(unittest.TestCase):
     def test_all_constants_present(self):
-        for name in ["SCOPE_GET", "SCOPE_UPSERT", "STEP_BEGIN", "STEP_FINISH", "STEP_NEXT_SEQ", "STEPS_LIST", "EVENT", "EVENTS_AFTER",
+        for name in ["SCOPE_GET", "SCOPE_UPSERT", "SCOPES_LIST", "STEP_BEGIN", "STEP_FINISH", "STEP_NEXT_SEQ", "STEPS_LIST", "EVENT", "EVENTS_AFTER",
                      "PERMISSION_CREATE", "PERMISSION_GET", "PERMISSION_RESOLVE", "PERMISSION_STATUS", "PERMISSIONS_PENDING", "PERMISSION_EXPIRE",
                      "FILE_CHANGE", "FILE_CHANGES_LIST", "PLAN_CLEAR", "PLAN_INSERT", "PLAN_LIST", "SESSION_OF_REQUEST",
                      "RECOVER_STEPS", "RECOVER_PERMISSIONS", "RECOVER_ACTIVITY"]:
@@ -43,6 +43,10 @@ class AgenticSql(unittest.TestCase):
         row = c.execute(SQL["SCOPE_GET"], ("proj",)).fetchone()
         self.assertEqual(row[:7], ("proj", "/tmp/y", "auto_edit", "cargo check", 50, 100000, 600))
         self.assertEqual((row[7], row[8]), (NOW, LATER))
+        # P1-T15: the picker lists every configured scope, including one that cannot run tools yet.
+        c.execute(SQL["SCOPE_UPSERT"], ("blank", None, "ask", None, None, None, None, NOW))
+        self.assertEqual([(r[0], r[1]) for r in c.execute(SQL["SCOPES_LIST"]).fetchall()],
+                         [("blank", None), ("proj", "/tmp/y")])
         with self.assertRaises(sqlite3.IntegrityError):
             c.execute(SQL["SCOPE_UPSERT"], ("proj", None, "yolo", None, None, None, None, NOW))
 

@@ -327,6 +327,16 @@ impl DbStore {
         self.run(move|c|Ok(c.query_row(crate::agentic_sql::SCOPE_GET,[scope],scope_row).optional()?)).await
     }
     /// Merge a validated patch into the stored row so a partial POST never clears a column
+    /// P1-T15: every configured scope, newest config included, for the UI's scope picker. A scope
+    /// with `root_path: null` is listed too: it exists, it just cannot run tools yet.
+    pub async fn scopes(&self)->Result<Vec<ScopeConfig>>{
+        self.run(move|c|{
+            let mut stmt=c.prepare(crate::agentic_sql::SCOPES_LIST)?;
+            let rows=stmt.query_map([],scope_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        }).await
+    }
+    /// Merge a validated patch into the stored row so a partial POST never clears a column
     /// the caller did not mention; `created_at` survives every later update.
     pub async fn upsert_scope(&self,scope:String,patch:ScopePatch)->Result<ScopeConfig>{
         safety::scope(&scope)?;
