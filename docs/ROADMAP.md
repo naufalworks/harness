@@ -1,5 +1,7 @@
 # Continuation roadmap
 
+> Superseded 2026-09-09 by `docs/PLAN.md` + `docs/TASKS.md` (agentic tool loop, activity UI, context manager, memory kinds). This file is kept for history. Its P0 gate is still required and is tracked as `P0-T01` in TASKS.md; items below that are not in TASKS.md live in its "Ideas parking lot".
+
 Status: only Recording receipts is implemented in this checkpoint; native validation remains blocked. This document records future work, not completion claims.
 
 ## P0 · Native verification / release gate

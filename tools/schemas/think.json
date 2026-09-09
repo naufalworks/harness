@@ -1,0 +1,21 @@
+{
+  "type": "function",
+  "function": {
+    "name": "think",
+    "description": "Write down reasoning, hypotheses, or a checklist before acting. Nothing is executed. Use it when a task has more than two steps or when evidence conflicts.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "thought": {
+          "type": "string",
+          "description": "Your notes. Max 4000 characters.",
+          "maxLength": 4000
+        }
+      },
+      "required": [
+        "thought"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

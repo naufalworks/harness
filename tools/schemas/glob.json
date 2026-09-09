@@ -1,0 +1,24 @@
+{
+  "type": "function",
+  "function": {
+    "name": "glob",
+    "description": "List files matching a gitignore-style pattern, newest first. Use to discover project structure.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "pattern": {
+          "type": "string",
+          "description": "Glob such as `src/**/*.rs` or `**/package.json`."
+        },
+        "path": {
+          "type": "string",
+          "description": "Directory to search under, relative to root. Default: root."
+        }
+      },
+      "required": [
+        "pattern"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

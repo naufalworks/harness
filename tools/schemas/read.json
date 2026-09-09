@@ -1,0 +1,31 @@
+{
+  "type": "function",
+  "function": {
+    "name": "read",
+    "description": "Read a text file inside the project root. Returns numbered lines as `line:hash|text`; use those line/hash pairs as anchors for `edit`. Prefer `grep` to locate code first, then read a small range.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Path relative to the project root."
+        },
+        "offset": {
+          "type": "integer",
+          "description": "1-based first line to return. Default 1.",
+          "minimum": 1
+        },
+        "limit": {
+          "type": "integer",
+          "description": "Number of lines to return. Default 200, max 400.",
+          "minimum": 1,
+          "maximum": 400
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

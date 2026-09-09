@@ -1,0 +1,61 @@
+{
+  "type": "function",
+  "function": {
+    "name": "edit",
+    "description": "Edit an existing file using line anchors from a previous `read`/`grep`. Every anchor must still match; if the file changed you get the current lines back and must re-anchor. Give `old_string` to replace one exact occurrence inside the anchored region, or omit it to replace whole lines from anchors[0].line to end_line. A diff is recorded and diagnostics run afterwards.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Path relative to the project root."
+        },
+        "anchors": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "description": "Line/hash pairs copied from `read` or `grep` output. The first anchor is the first line of the edited region.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "line": {
+                "type": "integer",
+                "description": "1-based line number.",
+                "minimum": 1
+              },
+              "hash": {
+                "type": "string",
+                "description": "4-hex line hash as shown by read/grep.",
+                "pattern": "^[0-9a-f]{4}$"
+              }
+            },
+            "required": [
+              "line",
+              "hash"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "old_string": {
+          "type": "string",
+          "description": "Exact text to replace. Must occur exactly once in the anchored region."
+        },
+        "new_string": {
+          "type": "string",
+          "description": "Replacement text. Empty string deletes."
+        },
+        "end_line": {
+          "type": "integer",
+          "description": "Last line (inclusive) of the region when replacing whole lines.",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "path",
+        "anchors",
+        "new_string"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

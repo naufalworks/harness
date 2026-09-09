@@ -82,8 +82,16 @@ Context receipt: `GET /chat/requests/{id}/context`. History: `GET /sessions`,
 
 ## Remaining work
 
-See `docs/ROADMAP.md`. Ordered: encrypted exact-archive for originals, renewed-UI
-merge (`reference/renewed-ui-original/`), durable SSE streaming, archive search.
+The active plan is `docs/PLAN.md` (goals, principles, phases) with the ordered
+backlog in `docs/TASKS.md` and the journal in `docs/PROGRESS.md`. Start at
+`AGENTS.md` if you are an AI or a new contributor. `docs/ROADMAP.md` is the
+older list and is kept for history; where they differ, PLAN.md wins.
+
+Current direction: turn the single text-only provider call into a recorded,
+sandboxed tool loop (read/grep/glob/edit/write/bash) with per-step receipts and
+an approval gate, then a live activity UI, then context management and richer
+memory. Nothing in P1+ is compiled yet; run `bash scripts/verify_release.sh`
+first (P0-T01).
 
 Security posture: loopback bind enforced, Bearer auth, Origin checks, no
 server-side file paths, conservative secret filtering before storage/provider.

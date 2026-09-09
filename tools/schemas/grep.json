@@ -1,0 +1,44 @@
+{
+  "type": "function",
+  "function": {
+    "name": "grep",
+    "description": "Search file contents with a regular expression. Output lines are `path:line:hash|text` so they can be used directly as `edit` anchors. Respects .gitignore.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "pattern": {
+          "type": "string",
+          "description": "Regular expression (Rust/ripgrep syntax)."
+        },
+        "path": {
+          "type": "string",
+          "description": "File or directory to search, relative to root. Default: whole project."
+        },
+        "glob": {
+          "type": "string",
+          "description": "Only search files matching this glob, e.g. `*.rs` or `src/**/*.ts`."
+        },
+        "case_insensitive": {
+          "type": "boolean",
+          "description": "Case-insensitive match. Default false."
+        },
+        "max_results": {
+          "type": "integer",
+          "description": "Maximum matches. Default 50, max 100.",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "context": {
+          "type": "integer",
+          "description": "Context lines around each match, 0-3. Default 1.",
+          "minimum": 0,
+          "maximum": 3
+        }
+      },
+      "required": [
+        "pattern"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

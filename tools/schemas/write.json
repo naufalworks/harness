@@ -1,0 +1,29 @@
+{
+  "type": "function",
+  "function": {
+    "name": "write",
+    "description": "Create a new file (or overwrite with overwrite=true). For changes to existing files prefer `edit`.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Path relative to the project root. Parent directories are created."
+        },
+        "content": {
+          "type": "string",
+          "description": "Full file content."
+        },
+        "overwrite": {
+          "type": "boolean",
+          "description": "Allow replacing an existing file. Default false."
+        }
+      },
+      "required": [
+        "path",
+        "content"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

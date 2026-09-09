@@ -27,10 +27,11 @@ impl DbStore {
         if version == 0 {
             let existing:i64 = conn.query_row("SELECT count(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",[],|r|r.get(0))?;
             if existing != 0 { bail!("legacy or unknown database: use scripts/migrate_legacy.py into a NEW database"); }
-        } else if version != 1 && version != 2 { bail!("unsupported schema version {version}"); }
+        } else if !(1..=3).contains(&version) { bail!("unsupported schema version {version}"); }
         conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")?;
         if version == 0 { conn.execute_batch(include_str!("../migrations/001_core.sql"))?; }
         if version < 2 { conn.execute_batch(include_str!("../migrations/002_recording.sql"))?; }
+        if version < 3 { conn.execute_batch(include_str!("../migrations/003_agentic.sql"))?; }
         // One process only. Never silently repeat a potentially billed generation.
         crate::recording::recover(&mut conn)?;
         Ok(Self{conn:Arc::new(Mutex::new(conn)),permits:Arc::new(Semaphore::new(32))})

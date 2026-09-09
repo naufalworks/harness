@@ -11,6 +11,8 @@ mod safety;
 mod storage;
 mod recording;
 mod recording_sql;
+mod agentic_sql; // P1 SQL constants (schema 003); contract-tested by tests/test_agentic_sql.py
+mod tools;       // P1-T05/T06 tool registry (needs-verify: written without cargo)
 use memory_agents::MemoryAgents;
 use storage::DbStore;
 

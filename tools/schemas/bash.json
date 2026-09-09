@@ -1,0 +1,36 @@
+{
+  "type": "function",
+  "function": {
+    "name": "bash",
+    "description": "Run a shell command in the project root and return its combined output and exit code. Use for builds, tests, git, and inspection. Long-running servers must use background=true and be checked via their log file.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "description": "The command to run with `sh -c`."
+        },
+        "description": {
+          "type": "string",
+          "description": "Short human-readable purpose shown to the user (max 80 chars).",
+          "maxLength": 80
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "description": "Kill after this many seconds. Default 120, max 600.",
+          "minimum": 1,
+          "maximum": 600
+        },
+        "background": {
+          "type": "boolean",
+          "description": "Start detached and return pid + log path immediately. Default false."
+        }
+      },
+      "required": [
+        "command",
+        "description"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

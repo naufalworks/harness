@@ -1,0 +1,106 @@
+#!/usr/bin/env python3
+"""Writes tools/schemas/*.json from one source of truth. Re-run after editing."""
+import json
+import pathlib
+
+OUT = pathlib.Path(__file__).resolve().parents[1] / "tools" / "schemas"
+
+
+def obj(props, required):
+    return {"type": "object", "properties": props, "required": required, "additionalProperties": False}
+
+
+S = lambda d, **k: {"type": "string", "description": d, **k}  # noqa: E731
+I = lambda d, **k: {"type": "integer", "description": d, **k}  # noqa: E731
+B = lambda d: {"type": "boolean", "description": d}  # noqa: E731
+
+TOOLS = {
+    "read": (
+        "Read a text file inside the project root. Returns numbered lines as `line:hash|text`; use those line/hash pairs as anchors for `edit`. Prefer `grep` to locate code first, then read a small range.",
+        obj({
+            "path": S("Path relative to the project root."),
+            "offset": I("1-based first line to return. Default 1.", minimum=1),
+            "limit": I("Number of lines to return. Default 200, max 400.", minimum=1, maximum=400),
+        }, ["path"]),
+    ),
+    "grep": (
+        "Search file contents with a regular expression. Output lines are `path:line:hash|text` so they can be used directly as `edit` anchors. Respects .gitignore.",
+        obj({
+            "pattern": S("Regular expression (Rust/ripgrep syntax)."),
+            "path": S("File or directory to search, relative to root. Default: whole project."),
+            "glob": S("Only search files matching this glob, e.g. `*.rs` or `src/**/*.ts`."),
+            "case_insensitive": B("Case-insensitive match. Default false."),
+            "max_results": I("Maximum matches. Default 50, max 100.", minimum=1, maximum=100),
+            "context": I("Context lines around each match, 0-3. Default 1.", minimum=0, maximum=3),
+        }, ["pattern"]),
+    ),
+    "glob": (
+        "List files matching a gitignore-style pattern, newest first. Use to discover project structure.",
+        obj({
+            "pattern": S("Glob such as `src/**/*.rs` or `**/package.json`."),
+            "path": S("Directory to search under, relative to root. Default: root."),
+        }, ["pattern"]),
+    ),
+    "edit": (
+        "Edit an existing file using line anchors from a previous `read`/`grep`. Every anchor must still match; if the file changed you get the current lines back and must re-anchor. Give `old_string` to replace one exact occurrence inside the anchored region, or omit it to replace whole lines from anchors[0].line to end_line. A diff is recorded and diagnostics run afterwards.",
+        obj({
+            "path": S("Path relative to the project root."),
+            "anchors": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 8,
+                "description": "Line/hash pairs copied from `read` or `grep` output. The first anchor is the first line of the edited region.",
+                "items": obj({"line": I("1-based line number.", minimum=1), "hash": S("4-hex line hash as shown by read/grep.", pattern="^[0-9a-f]{4}$")}, ["line", "hash"]),
+            },
+            "old_string": S("Exact text to replace. Must occur exactly once in the anchored region."),
+            "new_string": S("Replacement text. Empty string deletes."),
+            "end_line": I("Last line (inclusive) of the region when replacing whole lines.", minimum=1),
+        }, ["path", "anchors", "new_string"]),
+    ),
+    "write": (
+        "Create a new file (or overwrite with overwrite=true). For changes to existing files prefer `edit`.",
+        obj({
+            "path": S("Path relative to the project root. Parent directories are created."),
+            "content": S("Full file content."),
+            "overwrite": B("Allow replacing an existing file. Default false."),
+        }, ["path", "content"]),
+    ),
+    "bash": (
+        "Run a shell command in the project root and return its combined output and exit code. Use for builds, tests, git, and inspection. Long-running servers must use background=true and be checked via their log file.",
+        obj({
+            "command": S("The command to run with `sh -c`."),
+            "description": S("Short human-readable purpose shown to the user (max 80 chars).", maxLength=80),
+            "timeout_seconds": I("Kill after this many seconds. Default 120, max 600.", minimum=1, maximum=600),
+            "background": B("Start detached and return pid + log path immediately. Default false."),
+        }, ["command", "description"]),
+    ),
+    "think": (
+        "Write down reasoning, hypotheses, or a checklist before acting. Nothing is executed. Use it when a task has more than two steps or when evidence conflicts.",
+        obj({"thought": S("Your notes. Max 4000 characters.", maxLength=4000)}, ["thought"]),
+    ),
+    "todo_write": (
+        "Replace the plan for this session. Call it before multi-step work and again whenever an item changes status. At most one item may be in_progress.",
+        obj({
+            "items": {
+                "type": "array",
+                "maxItems": 30,
+                "items": obj({
+                    "text": S("Short imperative description.", maxLength=200),
+                    "status": {"type": "string", "enum": ["pending", "in_progress", "done", "failed"]},
+                }, ["text", "status"]),
+            }
+        }, ["items"]),
+    ),
+}
+
+
+def main():
+    OUT.mkdir(parents=True, exist_ok=True)
+    for name, (desc, params) in TOOLS.items():
+        doc = {"type": "function", "function": {"name": name, "description": desc, "parameters": params}}
+        (OUT / f"{name}.json").write_text(json.dumps(doc, indent=2, ensure_ascii=False) + "\n")
+    print(f"wrote {len(TOOLS)} schemas to {OUT}")
+
+
+if __name__ == "__main__":
+    main()

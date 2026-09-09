@@ -1,0 +1,44 @@
+{
+  "type": "function",
+  "function": {
+    "name": "todo_write",
+    "description": "Replace the plan for this session. Call it before multi-step work and again whenever an item changes status. At most one item may be in_progress.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "maxItems": 30,
+          "items": {
+            "type": "object",
+            "properties": {
+              "text": {
+                "type": "string",
+                "description": "Short imperative description.",
+                "maxLength": 200
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "pending",
+                  "in_progress",
+                  "done",
+                  "failed"
+                ]
+              }
+            },
+            "required": [
+              "text",
+              "status"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "items"
+      ],
+      "additionalProperties": false
+    }
+  }
+}
