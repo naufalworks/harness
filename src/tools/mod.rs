@@ -31,6 +31,8 @@ impl PermissionMode {
 pub struct ToolCtx {
     pub root: PathBuf,
     pub scope: String,
+    /// Unread today: the loop names the turn in every row it writes, so no tool needs it yet.
+    /// Kept because P2-T03's revert has to attribute a change to the turn that made it.
     pub request_id: String,
     pub step_id: String,
     pub diagnostics_cmd: Option<String>,
@@ -137,6 +139,8 @@ pub trait Tool: Send + Sync {
     fn permission_payload(&self, ctx: &ToolCtx, args: &Value) -> Value { let _ = ctx; args.clone() }
     /// File-mutating tools describe their change here, without touching disk, so the loop can
     /// record `file_changes(applied=0)` and show a diff before approval. `None` for the rest.
+    /// Unused so far: P1-T10 records changes as `applied=1` because the tool has already written
+    /// the file. P2-T03 (accept/reject a diff card) is what needs the plan-then-apply split.
     fn plan(&self, ctx: &ToolCtx, args: &Value) -> Option<std::result::Result<PendingChange, ToolResult>> { let _ = (ctx, args); None }
     fn run(&self, ctx: &ToolCtx, args: Value) -> ToolResult;
 }

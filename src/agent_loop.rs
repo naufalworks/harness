@@ -60,6 +60,16 @@ pub struct StepOutcome {
     pub event: &'static str, pub payload: Value, pub artifacts: Vec<Artifact>,
 }
 
+/// A pending approval: which call is asking, what the human will be shown, and how long the
+/// asking turn will actually wait. Named fields, because `request`/`session`/`step` are three
+/// interchangeable-looking `String`s that a positional call could silently transpose.
+pub struct NewPermission {
+    pub request: String, pub session: String, pub step: String,
+    pub tool: String, pub summary: String, pub args: Value,
+    /// The caller's effective deadline (see `permission_ttl`), not a wish.
+    pub ttl_seconds: i64,
+}
+
 impl DbStore {
     /// Commit a `running` step and its `*_started` event together, and return the step id.
     /// The sequence number comes from the same transaction, so two steps of one request can
@@ -119,18 +129,17 @@ impl DbStore {
 
     /// Create the `pending` approval a side-effecting call needs, with its event. The summary
     /// and payload come from the tool, never from model text.
-    /// `ttl_seconds` is the caller's effective deadline (see `permission_ttl`), not a wish: the
-    /// row expires when the turn stops waiting, so the UI and the loop agree on the window.
-    pub async fn request_permission(&self, request: String, session: String, step: String, tool: String, summary: String, args: Value, ttl_seconds: i64) -> Result<String> {
+    /// The row expires when the turn stops waiting, so the UI and the loop agree on the window.
+    pub async fn request_permission(&self, ask: NewPermission) -> Result<String> {
         let id = uid();
         let created = id.clone();
         self.run(move |c| {
             let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let stamp = now();
-            let expires = (chrono::Utc::now() + chrono::Duration::seconds(ttl_seconds)).to_rfc3339();
-            tx.execute(sql::PERMISSION_CREATE, params![id, request, step, tool, summary, args.to_string(), stamp, expires])?;
-            tx.execute(sql::EVENT, params![request, session, step, "permission_requested",
-                json!({"permission_id":id,"tool":tool,"summary":summary,"expires_at":expires}).to_string(), stamp])?;
+            let expires = (chrono::Utc::now() + chrono::Duration::seconds(ask.ttl_seconds)).to_rfc3339();
+            tx.execute(sql::PERMISSION_CREATE, params![id, ask.request, ask.step, ask.tool, ask.summary, ask.args.to_string(), stamp, expires])?;
+            tx.execute(sql::EVENT, params![ask.request, ask.session, ask.step, "permission_requested",
+                json!({"permission_id":id,"tool":ask.tool,"summary":ask.summary,"expires_at":expires}).to_string(), stamp])?;
             tx.commit()?;
             Ok(())
         }).await?;
@@ -367,7 +376,10 @@ impl Ctx<'_> {
             .map(|(tool, ctx)| (tool.summary(&args), tool.permission_payload(ctx, &args)));
         if let Some((prompt, payload)) = gate {
             let ttl = permission_ttl(deadline.saturating_duration_since(Instant::now()).as_secs() as i64);
-            let permission = self.store.request_permission(self.request.clone(), self.session.clone(), step.clone(), call.name.clone(), prompt, payload, ttl).await?;
+            let permission = self.store.request_permission(NewPermission {
+                request: self.request.clone(), session: self.session.clone(), step: step.clone(),
+                tool: call.name.clone(), summary: prompt, args: payload, ttl_seconds: ttl,
+            }).await?;
             if let Err(reason) = self.await_permission(&permission, &step, deadline).await? {
                 // A denial is a tool error, not a dead turn: the model can adapt or ask.
                 let refusal = ToolResult::err("denied", format!("`{}` was not approved: {reason}. Nothing was run and nothing changed on disk.", call.name));
@@ -802,7 +814,8 @@ mod tests {
         let step = db.begin_step(NewStep { request: turn.request.clone(), session: turn.session.clone(), kind: "tool_call",
             tool_name: Some("write".into()), tool_call_id: Some("call-1".into()), input: json!({"path":"a.md"}),
             event: "tool_started", payload: json!({"tool":"write","summary":"write a.md"}) }).await.unwrap();
-        let id = db.request_permission(turn.request.clone(), turn.session.clone(), step, "write".into(), "write a.md".into(), json!({"diff":"+x"}), 900).await.unwrap();
+        let id = db.request_permission(NewPermission { request: turn.request.clone(), session: turn.session.clone(), step,
+            tool: "write".into(), summary: "write a.md".into(), args: json!({"diff":"+x"}), ttl_seconds: 900 }).await.unwrap();
 
         assert!(matches!(db.resolve_permission(id.clone(), "global".into(), "approved").await.unwrap(), Resolution::Recorded));
         assert!(matches!(db.resolve_permission(id.clone(), "global".into(), "approved").await.unwrap(), Resolution::Unchanged), "a replayed click is not an error");
@@ -820,7 +833,8 @@ mod tests {
         let step = db.begin_step(NewStep { request: turn.request.clone(), session: turn.session.clone(), kind: "tool_call",
             tool_name: Some("bash".into()), tool_call_id: Some("call-1".into()), input: json!({"command":"echo hi"}),
             event: "tool_started", payload: json!({"tool":"bash","summary":"bash echo hi"}) }).await.unwrap();
-        let id = db.request_permission(turn.request.clone(), turn.session.clone(), step.clone(), "bash".into(), "bash echo hi".into(), json!({"command":"echo hi"}), 0).await.unwrap();
+        let id = db.request_permission(NewPermission { request: turn.request.clone(), session: turn.session.clone(), step: step.clone(),
+            tool: "bash".into(), summary: "bash echo hi".into(), args: json!({"command":"echo hi"}), ttl_seconds: 0 }).await.unwrap();
         // The loop gave up first, exactly as it does when the wall budget runs out.
         assert_eq!(db.expire_permission(id.clone(), turn.request.clone(), turn.session.clone(), step).await.unwrap(), "expired");
         assert!(matches!(db.resolve_permission(id, "global".into(), "approved").await.unwrap(), Resolution::Expired), "an approval that arrives too late must not run anything");
@@ -847,10 +861,11 @@ mod tests {
         let step = db.begin_step(NewStep { request: request.clone(), session: turn.session.clone(), kind: "tool_call",
             tool_name: Some("bash".into()), tool_call_id: Some("call-1".into()), input: json!({"command":"sleep 60"}),
             event: "tool_started", payload: json!({"tool":"bash","summary":"bash sleep 60"}) }).await.unwrap();
-        db.request_permission(request.clone(), turn.session.clone(), step.clone(), "bash".into(), "bash sleep 60".into(), json!({"command":"sleep 60"}), 900).await.unwrap();
+        db.request_permission(NewPermission { request: request.clone(), session: turn.session.clone(), step: step.clone(),
+            tool: "bash".into(), summary: "bash sleep 60".into(), args: json!({"command":"sleep 60"}), ttl_seconds: 900 }).await.unwrap();
 
         // The process dies here. Startup recovery is the only thing that gets to speak next.
-        db.run(|c| crate::recording::recover(c)).await.unwrap();
+        db.run(crate::recording::recover).await.unwrap();
 
         let rows = steps(&db, &request).await;
         assert_eq!(rows[0]["status"], "interrupted", "a step that was running when the process died is interrupted, not failed");

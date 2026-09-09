@@ -303,7 +303,8 @@ mod tests{
         let step=store.begin_step(agent_loop::NewStep{request:request.clone(),session:session.clone(),kind:"tool_call",
             tool_name:Some("write".into()),tool_call_id:Some("call-1".into()),input:json!({"path":"notes.md"}),
             event:"tool_started",payload:json!({"tool":"write","summary":"write notes.md"})}).await.unwrap();
-        let id=store.request_permission(request,session,step,"write".into(),"write notes.md (+1 -1)".into(),json!({"diff":"-beta\n+gamma"}),900).await.unwrap();
+        let id=store.request_permission(agent_loop::NewPermission{request,session,step,tool:"write".into(),
+            summary:"write notes.md (+1 -1)".into(),args:json!({"diff":"-beta\n+gamma"}),ttl_seconds:900}).await.unwrap();
 
         let listed=app.clone().oneshot(authorized("GET","/permissions?scope=global").body(Body::empty()).unwrap()).await.unwrap();
         assert_eq!(listed.status(),StatusCode::OK);

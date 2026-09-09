@@ -18,6 +18,29 @@ Suggested first message to an AI continuing this work:
 
 ---
 
+## 2026-09-09 · AI session (Notion AI via Local) · P1 review pass before P2
+
+**Changed.** No behaviour; this is the review of P1-T10…T14 read back as a whole.
+- `request_permission` had grown to eight positional arguments, five of them `String`, so a caller could transpose `request`/`session`/`step` and still compile. It now takes a `NewPermission` struct, like `NewStep` and `StepOutcome` already do. This also retired the `clippy::too_many_arguments` warning it had earned.
+- Rewrote the `grep` literal fallback's two context loops as slice iterations, retiring the `needless_range_loop` pair that had been carried since P1-T06, and dropped a `redundant_closure` in a P1-T11 test. Clippy is now down to the two deliberate dead-code warnings.
+- **That refactor was untested**, because `rg` is installed here and the fallback never runs: the existing grep tests all pass `context: 0`. Added `grep_fallback_numbers_its_context_window`, which calls the fallback directly and pins the rendered window — match lines keep `:`, neighbours keep `-`, each with its own number — including the clamp at the first and last line. Hand-numbered context is exactly the arithmetic that rots silently.
+- `ToolCtx.request_id` and `Tool::plan` now say in the source that they are waiting on **P2-T03** (accept/reject a diff card), not P1-T11. P1-T10 records changes as `applied=1` because the tool has already written the file, so the plan-then-apply split has no caller until a diff card can reject one.
+
+**Verified.**
+- `bash scripts/verify_release.sh` → exit 0, unchanged: 80 Rust tests, clippy, release build, 50 Python contracts, migrations, 8 schemas, both mock-provider HTTP suites.
+- Read the T11–T14 diffs against the design doc. The permission gate is right where it counts: `resolve_permission` decides on the stored `status` and never on the clock, which is safe because something always flips a pending row — the loop at its own deadline, or `RECOVER_PERMISSIONS` at startup — and the "approved a moment before the deadline" race is handled by `expire_permission` returning the current status so a late `approved` is still honoured.
+- The T13 UI never touches `innerHTML`; every model- and tool-authored string goes through `textContent` or `createElement`. No DOM-injection path from tool output or a diff preview.
+
+**Open.**
+- Unchanged caveats: `.harness/logs/` is never pruned; a background `pid` is the owning shell, not the job; `permission_payload` diffs cap at 64 KiB; the browser suites (`tests/ui_smoke.cjs`, `tests/recording_ui.cjs`) are still not run by the gate.
+- The `rg`-vs-fallback caveat is now narrower, not gone: the fallback's own rendering is pinned, but nothing asserts the two engines agree on the same corpus, and the `.gitignore` behaviour only ripgrep provides is still untested.
+- While a turn is pending the UI polls three endpoints every second and the API admits eight concurrent requests. It degrades quietly today (the interval swallows the error), and P2-T01 removes two of the three polls, but the SSE stream must not hold its semaphore permit for the life of the connection.
+
+**Next.**
+- P2-T01 resumable authenticated SSE over `activity_events`. `/activity` already returns a DB-sequence cursor that provably does not replay, which is the hard half.
+
+---
+
 ## 2026-09-09 · AI session (Notion AI via Local) · P1-T14 scripted tool-call HTTP coverage
 
 **Changed.**

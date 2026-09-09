@@ -121,9 +121,11 @@ fn grep_fallback(root: &Path, base: &Path, pattern: &str, glob: Option<&str>, ci
             if !hay.contains(&needle) { continue; }
             if count >= max { capped = true; break 'outer; }
             count += 1;
-            for c in i.saturating_sub(context)..i { lines.push(format!("{rel}-{}", render_line(c + 1, all[c]))); }
+            let first = i.saturating_sub(context);
+            for (n, before) in all[first..i].iter().enumerate() { lines.push(format!("{rel}-{}", render_line(first + n + 1, before))); }
             lines.push(format!("{rel}:{}", render_line(i + 1, line)));
-            for c in i + 1..(i + 1 + context).min(all.len()) { lines.push(format!("{rel}-{}", render_line(c + 1, all[c]))); }
+            let last = (i + 1 + context).min(all.len());
+            for (n, after) in all[i + 1..last].iter().enumerate() { lines.push(format!("{rel}-{}", render_line(i + n + 2, after))); }
         }
     }
     Ok((lines, count, capped, "literal"))
@@ -259,6 +261,35 @@ mod tests {
         assert!(out.content.trim_end().ends_with("1 total"), "{}", out.content);
         assert_eq!(Glob.run(&ctx, json!({ "pattern": "*.rs", "path": ".." })).error_code, Some("invalid_arguments"));
         assert_eq!(Glob.run(&ctx, json!({})).error_code, Some("invalid_arguments"));
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// The literal fallback only runs where `rg` is missing, so nothing else covers it here.
+    /// Its context lines are numbered by hand, which is exactly the kind of arithmetic that
+    /// rots silently: pin the rendered window instead of trusting it.
+    #[test] fn grep_fallback_numbers_its_context_window() {
+        let (root, _) = project();
+        let file = root.join("src/lib.rs");
+        let (lines, count, capped, engine) = grep_fallback(&root, &file, "beta", None, false, 50, 1).unwrap();
+        assert_eq!((count, capped, engine), (1, false, "literal"));
+        assert_eq!(lines, vec![
+            format!("src/lib.rs-{}", render_line(1, "fn alpha() {}")),
+            format!("src/lib.rs:{}", render_line(2, "fn beta() {}")),
+            format!("src/lib.rs-{}", render_line(3, "fn gamma() {}")),
+        ], "a match keeps `:` and its neighbours keep `-`, with their own line numbers");
+
+        // First and last line: the window must clamp instead of wrapping or panicking.
+        let (first, ..) = grep_fallback(&root, &file, "alpha", None, false, 50, 2).unwrap();
+        assert_eq!(first, vec![
+            format!("src/lib.rs:{}", render_line(1, "fn alpha() {}")),
+            format!("src/lib.rs-{}", render_line(2, "fn beta() {}")),
+            format!("src/lib.rs-{}", render_line(3, "fn gamma() {}")),
+        ], "{first:?}");
+        let (last, ..) = grep_fallback(&root, &file, "gamma", None, false, 50, 1).unwrap();
+        assert_eq!(last, vec![
+            format!("src/lib.rs-{}", render_line(2, "fn beta() {}")),
+            format!("src/lib.rs:{}", render_line(3, "fn gamma() {}")),
+        ], "{last:?}");
         std::fs::remove_dir_all(root).ok();
     }
 
