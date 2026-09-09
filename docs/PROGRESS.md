@@ -18,6 +18,25 @@ Suggested first message to an AI continuing this work:
 
 ---
 
+## 2026-09-09 · AI session (Notion AI via Local) · P1-T13 minimal UI
+
+**Changed.**
+- Restored the existing local-first conversation shell after the initial UI pass and added a turn record panel in `static/index.html`, `static/app.js`, and `static/style.css`.
+- The panel polls the durable steps, plan, and pending-permission APIs while a request is active. Steps are native collapsible rows with input/output previews; approval cards show the tool-owned diff or command and send idempotent Approve/Deny decisions; plans render as a checklist with progress.
+- Renamed the Models view to Project & models and added scope settings for root path, permission mode, diagnostics command, and budgets via `/scopes/{scope}`.
+- Kept the existing security posture: relative API calls, bearer token only in tab memory, no inline styles, no `innerHTML`, and all untrusted text rendered through DOM nodes / `textContent`.
+
+**Verified.**
+- `node --check static/app.js` → pass.
+- `git diff --check` and HTML-hook check → pass; all 64 direct JS element hooks resolve.
+- `cargo test --locked` → **80** passed.
+- Browser harness was attempted but is blocked in this checkout because the `playwright` Node module is not installed.
+
+**Next.**
+- P1-T14: extend the synthetic HTTP provider to emit scripted tool calls and cover the full read → edit → bash → answer path over HTTP.
+
+---
+
 ## 2026-09-09 · AI session (Notion AI via Local) · P1-T12 API for steps, plan, activity
 
 **Changed.**

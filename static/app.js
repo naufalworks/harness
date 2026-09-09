@@ -121,6 +121,7 @@ async function followReceipt(first, myEpoch) {
   for (let i=0; i<120; i++) {
     if (!token || myEpoch !== epoch) return;
     accepted(data);
+    await refreshAgentTurn(data).catch(() => {});
     if (['complete','failed','interrupted'].includes(data.state)) {
       rememberPending(null); $('retryrequest').hidden = true;
       await loadHistory(); await loadSessions();
@@ -250,3 +251,179 @@ for (const tab of document.querySelectorAll('[data-view]')) tab.addEventListener
   try { if (tab.dataset.view === 'memory') await loadCandidates(); if (tab.dataset.view === 'imports') await loadJobs(); if (tab.dataset.view === 'settings') { const data = await api('/config'); $('mainmodel').value = data.main || ''; $('extractmodel').value = data.extraction || ''; } } catch (error) { notice(error.message, true); }
 });
 setInterval(() => { if (token && !document.hidden) refreshStatus().catch(() => {}); }, 5000);
+
+// P1-T13: the agent activity view is deliberately polling for now. The durable receipt remains
+// the source of truth, while these read-only endpoints make the current turn visible between
+// model calls. No model/tool text is inserted as HTML.
+const agentState = { requestId: null, sessionId: null, scope: null, permission: null, busyDecision: false };
+
+function agentIcon(status) {
+  if (status === 'complete') return '●';
+  if (status === 'failed') return '✖';
+  if (status === 'denied' || status === 'interrupted') return '⚠';
+  return '○';
+}
+
+function agentMeta(step) {
+  if (step.status === 'running') return 'running';
+  if (step.status === 'queued') return 'queued';
+  if (step.finished_at) {
+    const date = new Date(step.finished_at);
+    if (!Number.isNaN(date.getTime())) return date.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+  }
+  return step.status || '';
+}
+
+function renderAgentSteps(steps) {
+  const panel = $('agent-steps');
+  const list = $('steps-list');
+  list.replaceChildren();
+  if (!steps?.length) { panel.hidden = true; return; }
+  panel.hidden = false;
+  $('steps-count').textContent = `(${steps.length})`;
+  for (const step of steps) {
+    const detail = node('details', undefined, `agent-step ${step.status || ''}`);
+    const heading = node('summary');
+    heading.append(node('span', agentIcon(step.status), 'step-icon'));
+    heading.append(node('strong', step.tool_name || step.kind || 'step', 'step-tool'));
+    heading.append(node('span', step.summary || (step.status === 'running' ? 'working…' : 'step recorded'), 'step-summary'));
+    heading.append(node('span', agentMeta(step), 'step-meta'));
+    const body = node('div', undefined, 'step-details');
+    body.append(node('div', undefined, 'step-preview'));
+    body.firstChild.append(node('strong', 'Input'), node('pre', step.input_preview || '(none)'));
+    const output = node('div', undefined, 'step-preview');
+    output.append(node('strong', 'Output'), node('pre', step.output_preview || '(none)'));
+    body.append(output);
+    if (step.previews_capped) body.append(node('p', 'Preview capped at 2 KB.', 'muted'));
+    if (step.truncated) body.append(node('p', 'Tool output was capped.', 'muted'));
+    detail.append(heading, body);
+    list.append(detail);
+  }
+}
+
+function renderAgentPlan(plan) {
+  const panel = $('agent-plan');
+  const list = $('plan-items');
+  list.replaceChildren();
+  if (!plan?.items?.length) { panel.hidden = true; return; }
+  panel.hidden = false;
+  const done = plan.items.filter(item => item.status === 'done').length;
+  $('plan-count').textContent = `${done}/${plan.items.length} done`;
+  for (const item of plan.items) {
+    const mark = item.status === 'done' ? '☑' : item.status === 'in_progress' ? '▶' : item.status === 'failed' ? '✖' : '☐';
+    list.append(node('div', `${mark} ${item.text}`, `plan-item ${item.status || ''}`));
+  }
+}
+
+function permissionText(permission) {
+  if (!permission) return '';
+  const args = permission.args;
+  if (args && typeof args === 'object' && typeof args.diff === 'string') return args.diff;
+  if (args && typeof args === 'object' && typeof args.command === 'string') return args.command;
+  return JSON.stringify(args || {}, null, 2);
+}
+
+function renderAgentPermission(permission) {
+  const card = $('agent-permission');
+  if (!permission) {
+    card.hidden = true;
+    agentState.permission = null;
+    return;
+  }
+  card.hidden = false;
+  agentState.permission = permission;
+  $('permission-summary').textContent = `${permission.tool}: ${permission.summary}`;
+  $('permission-detail').textContent = permissionText(permission);
+  $('permission-approve').disabled = agentState.busyDecision;
+  $('permission-deny').disabled = agentState.busyDecision;
+}
+
+function agentStatusLabel(state) {
+  return {captured:'Saved · queued', generating:'Thinking…', complete:'Done', failed:'Saved · answer failed', interrupted:'Saved · interrupted'}[state] || 'Saved';
+}
+
+async function refreshAgentTurn(receipt) {
+  const requestId = receipt?.request_id || pending?.request_id;
+  const sessionId = receipt?.session_id || pending?.session_id || session;
+  const turnScope = receipt?.scope || pending?.scope || scope;
+  if (!token || !requestId) return;
+  const data = await Promise.all([
+    api(`/chat/requests/${encodeURIComponent(requestId)}/steps`),
+    api(`/sessions/${encodeURIComponent(sessionId)}/plan`),
+    api(`/permissions?scope=${encodeURIComponent(turnScope)}`),
+  ]);
+  if (!token || requestId !== (pending?.request_id || requestId) || sessionId !== session) return;
+  agentState.requestId = requestId; agentState.sessionId = sessionId; agentState.scope = turnScope;
+  $('agent-turn').hidden = false;
+  $('agent-turn-status').textContent = agentStatusLabel(receipt?.state);
+  renderAgentSteps(data[0].steps || []);
+  renderAgentPlan(data[1]);
+  const match = (data[2].permissions || []).find(item => item.request_id === requestId);
+  renderAgentPermission(match || null);
+  if (!match && !(data[0].steps || []).length && !(data[1].items || []).length) $('agent-turn').hidden = true;
+}
+
+async function decideAgentPermission(decision) {
+  const permission = agentState.permission;
+  if (!permission || agentState.busyDecision) return;
+  agentState.busyDecision = true;
+  renderAgentPermission(permission);
+  try {
+    await api(`/permissions/${encodeURIComponent(permission.id)}`, { decision, scope: agentState.scope || scope });
+    renderAgentPermission(null);
+    notice(decision === 'approve' ? 'Approval recorded. The agent can continue.' : 'Denied. The agent will record the refusal.');
+    await refreshAgentTurn({request_id: agentState.requestId, session_id: agentState.sessionId, scope: agentState.scope});
+  } catch (error) {
+    notice(error.message, true);
+  } finally {
+    agentState.busyDecision = false;
+    if (agentState.permission) renderAgentPermission(agentState.permission);
+  }
+}
+
+$('permission-approve').addEventListener('click', () => decideAgentPermission('approve'));
+$('permission-deny').addEventListener('click', () => decideAgentPermission('deny'));
+
+// Keep the activity card alive after the user returns to a tab with an unfinished request.
+setInterval(() => {
+  if (token && pending && !document.hidden) refreshAgentTurn().catch(() => {});
+}, 1000);
+
+function fillProjectSettings(data) {
+  $('rootpath').value = data.root_path || '';
+  $('permissionmode').value = data.permission_mode || 'ask';
+  $('diagnosticscmd').value = data.diagnostics_cmd || '';
+  $('maxsteps').value = data.max_steps ?? 40;
+  $('maxtoolbytes').value = data.max_tool_bytes ?? 400000;
+  $('maxwallseconds').value = data.max_wall_seconds ?? 900;
+}
+
+async function loadProjectSettings() {
+  try {
+    fillProjectSettings(await api(`/scopes/${encodeURIComponent(scope)}`));
+  } catch (error) {
+    if (error.status === 404) fillProjectSettings({permission_mode:'ask', max_steps:40, max_tool_bytes:400000, max_wall_seconds:900});
+    else throw error;
+  }
+}
+
+$('projectform').addEventListener('submit', async event => {
+  event.preventDefault();
+  const numberOrNull = id => $(id).value === '' ? null : Number($(id).value);
+  const payload = {
+    root_path: $('rootpath').value.trim() || null,
+    permission_mode: $('permissionmode').value,
+    diagnostics_cmd: $('diagnosticscmd').value.trim() || null,
+    max_steps: numberOrNull('maxsteps'),
+    max_tool_bytes: numberOrNull('maxtoolbytes'),
+    max_wall_seconds: numberOrNull('maxwallseconds'),
+  };
+  try {
+    await api(`/scopes/${encodeURIComponent(scope)}`, payload);
+    notice(`Project settings saved for ${scope}.`);
+  } catch (error) { notice(error.message, true); }
+});
+
+for (const tab of document.querySelectorAll('[data-view]')) tab.addEventListener('click', () => {
+  if (tab.dataset.view === 'settings' && token) loadProjectSettings().catch(error => notice(error.message, true));
+});
