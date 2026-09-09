@@ -78,7 +78,10 @@ kept but never enter recall.
 Prefer `POST /chat/submit` → 202 receipt → poll `GET /chat/requests/{id}`.
 Context receipt: `GET /chat/requests/{id}/context`. History: `GET /sessions`,
 `GET /sessions/{id}/messages`. Memory inbox: `GET /memory/candidates?scope=…`,
-`POST /memory/confirm`. Full behavior: `docs/RECORDING_PROTOCOL.md`.
+`POST /memory/confirm`. Pending tool approvals: `GET /permissions?scope=…`,
+`POST /permissions/{id}` with `{"decision":"approve"|"deny"}` (idempotent; 409 if
+already resolved the other way, 410 once the waiting turn gave up).
+Full behavior: `docs/RECORDING_PROTOCOL.md`.
 
 ## Remaining work
 

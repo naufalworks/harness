@@ -19,14 +19,31 @@ use crate::{agentic_sql as sql, ingest::Event, memory_agents::{self, MemoryAgent
 const AGENT_PROMPT: &str = include_str!("../prompts/main_agent.md");
 /// How often the loop looks for a human decision on a pending approval.
 const PERMISSION_POLL: Duration = Duration::from_millis(500);
-/// docs/design/agentic-turn.md#permissions. The wait is additionally bounded by the turn's own
-/// wall-clock budget, so waiting for an approval can never outlive the turn that needs it.
+/// docs/design/agentic-turn.md#permissions gives an approval 30 minutes. A turn's wall budget
+/// (15 min by default) is shorter, and P1-T11 settles that conflict the honest way: the earlier
+/// deadline wins, and `expires_at` is written as that deadline, so a pending row never advertises
+/// an approval window the waiting turn will not actually honour.
 const PERMISSION_TTL_SECONDS: i64 = 30 * 60;
 /// What the assistant says when the provider returns neither text nor a tool call. Saying this
 /// is honest; inventing a summary of work that did not happen is not.
 const NO_TEXT: &str = "(the model returned no answer text for this turn)";
 
 // ---- Durable transitions ---------------------------------------------------------------
+
+/// What a human decision did to a pending approval. The HTTP layer maps these to status codes;
+/// the loop never sees them, because it only reads the stored `status`.
+pub enum Resolution {
+    /// This call wrote the decision and its `permission_resolved` event.
+    Recorded,
+    /// The same decision was already on record: a replayed click, not an error.
+    Unchanged,
+    /// Already resolved the other way. Nothing was changed.
+    Conflict,
+    /// The turn stopped waiting before the decision arrived.
+    Expired,
+    /// No such approval in this scope.
+    NotFound,
+}
 
 /// A `running` step plus the activity event that announces it.
 pub struct NewStep {
@@ -102,13 +119,15 @@ impl DbStore {
 
     /// Create the `pending` approval a side-effecting call needs, with its event. The summary
     /// and payload come from the tool, never from model text.
-    pub async fn request_permission(&self, request: String, session: String, step: String, tool: String, summary: String, args: Value) -> Result<String> {
+    /// `ttl_seconds` is the caller's effective deadline (see `permission_ttl`), not a wish: the
+    /// row expires when the turn stops waiting, so the UI and the loop agree on the window.
+    pub async fn request_permission(&self, request: String, session: String, step: String, tool: String, summary: String, args: Value, ttl_seconds: i64) -> Result<String> {
         let id = uid();
         let created = id.clone();
         self.run(move |c| {
             let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let stamp = now();
-            let expires = (chrono::Utc::now() + chrono::Duration::seconds(PERMISSION_TTL_SECONDS)).to_rfc3339();
+            let expires = (chrono::Utc::now() + chrono::Duration::seconds(ttl_seconds)).to_rfc3339();
             tx.execute(sql::PERMISSION_CREATE, params![id, request, step, tool, summary, args.to_string(), stamp, expires])?;
             tx.execute(sql::EVENT, params![request, session, step, "permission_requested",
                 json!({"permission_id":id,"tool":tool,"summary":summary,"expires_at":expires}).to_string(), stamp])?;
@@ -121,6 +140,55 @@ impl DbStore {
     /// The stored decision, or `None` if the row is gone.
     pub async fn permission_status(&self, id: String) -> Result<Option<String>> {
         self.run(move |c| Ok(c.query_row(sql::PERMISSION_STATUS, [id], |r| r.get::<_, String>(0)).optional()?)).await
+    }
+
+    /// Every approval still waiting for a human in this scope, newest last. `args_json` is the
+    /// tool's own bounded, redacted payload (a diff preview, a command), so the UI can show what
+    /// it is about to allow without asking the model to describe it.
+    pub async fn pending_permissions(&self, scope: String) -> Result<Value> {
+        self.run(move |c| {
+            let mut stmt = c.prepare(sql::PERMISSIONS_PENDING)?;
+            let rows = stmt.query_map([scope], |r| Ok(json!({
+                "id": r.get::<_, String>(0)?, "request_id": r.get::<_, String>(1)?, "step_id": r.get::<_, String>(2)?,
+                "tool": r.get::<_, String>(3)?, "summary": r.get::<_, String>(4)?,
+                "args": serde_json::from_str::<Value>(&r.get::<_, String>(5)?).unwrap_or(Value::Null),
+                "created_at": r.get::<_, String>(6)?, "expires_at": r.get::<_, String>(7)?,
+            })))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(json!({"permissions": rows}))
+        }).await
+    }
+
+    /// Record a human decision on a pending approval. The `pending` guard in `PERMISSION_RESOLVE`
+    /// makes this idempotent: the first decision wins, a repeat of that same decision is accepted
+    /// and writes no second event, and the other decision is a conflict rather than a silent flip.
+    /// The waiting loop only ever reads `status`, so committing here is what unblocks the turn.
+    pub async fn resolve_permission(&self, id: String, scope: String, decision: &'static str) -> Result<Resolution> {
+        debug_assert!(matches!(decision, "approved" | "denied"), "only a human approve/deny reaches this");
+        self.run(move |c| {
+            let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let row = tx.query_row(sql::PERMISSION_GET, [&id], |r| Ok((
+                r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(6)?, r.get::<_, String>(10)?,
+            ))).optional()?;
+            // A wrong scope is a miss, not a leak: nothing tells the caller the row exists.
+            let Some((request, step, status, _)) = row.filter(|row| row.3 == scope) else {
+                return Ok(Resolution::NotFound);
+            };
+            match status.as_str() {
+                "pending" => {}
+                "expired" => return Ok(Resolution::Expired),
+                same if same == decision => return Ok(Resolution::Unchanged),
+                _ => return Ok(Resolution::Conflict),
+            }
+            let stamp = now();
+            if tx.execute(sql::PERMISSION_RESOLVE, params![id, decision, stamp])? != 1 {
+                bail!("approval {id} stopped being pending inside its own transaction");
+            }
+            let session: String = tx.query_row(sql::SESSION_OF_REQUEST, [&request], |r| r.get(0))?;
+            tx.execute(sql::EVENT, params![request, session, step, "permission_resolved",
+                json!({"permission_id":id,"decision":decision}).to_string(), stamp])?;
+            tx.commit()?;
+            Ok(Resolution::Recorded)
+        }).await
     }
 
     /// Expire a still-pending approval when the loop stops waiting. Idempotent: a decision that
@@ -298,7 +366,8 @@ impl Ctx<'_> {
             .filter(|(tool, _)| self.registry.requires_permission(*tool, &args, self.mode))
             .map(|(tool, ctx)| (tool.summary(&args), tool.permission_payload(ctx, &args)));
         if let Some((prompt, payload)) = gate {
-            let permission = self.store.request_permission(self.request.clone(), self.session.clone(), step.clone(), call.name.clone(), prompt, payload).await?;
+            let ttl = permission_ttl(deadline.saturating_duration_since(Instant::now()).as_secs() as i64);
+            let permission = self.store.request_permission(self.request.clone(), self.session.clone(), step.clone(), call.name.clone(), prompt, payload, ttl).await?;
             if let Err(reason) = self.await_permission(&permission, &step, deadline).await? {
                 // A denial is a tool error, not a dead turn: the model can adapt or ask.
                 let refusal = ToolResult::err("denied", format!("`{}` was not approved: {reason}. Nothing was run and nothing changed on disk.", call.name));
@@ -358,6 +427,12 @@ fn exhausted(steps: i64, max_steps: i64, bytes: i64, max_bytes: i64, elapsed: i6
     if bytes >= max_bytes { return Some("max_tool_bytes"); }
     if elapsed >= max_wall { return Some("max_wall_seconds"); }
     None
+}
+
+/// How long a new approval row may live: the design TTL, or the turn's remaining wall budget when
+/// that is shorter. Clamped at zero so a row is never born already expired.
+fn permission_ttl(remaining_wall_seconds: i64) -> i64 {
+    remaining_wall_seconds.clamp(0, PERMISSION_TTL_SECONDS)
 }
 
 /// The turn's own last message when it runs out of budget. It must not read like success.
@@ -451,6 +526,23 @@ mod tests {
 
     async fn receipt(db: &DbStore, request: &str) -> Value {
         db.recording_receipt(request.to_string()).await.unwrap().unwrap()
+    }
+
+    /// The human half of the gate, exactly as `POST /permissions/{id}` performs it: read the one
+    /// pending approval for this scope and record the decision. False while none is waiting yet.
+    async fn decide(db: &DbStore, decision: &'static str) -> bool {
+        let pending = db.pending_permissions("global".into()).await.unwrap();
+        let Some(id) = pending["permissions"][0]["id"].as_str().map(str::to_string) else { return false };
+        matches!(db.resolve_permission(id, "global".into(), decision).await.unwrap(), Resolution::Recorded)
+    }
+
+    async fn permissions(db: &DbStore) -> Vec<Value> {
+        db.run(|c| {
+            let mut stmt = c.prepare("SELECT tool_name,status,summary FROM permission_requests ORDER BY created_at")?;
+            let rows = stmt.query_map([], |r| Ok(json!({"tool":r.get::<_,String>(0)?,"status":r.get::<_,String>(1)?,"summary":r.get::<_,String>(2)?})))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        }).await.unwrap()
     }
 
     #[tokio::test] async fn a_tool_turn_records_every_step_and_change_before_answering() {
@@ -557,13 +649,12 @@ mod tests {
         let turn = claim(&db, "overwrite my notes").await;
         let request = turn.request.clone();
 
-        // Stands in for P1-T11's `POST /permissions/{id}`: whatever writes the decision, the
-        // loop must observe it and refuse to run the tool.
+        // The same storage call `POST /permissions/{id}` makes (P1-T11): whatever writes the
+        // decision, the loop must observe it and refuse to run the tool.
         let denier = db.clone();
         tokio::spawn(async move {
             for _ in 0..400 {
-                let flipped = denier.run(|c| Ok(c.execute("UPDATE permission_requests SET status='denied',resolved_at=datetime('now') WHERE status='pending'", [])?)).await.unwrap_or(0);
-                if flipped > 0 { return; }
+                if decide(&denier, "denied").await { return; }
                 tokio::time::sleep(Duration::from_millis(25)).await;
             }
         });
@@ -602,6 +693,139 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    /// P1-T11: the one path P1-T10 could not reach. An approval has to actually let the tool run.
+    #[tokio::test] async fn approving_permissions_unblocks_a_waiting_turn() {
+        let db = DbStore::init(":memory:").unwrap();
+        let root = project(&db, "ask", ScopePatch::default()).await;
+        let script = Script::new(vec![
+            calls(vec![("call-1", "write", r#"{"path":"notes.md","content":"approved\n","overwrite":true}"#)]),
+            text("Wrote notes.md after you approved it."),
+        ]);
+        let agents = provider(script.clone()).await;
+        let turn = claim(&db, "overwrite my notes").await;
+        let request = turn.request.clone();
+
+        let approver = db.clone();
+        tokio::spawn(async move {
+            for _ in 0..400 {
+                if decide(&approver, "approved").await { return; }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        });
+        recording::generate(&db, &agents, turn).await.unwrap();
+
+        assert_eq!(std::fs::read_to_string(root.join("notes.md")).unwrap(), "approved\n", "an approved write must reach the disk");
+        let rows = steps(&db, &request).await;
+        assert_eq!((&rows[1]["kind"], &rows[1]["status"], &rows[1]["error"]), (&json!("tool_call"), &json!("complete"), &json!("")), "{rows:#?}");
+        let events = kinds(&db, &request).await;
+        assert_eq!(events.iter().filter(|k| k.as_str() == "permission_resolved").count(), 1, "{events:?}");
+        assert!(events.contains(&"permission_requested".to_string()) && events.contains(&"file_changed".to_string()), "{events:?}");
+        assert_eq!(receipt(&db, &request).await["response"], "Wrote notes.md after you approved it.");
+        let rows = permissions(&db).await;
+        assert_eq!((rows.len(), &rows[0]["tool"], &rows[0]["status"]), (1, &json!("write"), &json!("approved")), "{rows:#?}");
+        assert!(rows[0]["summary"].as_str().unwrap().contains("notes.md"), "the card the human saw names the file: {:?}", rows[0]["summary"]);
+        assert!(db.pending_permissions("global".into()).await.unwrap()["permissions"].as_array().unwrap().is_empty());
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// `auto_edit` is the whole point of having modes: writes stop asking, `bash` does not.
+    #[tokio::test] async fn auto_edit_permissions_pass_a_write_and_still_stop_bash() {
+        let db = DbStore::init(":memory:").unwrap();
+        let root = project(&db, "auto_edit", ScopePatch::default()).await;
+        let script = Script::new(vec![
+            calls(vec![("call-1", "write", r#"{"path":"notes.md","content":"edited\n","overwrite":true}"#),
+                       ("call-2", "bash", r#"{"command":"echo hi","description":"say hi"}"#)]),
+            text("I wrote the file; the command was refused."),
+        ]);
+        let agents = provider(script.clone()).await;
+        let turn = claim(&db, "write it then run something").await;
+        let request = turn.request.clone();
+
+        let denier = db.clone();
+        tokio::spawn(async move {
+            for _ in 0..400 {
+                if decide(&denier, "denied").await { return; }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        });
+        recording::generate(&db, &agents, turn).await.unwrap();
+
+        assert_eq!(std::fs::read_to_string(root.join("notes.md")).unwrap(), "edited\n", "auto_edit approves an edit without a human");
+        let rows = permissions(&db).await;
+        assert_eq!((rows.len(), &rows[0]["tool"], &rows[0]["status"]), (1, &json!("bash"), &json!("denied")), "only bash may ask in auto_edit: {rows:#?}");
+        let steps = steps(&db, &request).await;
+        let shape: Vec<(&str, &str)> = steps.iter().map(|r| (r["tool"].as_str().unwrap(), r["status"].as_str().unwrap())).collect();
+        assert_eq!(shape, vec![("", "complete"), ("write", "complete"), ("bash", "denied"), ("", "complete")], "{steps:#?}");
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// `auto_all` still stops at the bash deny-list from docs/design/tools.md#bash.
+    #[tokio::test] async fn auto_all_permissions_still_ask_before_a_deny_listed_command() {
+        let db = DbStore::init(":memory:").unwrap();
+        let root = project(&db, "auto_all", ScopePatch::default()).await;
+        let script = Script::new(vec![
+            calls(vec![("call-1", "bash", r#"{"command":"git push --force origin main","description":"force push"}"#)]),
+            text("I did not force-push."),
+        ]);
+        let agents = provider(script.clone()).await;
+        let turn = claim(&db, "force push it").await;
+        let request = turn.request.clone();
+
+        let denier = db.clone();
+        tokio::spawn(async move {
+            for _ in 0..400 {
+                if decide(&denier, "denied").await { return; }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        });
+        recording::generate(&db, &agents, turn).await.unwrap();
+
+        let rows = permissions(&db).await;
+        assert_eq!((rows.len(), &rows[0]["status"]), (1, &json!("denied")), "a deny-listed command asks even in auto_all: {rows:#?}");
+        let steps = steps(&db, &request).await;
+        assert_eq!((&steps[1]["tool"], &steps[1]["status"], &steps[1]["error"]), (&json!("bash"), &json!("denied"), &json!("denied")), "{steps:#?}");
+        let second = &script.requests()[1]["messages"];
+        assert!(second.as_array().unwrap().iter().any(|m| m["role"] == "tool" && m["content"].as_str().unwrap().contains("denied")), "{second}");
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// The T10 question T11 had to answer: a row may not outlive the turn that is waiting on it.
+    #[tokio::test] async fn permissions_expire_with_the_turn_not_thirty_minutes_later() {
+        assert_eq!(permission_ttl(15 * 60), 15 * 60, "a shorter wall budget wins");
+        assert_eq!(permission_ttl(45 * 60), PERMISSION_TTL_SECONDS, "the design TTL caps a generous budget");
+        assert_eq!(permission_ttl(-3), 0, "a turn already out of time cannot open a live approval");
+    }
+
+    #[tokio::test] async fn resolving_permissions_is_idempotent_and_refuses_a_flip() {
+        let db = DbStore::init(":memory:").unwrap();
+        let turn = claim(&db, "needs approval").await;
+        let step = db.begin_step(NewStep { request: turn.request.clone(), session: turn.session.clone(), kind: "tool_call",
+            tool_name: Some("write".into()), tool_call_id: Some("call-1".into()), input: json!({"path":"a.md"}),
+            event: "tool_started", payload: json!({"tool":"write","summary":"write a.md"}) }).await.unwrap();
+        let id = db.request_permission(turn.request.clone(), turn.session.clone(), step, "write".into(), "write a.md".into(), json!({"diff":"+x"}), 900).await.unwrap();
+
+        assert!(matches!(db.resolve_permission(id.clone(), "global".into(), "approved").await.unwrap(), Resolution::Recorded));
+        assert!(matches!(db.resolve_permission(id.clone(), "global".into(), "approved").await.unwrap(), Resolution::Unchanged), "a replayed click is not an error");
+        assert!(matches!(db.resolve_permission(id.clone(), "global".into(), "denied").await.unwrap(), Resolution::Conflict), "a resolved approval cannot be flipped");
+        assert!(matches!(db.resolve_permission(id.clone(), "other".into(), "denied").await.unwrap(), Resolution::NotFound), "another scope cannot see this row");
+        assert!(matches!(db.resolve_permission(uid(), "global".into(), "denied").await.unwrap(), Resolution::NotFound));
+        let events = kinds(&db, &turn.request).await;
+        assert_eq!(events.iter().filter(|k| k.as_str() == "permission_resolved").count(), 1, "one decision, one event: {events:?}");
+        assert_eq!(permissions(&db).await[0]["status"], "approved");
+    }
+
+    #[tokio::test] async fn expired_permissions_cannot_be_approved_afterwards() {
+        let db = DbStore::init(":memory:").unwrap();
+        let turn = claim(&db, "needs approval").await;
+        let step = db.begin_step(NewStep { request: turn.request.clone(), session: turn.session.clone(), kind: "tool_call",
+            tool_name: Some("bash".into()), tool_call_id: Some("call-1".into()), input: json!({"command":"echo hi"}),
+            event: "tool_started", payload: json!({"tool":"bash","summary":"bash echo hi"}) }).await.unwrap();
+        let id = db.request_permission(turn.request.clone(), turn.session.clone(), step.clone(), "bash".into(), "bash echo hi".into(), json!({"command":"echo hi"}), 0).await.unwrap();
+        // The loop gave up first, exactly as it does when the wall budget runs out.
+        assert_eq!(db.expire_permission(id.clone(), turn.request.clone(), turn.session.clone(), step).await.unwrap(), "expired");
+        assert!(matches!(db.resolve_permission(id, "global".into(), "approved").await.unwrap(), Resolution::Expired), "an approval that arrives too late must not run anything");
+    }
+
     #[tokio::test] async fn a_provider_failure_fails_the_turn_without_an_invented_answer() {
         let db = DbStore::init(":memory:").unwrap();
         let agents = provider(Script::new(vec![(503, json!({"error":"upstream is down"}))])).await;
@@ -623,7 +847,7 @@ mod tests {
         let step = db.begin_step(NewStep { request: request.clone(), session: turn.session.clone(), kind: "tool_call",
             tool_name: Some("bash".into()), tool_call_id: Some("call-1".into()), input: json!({"command":"sleep 60"}),
             event: "tool_started", payload: json!({"tool":"bash","summary":"bash sleep 60"}) }).await.unwrap();
-        db.request_permission(request.clone(), turn.session.clone(), step.clone(), "bash".into(), "bash sleep 60".into(), json!({"command":"sleep 60"})).await.unwrap();
+        db.request_permission(request.clone(), turn.session.clone(), step.clone(), "bash".into(), "bash sleep 60".into(), json!({"command":"sleep 60"}), 900).await.unwrap();
 
         // The process dies here. Startup recovery is the only thing that gets to speak next.
         db.run(|c| crate::recording::recover(c)).await.unwrap();

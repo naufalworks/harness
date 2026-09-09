@@ -18,6 +18,32 @@ Suggested first message to an AI continuing this work:
 
 ---
 
+## 2026-09-09 · AI session (Notion AI via Local) · P1-T11 permission gate
+
+**Changed.**
+- `GET /permissions?scope=` lists the approvals still waiting, each with the tool's own `summary` and its `args_json` payload (the diff preview, the command) so a card can be rendered without asking the model to describe what it is about to do.
+- `POST /permissions/{id}` body `{decision:"approve"|"deny", scope}`. `DbStore::resolve_permission` writes the decision, reads the session through `SESSION_OF_REQUEST` and appends `permission_resolved` in ONE Immediate transaction.
+- Idempotency comes from the `status='pending'` guard already in `PERMISSION_RESOLVE`, not from a second read: the first decision wins, a replayed click answers `200 {"recorded":false}` and logs **no** second event, the opposite decision is `409` and changes nothing, a decision that arrives after the loop gave up is `410`, and a foreign scope is `404` rather than a hint that the row exists.
+- The loop needed no new waiting logic. It already polls `status` every 500 ms, so committing the decision is what unblocks the turn — which is exactly the path T10 could not test.
+- **The T10 open question is answered: the earlier deadline wins.** `permission_ttl()` writes `expires_at` as `min(30 min, remaining wall budget)`, and `request_permission` now takes that TTL from its caller. A default turn offers a 15-minute window and says so, instead of advertising 30 minutes it will not honour. Documented in `docs/design/agentic-turn.md#permissions`.
+- `auto_edit` / `auto_all` needed no new code — `Registry::requires_permission` already held the matrix — but they are now covered end to end rather than by inspection.
+- README's API sketch lists both endpoints; the deny test in `agent_loop` now denies through `resolve_permission` instead of raw SQL, so the test drives the same code the endpoint does.
+
+**Verified.**
+- `cargo test --locked permissions` → 8 passed: an approval lets a write reach the disk with exactly one `permission_resolved` event and an empty pending list afterwards; `auto_edit` applies a write with no approval row at all yet still stops `bash`; `auto_all` still asks before a deny-listed `git push --force` and reports the denial to the model; resolution is idempotent and refuses a flip; an expired row cannot be approved afterwards; the TTL clamp picks the earlier clock; the endpoints reject an unknown id (404), a bad decision word (400) and an unauthenticated caller (401).
+- `bash scripts/verify_release.sh` → exit 0: **79** Rust tests (up from 71), clippy, release build, 50 Python contracts, migrations, 8 schemas, both mock-provider HTTP suites.
+
+**Open.**
+- No UI yet: approving still means calling the endpoint by hand. The Approve/Deny card is P1-T13, and a python HTTP approval round-trip belongs to P1-T14; `recording_integration.py` does not exercise these endpoints yet.
+- A single turn's `expires_at` is fixed when the row is created; raising a scope's `max_wall_seconds` mid-wait does not extend a row that is already pending.
+- Dead-code warnings left for P1-T12: `STEPS_LIST`, `EVENTS_AFTER`, `FILE_CHANGES_LIST`, `ToolCtx.request_id`. (`PERMISSION_GET`, `PERMISSION_RESOLVE` and `PERMISSIONS_PENDING` are now used.)
+- Unchanged: `.harness/logs/` is never pruned; a background `pid` is the owning shell, not the job; `permission_payload` diffs cap at 64 KiB; the browser suites were not run.
+
+**Next.**
+- P1-T12 API for steps, plan and activity — its only dependency (T10) is done, and it consumes `STEPS_LIST` and `EVENTS_AFTER`.
+
+---
+
 ## 2026-09-09 · AI session (Notion AI via Local) · P1-T10 agent loop
 
 **Changed.**

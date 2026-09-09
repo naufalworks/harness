@@ -145,6 +145,29 @@ async fn set_scope(State(h):State<Harness>,Path(scope):Path<String>,Json(patch):
     Ok(Json(h.store.upsert_scope(scope,patch).await.map_err(db_error)?))
 }
 
+// P1-T11: the human half of the permission gate. The turn loop only ever reads the row's status,
+// so these two endpoints are the only thing that can let a side-effecting tool run.
+async fn permissions(State(h):State<Harness>,Query(q):Query<ScopeQuery>)->ApiResult<Json<Value>>{
+    safety::scope(&q.scope).map_err(|_|invalid("Invalid scope"))?;
+    Ok(Json(h.store.pending_permissions(q.scope).await.map_err(db_error)?))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DecisionRequest{decision:String,#[serde(default="default_scope")]scope:String}
+async fn decide_permission(State(h):State<Harness>,Path(id):Path<String>,Json(req):Json<DecisionRequest>)->ApiResult<Json<Value>>{
+    safety::scope(&req.scope).map_err(|_|invalid("Invalid scope"))?;
+    Uuid::parse_str(&id).map_err(|_|invalid("Invalid approval identifier"))?;
+    let decision=match req.decision.as_str(){"approve"=>"approved","deny"=>"denied",_=>return Err(invalid("Decision must be \"approve\" or \"deny\""))};
+    // Re-sending the same decision is a success: a double-clicked Approve must not become an error.
+    match h.store.resolve_permission(id,req.scope,decision).await.map_err(db_error)?{
+        agent_loop::Resolution::Recorded=>Ok(Json(json!({"status":decision,"recorded":true}))),
+        agent_loop::Resolution::Unchanged=>Ok(Json(json!({"status":decision,"recorded":false}))),
+        agent_loop::Resolution::Conflict=>Err(ApiError(StatusCode::CONFLICT,"This approval was already resolved the other way; nothing was changed")),
+        agent_loop::Resolution::Expired=>Err(ApiError(StatusCode::GONE,"This approval expired and the turn stopped waiting; nothing was run")),
+        agent_loop::Resolution::NotFound=>Err(ApiError(StatusCode::NOT_FOUND,"Approval request not found in this scope")),
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct IngestRequest{name:String,content:String,#[serde(default)]format:Option<String>,#[serde(default="default_scope")]scope:String}
@@ -173,6 +196,7 @@ fn router(state:Harness)->Router{
         .route("/memory/ingest",post(ingest_memory)).route("/sessions/{id}/messages",get(history))
         .route("/jobs",get(jobs)).route("/jobs/{id}/retry",post(retry_job))
         .route("/scopes/{scope}",get(get_scope).post(set_scope))
+        .route("/permissions",get(permissions)).route("/permissions/{id}",post(decide_permission))
         .route_layer(middleware::from_fn_with_state(state.clone(),authenticate));
     Router::new().route("/",get(index)).route("/app.js",get(js)).route("/style.css",get(css)).merge(api)
         .layer(DefaultBodyLimit::max(2*1024*1024)).layer(middleware::from_fn(headers)).with_state(state)
@@ -204,7 +228,8 @@ async fn main()->Result<()>{
 #[cfg(test)]
 mod tests{
     use super::*;use axum::body::Body;use tower::ServiceExt;
-    fn app()->Router{router(Harness{store:DbStore::init(":memory:").unwrap(),agents:MemoryAgents::new("http://127.0.0.1:9","synthetic","test").unwrap(),token:Arc::new("x".repeat(32)),port:8080,api_limit:Arc::new(Semaphore::new(8))})}
+    fn app_with(store:DbStore)->Router{router(Harness{store,agents:MemoryAgents::new("http://127.0.0.1:9","synthetic","test").unwrap(),token:Arc::new("x".repeat(32)),port:8080,api_limit:Arc::new(Semaphore::new(8))})}
+    fn app()->Router{app_with(DbStore::init(":memory:").unwrap())}
     #[tokio::test]async fn api_requires_auth(){let response=app().oneshot(axum::http::Request::builder().uri("/memory/status").body(Body::empty()).unwrap()).await.unwrap();assert_eq!(response.status(),StatusCode::UNAUTHORIZED);}
     #[tokio::test]async fn authenticated_status_succeeds(){let response=app().oneshot(axum::http::Request::builder().uri("/memory/status").header("Authorization",format!("Bearer {}","x".repeat(32))).body(Body::empty()).unwrap()).await.unwrap();assert_eq!(response.status(),StatusCode::OK);}
     #[tokio::test]async fn foreign_origin_is_rejected(){let response=app().oneshot(axum::http::Request::builder().uri("/memory/status").header("Authorization",format!("Bearer {}","x".repeat(32))).header("Origin","https://untrusted.invalid").body(Body::empty()).unwrap()).await.unwrap();assert_eq!(response.status(),StatusCode::FORBIDDEN);}
@@ -231,6 +256,52 @@ mod tests{
         let request=json!({"root_path":"/definitely/not/a/real/harness/project/root"}).to_string();
         let response=app().oneshot(authorized("POST","/scopes/global").header("content-type","application/json").body(Body::from(request)).unwrap()).await.unwrap();
         assert_eq!(response.status(),StatusCode::BAD_REQUEST);
+    }
+
+    /// P1-T11: one pending approval, listed and then decided over HTTP. The loop is not involved;
+    /// what matters is that the row moves exactly once and says so.
+    #[tokio::test]async fn pending_permissions_are_listed_then_resolved_idempotently(){
+        let store=DbStore::init(":memory:").unwrap();
+        let app=app_with(store.clone());
+        let (request,session)=(storage::uid(),storage::uid());
+        store.capture_chat(recording::CaptureInput{request:request.clone(),session:session.clone(),scope:"global".into(),
+            prompt:"overwrite my notes".into(),model:"m".into(),signature:storage::uid(),redacted:false}).await.unwrap();
+        let step=store.begin_step(agent_loop::NewStep{request:request.clone(),session:session.clone(),kind:"tool_call",
+            tool_name:Some("write".into()),tool_call_id:Some("call-1".into()),input:json!({"path":"notes.md"}),
+            event:"tool_started",payload:json!({"tool":"write","summary":"write notes.md"})}).await.unwrap();
+        let id=store.request_permission(request,session,step,"write".into(),"write notes.md (+1 -1)".into(),json!({"diff":"-beta\n+gamma"}),900).await.unwrap();
+
+        let listed=app.clone().oneshot(authorized("GET","/permissions?scope=global").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(listed.status(),StatusCode::OK);
+        let pending=body_json(listed).await;
+        assert_eq!((&pending["permissions"][0]["id"],&pending["permissions"][0]["tool"]),(&json!(id),&json!("write")));
+        assert_eq!(pending["permissions"][0]["summary"],json!("write notes.md (+1 -1)"));
+        assert_eq!(pending["permissions"][0]["args"]["diff"],json!("-beta\n+gamma"),"the card shows the tool's own diff, not model prose");
+
+        let decide=|decision:&str|authorized("POST",&format!("/permissions/{id}")).header("content-type","application/json")
+            .body(Body::from(json!({"decision":decision,"scope":"global"}).to_string())).unwrap();
+        let first=app.clone().oneshot(decide("approve")).await.unwrap();
+        assert_eq!(first.status(),StatusCode::OK);
+        assert_eq!(body_json(first).await,json!({"status":"approved","recorded":true}));
+        let replay=app.clone().oneshot(decide("approve")).await.unwrap();
+        assert_eq!(replay.status(),StatusCode::OK,"a double-clicked Approve is not an error");
+        assert_eq!(body_json(replay).await["recorded"],json!(false));
+        let flip=app.clone().oneshot(decide("deny")).await.unwrap();
+        assert_eq!(flip.status(),StatusCode::CONFLICT);
+        let nonsense=app.clone().oneshot(decide("maybe")).await.unwrap();
+        assert_eq!(nonsense.status(),StatusCode::BAD_REQUEST);
+        let stranger=app.clone().oneshot(authorized("POST",&format!("/permissions/{}",storage::uid())).header("content-type","application/json")
+            .body(Body::from(json!({"decision":"approve"}).to_string())).unwrap()).await.unwrap();
+        assert_eq!(stranger.status(),StatusCode::NOT_FOUND);
+
+        let resolved:i64=store.run(|c|Ok(c.query_row("SELECT count(*) FROM activity_events WHERE kind='permission_resolved'",[],|r|r.get(0))?)).await.unwrap();
+        assert_eq!(resolved,1,"an idempotent replay must not log a second decision");
+        let empty=app.oneshot(authorized("GET","/permissions?scope=global").body(Body::empty()).unwrap()).await.unwrap();
+        assert!(body_json(empty).await["permissions"].as_array().unwrap().is_empty(),"a resolved approval leaves the pending list");
+    }
+    #[tokio::test]async fn permissions_require_auth(){
+        let response=app().oneshot(axum::http::Request::builder().uri("/permissions").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(response.status(),StatusCode::UNAUTHORIZED);
     }
 }
 
