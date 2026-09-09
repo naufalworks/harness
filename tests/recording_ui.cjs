@@ -43,7 +43,7 @@ const root=path.resolve(__dirname,'..'), out=path.join(root,'docs/qa');fs.mkdirS
   await page.goto('http://127.0.0.1:8080');await connect();
   // Durable acknowledgement before answer; no misleading "saved answer" label.
   hold=true;await page.fill('#prompt','How should we separate chat history from memory?');await page.click('#send');
-  await page.waitForFunction(()=>document.getElementById('capturestatus').textContent==='Message saved · Answering');assert.strictEqual(await page.locator('#prompt').inputValue(),'');
+  await page.waitForFunction(()=>document.getElementById('capturestatus').textContent==='Thinking…');assert.strictEqual(await page.locator('#prompt').inputValue(),'');
   assert(!await page.evaluate(()=>JSON.stringify({...localStorage,...sessionStorage}).includes('How should we')));
   hold=false;await page.waitForFunction(()=>document.getElementById('notice').textContent.startsWith('Answer saved'));
   await page.locator('.receipt>summary').last().click();await page.waitForSelector('.receipt-memory');
@@ -53,17 +53,17 @@ const root=path.resolve(__dirname,'..'), out=path.join(root,'docs/qa');fs.mkdirS
   // Response lost AFTER the mock commits. Checking recovers without a second POST.
   await page.emulateMedia({colorScheme:'light'});await page.click('#newchat');abortSubmit=true;
   await page.fill('#prompt','Keep this even if the connection drops.');const before=submits;await page.click('#send');
-  await page.waitForFunction(()=>document.getElementById('capturestatus').textContent==='Recording needs checking');assert.strictEqual(submits,before+1);
+  await page.waitForFunction(()=>document.getElementById('capturestatus').textContent==='Needs checking');assert.strictEqual(submits,before+1);
   assert.strictEqual(await page.locator('#prompt').inputValue(),'Keep this even if the connection drops.');
   await shot('recording-unknown-mobile');await page.click('#checkrecording');await page.waitForFunction(()=>document.getElementById('notice').textContent.startsWith('Answer saved'));assert.strictEqual(submits,before+1);assert.strictEqual(await page.locator('#prompt').inputValue(),'');
   // Reload restores only request identity, never a bearer token or raw draft; no resend.
-  await page.click('#newchat');hold=true;await page.fill('#prompt','Recover after reloading this tab.');await page.click('#send');await page.waitForFunction(()=>document.getElementById('capturestatus').textContent==='Message saved · Answering');const beforeReload=submits;
+  await page.click('#newchat');hold=true;await page.fill('#prompt','Recover after reloading this tab.');await page.click('#send');await page.waitForFunction(()=>document.getElementById('capturestatus').textContent==='Thinking…');const beforeReload=submits;
   await page.reload();assert(await page.locator('#auth').isVisible());hold=false;await connect();await page.waitForFunction(()=>document.getElementById('notice').textContent.startsWith('Answer saved'));assert.strictEqual(submits,beforeReload);
   assert(!await page.evaluate(()=>JSON.stringify({...localStorage,...sessionStorage}).includes('fixture-token')));
   // Provider failure and restart interruption retain the captured user message.
   for(const state of ['failed','interrupted']){
    nextState=state;await page.click('#newchat');await page.fill('#prompt','This message survives '+state+'.');await page.click('#send');
-   await page.waitForFunction(s=>document.getElementById('capturestatus').textContent.includes(s==='failed'?'Answer failed':'Answer interrupted'),state);
+   await page.waitForFunction(s=>document.getElementById('capturestatus').textContent.includes(s==='failed'?'answer failed':'answer interrupted'),state);
    assert((await page.locator('#log').innerText()).includes('This message survives'));
    assert.strictEqual(await page.evaluate(()=>sessionStorage.getItem('harness_pending')),null);
   }

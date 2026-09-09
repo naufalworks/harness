@@ -7,7 +7,8 @@
 .session-entry{text-align:left;min-width:0;font-weight:400}
 .session-entry strong,.session-entry span{display:block;overflow-wrap:anywhere}
 .session-entry strong{font-size:14px;font-weight:600}
-.recording-label{padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.recording-label{font-size:13px}
+#capturestatus:empty{display:none}
 .receipt{margin-top:12px;padding-top:0;white-space:normal}
 .receipt>summary{font-size:14px;color:var(--accent)}
 .receipt-content{font-size:14px;max-width:100%;overflow-wrap:anywhere}

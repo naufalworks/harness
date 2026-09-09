@@ -27,7 +27,7 @@ async function api(path, body) {
 }
 function node(tag, text, cls) { const element = document.createElement(tag); if (text !== undefined) element.textContent = text; if (cls) element.className = cls; return element; }
 function persistSession() { sessionStorage.setItem('harness_scope', scope); sessionStorage.setItem('harness_session', session); }
-const stateLabels = { captured: 'Message saved · Waiting to answer', generating: 'Message saved · Answering', complete: 'Message and answer saved', failed: 'Message saved · Answer failed', interrupted: 'Message saved · Answer interrupted' };
+const stateLabels = { captured: 'Sent · waiting for answer', generating: 'Thinking…', complete: 'Done', failed: 'Saved · answer failed', interrupted: 'Saved · answer interrupted' };
 const eventLabels = { captured: 'Message saved locally', generation_started: 'Answer started', context_saved: 'Context receipt saved', answer_saved: 'Answer saved locally', generation_failed: 'Answer did not complete', interrupted: 'Server restarted; no automatic resend', extraction_queued: 'Memory review queued' };
 async function showReceipt(id, content, button) {
   const myEpoch = epoch; button.disabled = true;
@@ -58,10 +58,10 @@ function message(m, target = $('log')) {
   const box = node('article', undefined, `message ${m.role === 'user' ? 'user' : 'assistant'}`);
   box.append(node('strong', m.role === 'user' ? 'You' : 'Harness'), node('span', m.content));
   if (m.role === 'user') {
-    box.append(node('span', stateLabels[m.generation_state] || (m.status === 'complete' ? 'Saved locally' : 'Message saved · Answer not completed'), 'muted'));
+    box.append(node('span', stateLabels[m.generation_state] || (m.status === 'complete' ? 'Saved' : 'Saved · no answer'), 'muted'));
     if (m.request_id) {
       const detail = node('details', undefined, 'receipt'); const content = node('div', undefined, 'receipt-content'); const button = node('button', 'Load receipt', 'secondary'); button.type = 'button';
-      detail.append(node('summary', 'Recording receipt'), content, button);
+      detail.append(node('summary', 'Message details'), content, button);
       button.addEventListener('click', () => showReceipt(m.request_id, content, button));
       detail.addEventListener('toggle', () => { if (detail.open && !content.childNodes.length && !button.disabled) showReceipt(m.request_id, content, button); });
       box.append(detail);
@@ -73,7 +73,7 @@ async function refreshStatus() {
   const myEpoch = epoch; const data = await api('/memory/status');
   if (!token || myEpoch !== epoch) return;
   $('pending').textContent = String(data.pending_confirmations);
-  $('stats').textContent = `${data.active_memories} active memories · ${data.queued_jobs} processing jobs · ${data.failed_jobs} failed jobs`;
+  $('stats').textContent = `${data.active_memories} memories remembered${data.queued_jobs ? ` · ${data.queued_jobs} jobs queued` : ''}${data.failed_jobs ? ` · ${data.failed_jobs} failed` : ''}`;
 }
 async function loadHistory(older = false) {
   const myEpoch = epoch, mySession = session;
@@ -85,11 +85,11 @@ async function loadHistory(older = false) {
   for (const m of data.messages) message(m, fragment);
   if (older) { const top = $('log').scrollHeight; $('log').prepend(fragment); $('log').scrollTop += $('log').scrollHeight - top; }
   else { $('log').replaceChildren(fragment); $('log').scrollTop = $('log').scrollHeight; }
-  if (!data.messages.length && !older) $('log').append(node('p', 'Start a conversation. Recording is separate from deciding what to remember.', 'empty'));
+  if (!data.messages.length && !older) $('log').append(node('p', 'Say hi to get started. Harness keeps up with the conversation and remembers what matters.', 'empty'));
   historyCursor = data.next_before_seq; $('oldermessages').hidden = !data.has_more;
   if (!older) {
     const last = [...data.messages].reverse().find(m => m.role === 'user');
-    captureLabel(last ? stateLabels[last.generation_state] || 'Saved history' : 'Ready to record');
+    captureLabel(last ? stateLabels[last.generation_state] || '' : '');
     if (!pending && last?.request_id && ['captured','generating'].includes(last.generation_state)) rememberPending({request_id:last.request_id,session_id:session,scope});
   }
 }
@@ -102,7 +102,7 @@ async function loadSessions(older = false) {
     const button = node('button', undefined, 'session-entry secondary'); button.type = 'button';
     button.append(node('strong', item.title), node('span', `${item.scope} · ${item.message_count} messages`, 'muted'));
     button.addEventListener('click', async () => {
-      if (busy || pending) return notice('Check the current recording before switching conversations.', true);
+      if (busy || pending) return notice('Let the current message finish before switching conversations.', true);
       session = item.id; scope = item.scope; epoch++; $('scope').value = scope; persistSession(); $('sessionhistory').open = false;
       await loadHistory().catch(e => notice(e.message, true)); if (pending) await resumeRecording();
     }); $('sessionlist').append(button);
@@ -112,7 +112,7 @@ async function loadSessions(older = false) {
 }
 function setBusy(value) { busy = value; $('send').disabled = value; $('newchat').disabled = value; $('checkrecording').disabled = value; }
 function accepted(receipt) {
-  captureLabel(stateLabels[receipt.state] || 'Message saved');
+  captureLabel(stateLabels[receipt.state] || 'Sent');
   // Clear only the submitted draft, never text typed after it.
   if (pendingPrompt !== null && $('prompt').value === pendingPrompt) $('prompt').value = '';
 }
@@ -124,8 +124,8 @@ async function followReceipt(first, myEpoch) {
     if (['complete','failed','interrupted'].includes(data.state)) {
       rememberPending(null); $('retryrequest').hidden = true;
       await loadHistory(); await loadSessions();
-      if (data.state === 'complete') notice(data.redacted ? 'Answer saved. Sensitive-looking input was filtered; memory review runs separately.' : 'Answer saved. Memory processing cannot undo this recording.');
-      else notice(data.state === 'interrupted' ? 'Your message is saved. The server restarted before the answer completed; it was not automatically sent again.' : 'Your message is saved, but no completed answer was saved. Memory processing remains separate.', true);
+      if (data.state === 'complete') notice(data.redacted ? 'Answer saved. Sensitive-looking input was filtered before saving.' : 'Answer saved on this device.');
+      else notice(data.state === 'interrupted' ? 'Your message is saved. The server restarted before the answer completed; nothing was resent.' : 'Your message is saved, but the answer did not complete.', true);
       return;
     }
     if (i === 0) { await loadHistory(); notice('Your message is saved. You can reconnect later to check the answer.'); }
@@ -133,7 +133,7 @@ async function followReceipt(first, myEpoch) {
     if (!token || myEpoch !== epoch) return;
     data = await api(`/chat/requests/${encodeURIComponent(data.request_id)}`);
   }
-  notice('Your message is saved. The answer is still pending; use Check recording to refresh.');
+  notice('Your message is saved. The answer is still pending; use Check status to refresh.');
 }
 async function resumeRecording() {
   if (!pending || busy || !token) return;
@@ -141,8 +141,8 @@ async function resumeRecording() {
   try { const data = await api(`/chat/requests/${encodeURIComponent(pending.request_id)}`); if (myEpoch === epoch && token) await followReceipt(data, myEpoch); }
   catch (error) {
     if (myEpoch === epoch && token) {
-      captureLabel('Recording needs checking');
-      notice(error.status === 404 ? 'No receipt found yet. Nothing was resent. If your draft is still in this tab, Retry same message safely reuses its original request.' : 'Connection lost. The recording status is unknown—not necessarily lost. Check again; nothing will be resent automatically.', true);
+      captureLabel('Needs checking');
+      notice(error.status === 404 ? 'No receipt found yet. Nothing was resent. If your draft is still in this tab, Retry same message safely reuses its original request.' : 'Connection lost. The latest status is unknown—not necessarily lost. Check again; nothing will be resent automatically.', true);
       $('retryrequest').hidden = pendingPrompt === null;
     }
   } finally { if (myEpoch === epoch) setBusy(false); }
@@ -154,7 +154,7 @@ async function sendAttempt(retry = false) {
   if (typeof prompt !== 'string' || !prompt.trim() || new TextEncoder().encode(prompt).length > 16000) return notice('Message must contain 1–16000 UTF-8 bytes.', true);
   if (!retry) { pendingPrompt = prompt; rememberPending({request_id:crypto.randomUUID(),session_id:session,scope}); }
   let admitted = false;
-  const myEpoch = epoch; setBusy(true); captureLabel('Saving message…'); notice('Saving your message before requesting an answer…');
+  const myEpoch = epoch; setBusy(true); captureLabel('Sending…');
   try {
     const result = await api('/chat/submit', {prompt, ...pending}); admitted = true;
     if (token && myEpoch === epoch) await followReceipt(result, myEpoch);
@@ -165,7 +165,7 @@ async function sendAttempt(retry = false) {
       if (!admitted && !retry && [400,401,403,413,422,503].includes(error.status)) {
         rememberPending(null); captureLabel('Message not accepted'); notice(error.message + ' Your draft remains in this tab.', true);
       } else {
-        captureLabel('Recording needs checking'); notice('Could not confirm the result. Use Check recording before sending again. Your draft stays in this tab.', true);
+        captureLabel('Needs checking'); notice('Could not confirm the result. Use Check status before sending again. Your draft stays in this tab.', true);
         $('retryrequest').hidden = pendingPrompt === null;
       }
     }
@@ -176,7 +176,7 @@ $('authform').addEventListener('submit', async event => {
   try {
     await api('/memory/status'); if (myEpoch !== epoch) return;
     $('auth').hidden = true; $('workspace').hidden = false; $('connection').textContent = 'Connected'; $('token').value = '';
-    notice('Connected. Chats are recorded separately from memory approval.'); persistSession(); await loadHistory(); await loadSessions(); await refreshStatus();
+    notice('Connected — pick up where you left off.'); persistSession(); await loadHistory(); await loadSessions(); await refreshStatus();
     rememberPending(pending); if (pending) await resumeRecording();
   } catch (error) { token = ''; $('workspace').hidden = true; $('auth').hidden = false; notice(error.message, true); }
 });
@@ -188,11 +188,11 @@ $('lock').addEventListener('click', () => {
   notice('Locked. Unsaved draft text was cleared; recorded work stays on the server.');
 });
 $('newchat').addEventListener('click', () => {
-  if (busy || pending) return notice('Check the current recording before starting another conversation.', true);
+  if (busy || pending) return notice('Let the current message finish before starting another conversation.', true);
   const next = $('scope').value.trim();
   if (!/^[A-Za-z0-9_.:-]{1,80}$/.test(next)) return notice('Use a scope of 1–80 letters, digits, _, -, . or :.', true);
   scope = next; session = crypto.randomUUID(); epoch++; persistSession(); historyCursor = null; $('oldermessages').hidden = true;
-  $('log').replaceChildren(node('p', 'New conversation. Earlier work is available in History.', 'empty')); $('recalltrace').hidden = true; captureLabel('Ready to record'); notice(`New conversation in ${scope}.`);
+  $('log').replaceChildren(node('p', 'New conversation. Earlier work is available in History.', 'empty')); $('recalltrace').hidden = true; captureLabel(''); notice(`New conversation in ${scope}.`);
 });
 $('chatform').addEventListener('submit', event => { event.preventDefault(); sendAttempt(); });
 $('checkrecording').addEventListener('click', resumeRecording);
@@ -201,7 +201,7 @@ $('leavepending').addEventListener('click', () => {
   if (!pending || !window.confirm('Start a new conversation without resending or cancelling this request? Any saved work remains in History. Unsaved draft text will be cleared.')) return;
   epoch++; setBusy(false); rememberPending(null); $('retryrequest').hidden = true; $('prompt').value = '';
   session = crypto.randomUUID(); persistSession(); historyCursor = null; $('oldermessages').hidden = true;
-  $('log').replaceChildren(node('p', 'New conversation. Check History later for the previous answer.', 'empty')); captureLabel('Ready to record'); notice('Nothing was resent. Any saved work remains in History.');
+  $('log').replaceChildren(node('p', 'New conversation. Check History later for the previous answer.', 'empty')); captureLabel(''); notice('Nothing was resent. Any saved work remains in History.');
 });
 $('oldermessages').addEventListener('click', async () => { $('oldermessages').disabled = true; try { await loadHistory(true); } catch(e) { notice(e.message,true); } finally { $('oldermessages').disabled = false; } });
 $('oldersessions').addEventListener('click', () => loadSessions(true).catch(e=>notice(e.message,true)));
