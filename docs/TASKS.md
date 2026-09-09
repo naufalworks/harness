@@ -152,12 +152,13 @@ Each task has: `status`, `depends`, `design` (doc section), `files` (touched),
 - note (done): restored the existing local-first conversation shell and added the P1 turn record panel. It polls `/chat/requests/{id}/steps`, `/sessions/{id}/plan`, and `/permissions?scope=` while a request is pending; steps are native collapsible `<details>` rows with bounded input/output previews, permissions show the tool-owned diff or command and idempotent Approve/Deny actions, and the plan is a checklist with progress. The Models tab is now Project & models and posts root path, permission mode, diagnostics command, and budgets to `/scopes/{scope}`. All model/tool/user-controlled text is built with `textContent`/DOM nodes; no inline styles or `innerHTML` were added. `node --check static/app.js`, `git diff --check`, the HTML-hook check, and `cargo test --locked` (80 passed) are green. The browser harness could not run because this checkout has no `playwright` module installed.
 
 ### P1-T14 · Mock provider with tool calls + recovery tests
-- status: todo
+- status: done
 - depends: P1-T10, P1-T11
 - design: docs/design/agentic-turn.md#testing
 - files: tests/recording_integration.py, tests/mock_provider.py
 - done-when: the synthetic loopback provider can be scripted to emit tool_calls; suite covers: happy path read→edit→bash→answer, stale anchor rejection, path escape rejection, permission deny, SIGKILL during a tool with `interrupted` state and no re-execution, budget exhaustion message.
 - verify: python3 tests/recording_integration.py
+- note (done): added `tests/mock_provider.py`, a reusable OpenAI-style loopback server with per-prompt response scripts and request capture. The real HTTP suite now configures a temporary project scope and covers read → edit → bash → answer with tool-result replay and applied file changes, stale hash anchors with no disk mutation, root escape rejection, a pending write denied through `POST /permissions/{id}`, honest max-steps exhaustion with no extra provider call, SIGKILL during a running bash step with recovery to `interrupted` and no re-execution, plus provider failure and SQLite integrity. `python3 tests/recording_integration.py` → PASS; `bash scripts/verify_release.sh` → exit 0 (80 Rust tests, migrations, schemas, 50 Python contracts, real HTTP suite).
 
 ## P2 · Streaming and activity rail
 

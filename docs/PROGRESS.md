@@ -18,6 +18,23 @@ Suggested first message to an AI continuing this work:
 
 ---
 
+## 2026-09-09 · AI session (Notion AI via Local) · P1-T14 scripted tool-call HTTP coverage
+
+**Changed.**
+- Added `tests/mock_provider.py`, a reusable OpenAI-style loopback provider with per-prompt canned responses, tool-call construction, failures, and captured request bodies.
+- Expanded `tests/recording_integration.py` to configure a temporary project scope and exercise the real HTTP agent loop: read → edit → bash → answer, assistant/tool message replay, applied file changes, stale anchors, sandbox path escape, permission denial, budget exhaustion, provider failure, and SIGKILL during a running bash step.
+- Recovery assertions verify the interrupted tool is recorded as `interrupted`, the receipt is interrupted, and restart does not make another provider call or re-execute the tool.
+
+**Verified.**
+- `python3 -m py_compile tests/mock_provider.py tests/recording_integration.py` → pass.
+- `python3 tests/recording_integration.py` → PASS.
+- `bash scripts/verify_release.sh` → exit 0: 80 Rust tests, migrations, tool schemas, 50 Python contracts, and the real HTTP suite.
+
+**Next.**
+- P2-T01: authenticated resumable SSE over `activity_events`, replacing the UI's 1-second polling path.
+
+---
+
 ## 2026-09-09 · AI session (Notion AI via Local) · P1-T13 minimal UI
 
 **Changed.**

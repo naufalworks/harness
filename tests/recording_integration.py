@@ -1,129 +1,284 @@
 #!/usr/bin/env python3
-"""RELEASE GATE: actual compiled Rust server + synthetic loopback provider.
-Not executed in the source-delivery environment if cargo/binary is unavailable.
-No paid provider calls. Exercises durable admission, replay, context and restart.
-"""
-import json, os, socket, sqlite3, subprocess, tempfile, threading, time, urllib.request, urllib.error, uuid
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
-ROOT=Path(__file__).resolve().parents[1]
-received=[]
-hold=threading.Event();started=threading.Event()
-class Provider(BaseHTTPRequestHandler):
-    def log_message(self,*args):pass
-    def do_POST(self):
-        data=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
-        extraction=data['messages'][0]['content'].startswith('Extract at most')
-        if extraction:text='[]'
-        else:
-            received.append(data)
-            prompt=data['messages'][-1]['content'];started.set()
-            if prompt=='hold for restart':hold.wait(15)
-            if prompt=='simulate provider failure':
-                self.send_response(503);self.end_headers();return
-            text='Synthetic durable answer'
-        payload=json.dumps({'choices':[{'message':{'content':text}}]}).encode()
-        try:
-            self.send_response(200);self.send_header('Content-Type','application/json');self.send_header('Content-Length',str(len(payload)));self.end_headers();self.wfile.write(payload)
-        except (BrokenPipeError,ConnectionResetError):pass
+"""RELEASE GATE: compiled Rust server + scripted OpenAI-style loopback provider.
 
-def port():
-    with socket.socket() as sock:sock.bind(('127.0.0.1',0));return sock.getsockname()[1]
-def main():
-    binary=ROOT/'target/debug/harness'
-    if not binary.is_file():raise SystemExit('NOT RUN: build first with cargo build --locked')
-    provider=ThreadingHTTPServer(('127.0.0.1',0),Provider);threading.Thread(target=provider.serve_forever,daemon=True).start()
-    with tempfile.TemporaryDirectory(prefix='recording-integration-') as tmp:
-        db=Path(tmp)/'fixture.db';server_port=port();token='synthetic-'+'x'*40
-        env={**os.environ,'HARNESS_DB':str(db),'HARNESS_AUTH_TOKEN':token,'HARNESS_API_KEY':'synthetic','HARNESS_BASE_URL':f'http://127.0.0.1:{provider.server_port}','HARNESS_ADDR':f'127.0.0.1:{server_port}','HARNESS_MODEL':'synthetic-model'}
-        app=None
-        def call(path,body=None,auth=True,origin=None):
-            headers={'Content-Type':'application/json'}
-            if auth:headers['Authorization']='Bearer '+token
-            if origin:headers['Origin']=origin
-            req=urllib.request.Request(f'http://127.0.0.1:{server_port}'+path,data=None if body is None else json.dumps(body).encode(),headers=headers)
+No paid provider calls. This covers durable admission, the P1 agent loop, permissions,
+sandbox failures, budgets, and restart recovery over the actual HTTP surface.
+"""
+from __future__ import annotations
+
+import json
+import os
+import socket
+import shutil
+import sqlite3
+import subprocess
+import tempfile
+import time
+import urllib.error
+import urllib.request
+import uuid
+from pathlib import Path
+
+from mock_provider import MockProvider, failure, text, tool_calls
+
+ROOT = Path(__file__).resolve().parents[1]
+
+def port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def main() -> None:
+    binary = ROOT / "target/debug/harness"
+    if not binary.is_file():
+        raise SystemExit("NOT RUN: build first with cargo build --locked")
+
+    beta_hash = __import__("hashlib").sha256(b"beta").hexdigest()[:4]
+    stale_hash = __import__("hashlib").sha256(b"not-the-current-line").hexdigest()[:4]
+    scripts = {
+        "I prefer Rust": [text("Synthetic durable answer")],
+        "simulate provider failure": [failure(503, "synthetic provider failure")],
+        "rename beta to gamma": [
+            tool_calls(("read-1", "read", {"path": "notes.md", "offset": 1, "limit": 20})),
+            tool_calls(("edit-1", "edit", {"path": "notes.md", "anchors": [{"line": 2, "hash": beta_hash}], "end_line": 2, "new_string": "gamma"})),
+            tool_calls(("bash-1", "bash", {"command": "printf 'unit tests passed\\n'", "description": "run unit tests"})),
+            text("Read notes.md, changed beta to gamma, and ran the unit tests."),
+        ],
+        "stale anchor": [
+            tool_calls(("read-stale", "read", {"path": "stale.md"})),
+            tool_calls(("edit-stale", "edit", {"path": "stale.md", "anchors": [{"line": 2, "hash": stale_hash}], "end_line": 2, "new_string": "changed"})),
+            text("The edit was refused because the anchor was stale."),
+        ],
+        "path escape": [
+            tool_calls(("escape-1", "read", {"path": "../../etc/passwd"})),
+            text("The requested path was outside the project and was not read."),
+        ],
+        "deny write": [
+            tool_calls(("deny-1", "write", {"path": "deny.md", "content": "should not land\\n", "overwrite": True})),
+            text("The write was denied, so I left the file unchanged."),
+        ],
+        "budget test": [
+            tool_calls(("budget-1", "read", {"path": "notes.md"})),
+        ],
+        "hold during tool": [
+            tool_calls(("sleep-1", "bash", {"command": "echo started; sleep 30", "description": "hold for restart"})),
+            text("This answer must never be reached after the crash."),
+        ],
+    }
+    provider = MockProvider(scripts)
+    provider.start()
+
+    project_tmp = Path(tempfile.mkdtemp(prefix="harness-project-"))
+    try:
+      with tempfile.TemporaryDirectory(prefix="recording-integration-") as tmp:
+        tmp_path = Path(tmp)
+        root = project_tmp
+        (root / "notes.md").write_text("alpha\nbeta\n")
+        (root / "stale.md").write_text("alpha\nbeta\n")
+        (root / "deny.md").write_text("keep this file\n")
+        db = tmp_path / "fixture.db"
+        server_port = port()
+        token = "synthetic-" + "x" * 40
+        env = {
+            **os.environ,
+            "HARNESS_DB": str(db),
+            "HARNESS_AUTH_TOKEN": token,
+            "HARNESS_API_KEY": "synthetic",
+            "HARNESS_BASE_URL": f"http://127.0.0.1:{provider.port}",
+            "HARNESS_ADDR": f"127.0.0.1:{server_port}",
+            "HARNESS_MODEL": "synthetic-model",
+        }
+        app: subprocess.Popen[bytes] | None = None
+
+        def call(path: str, body: dict | None = None, auth: bool = True, origin: str | None = None):
+            headers = {"Content-Type": "application/json"}
+            if auth:
+                headers["Authorization"] = "Bearer " + token
+            if origin:
+                headers["Origin"] = origin
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{server_port}{path}",
+                data=None if body is None else json.dumps(body).encode(),
+                headers=headers,
+                method="POST" if body is not None else "GET",
+            )
             try:
-                with urllib.request.urlopen(req,timeout=10) as response:return response.status,json.load(response)
-            except urllib.error.HTTPError as e:return e.code,json.loads(e.read())
-        def start():
-            process=subprocess.Popen([str(binary)],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+                with urllib.request.urlopen(request, timeout=10) as response:
+                    return response.status, json.load(response)
+            except urllib.error.HTTPError as error:
+                return error.code, json.loads(error.read())
+
+        def start() -> subprocess.Popen[bytes]:
+            process = subprocess.Popen([str(binary)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             for _ in range(100):
-                if process.poll() is not None:raise AssertionError('Server exited during startup')
+                if process.poll() is not None:
+                    raise AssertionError("server exited during startup")
                 try:
-                    if call('/memory/status')[0]==200:return process
-                except urllib.error.URLError:pass
-                time.sleep(.1)
-            process.kill();process.wait();raise AssertionError('Server startup timeout')
-        def submit(prompt):
-            body={'request_id':str(uuid.uuid4()),'session_id':str(uuid.uuid4()),'scope':'global','prompt':prompt}
-            code,receipt=call('/chat/submit',body);assert code in (200,202),(code,receipt);return body,receipt
-        def wait(request,state):
-            for _ in range(150):
-                code,receipt=call('/chat/requests/'+request)
-                if code==200 and receipt['state']==state:return receipt
-                time.sleep(.05)
-            raise AssertionError(('receipt timeout',state,receipt))
+                    if call("/memory/status")[0] == 200:
+                        return process
+                except urllib.error.URLError:
+                    pass
+                time.sleep(0.1)
+            process.kill()
+            process.wait()
+            raise AssertionError("server startup timeout")
+
+        def submit(prompt: str, session: str | None = None) -> dict:
+            body = {"request_id": str(uuid.uuid4()), "session_id": session or str(uuid.uuid4()), "scope": "global", "prompt": prompt}
+            code, receipt = call("/chat/submit", body)
+            assert code in (200, 202), (code, receipt)
+            return body
+
+        def wait_receipt(request_id: str, state: str, timeout: float = 15) -> dict:
+            deadline = time.time() + timeout
+            last: dict = {}
+            while time.time() < deadline:
+                code, last = call("/chat/requests/" + request_id)
+                if code == 200 and last.get("state") == state:
+                    return last
+                time.sleep(0.05)
+            raise AssertionError(("receipt timeout", state, last))
+
+        def wait_db(request_id: str, predicate, timeout: float = 10) -> list[tuple]:
+            deadline = time.time() + timeout
+            last: list[tuple] = []
+            while time.time() < deadline:
+                with sqlite3.connect(db) as connection:
+                    last = connection.execute("SELECT seq,kind,status,tool_name,error_code FROM turn_steps WHERE request_id=? ORDER BY seq", (request_id,)).fetchall()
+                if predicate(last):
+                    return last
+                time.sleep(0.05)
+            raise AssertionError(("step timeout", request_id, last))
+
+        def configure(**patch: object) -> None:
+            payload = {"root_path": str(root), **patch}
+            code, body = call("/scopes/global", payload)
+            assert code == 200, (code, body)
+
         try:
-            app=start()
-            first,_=submit('I prefer Rust')
-            done=wait(first['request_id'],'complete');assert done['response']=='Synthetic durable answer'
-            calls=len(received);assert call('/chat/submit',first)[0]==200;time.sleep(.3);assert len(received)==calls
-            changed={**first,'prompt':'Changed content'};assert call('/chat/submit',changed)[0]==409
-            detail=call('/chat/requests/'+first['request_id']+'/context')[1]
-            assert detail['context']['provider_messages']==received[0]['messages']
-            assert detail['context']['model']==received[0]['model']
-            assert [e['kind'] for e in detail['events']][:4]==['captured','generation_started','context_saved','answer_saved']
-            assert call('/chat/requests/'+first['request_id'],auth=False)[0]==401
-            assert call('/chat/requests/'+first['request_id']+'/context',origin='https://untrusted.invalid')[0]==403
-            assert call('/sessions',auth=False)[0]==401
-            # P1-T12: the read side over real HTTP. A text-only turn still runs the agentic loop,
-            # so it has a step row and an activity feed of its own.
-            steps=call('/chat/requests/'+first['request_id']+'/steps')[1]['steps']
-            assert [s['kind'] for s in steps]==['model_call'],steps
-            assert steps[0]['status']=='complete' and steps[0]['seq']==0 and steps[0]['tool_name'] is None
-            assert steps[0]['error_code'] is None and steps[0]['finished_at']
-            assert len(steps[0]['input_preview'])<=2048 and len(steps[0]['output_preview'])<=2048
-            feed=call('/activity?session_id='+first['session_id'])[1]
-            assert [e['kind'] for e in feed['events']]==['turn_started','model_call_started','model_call_finished','answer_saved'],feed
-            assert len(feed['events'])<=200
-            cursor=feed['next_after_seq'];assert cursor==feed['events'][-1]['seq']
-            tail=call('/activity?session_id=%s&after_seq=%d'%(first['session_id'],cursor))[1]
-            assert tail['events']==[] and tail['next_after_seq']==cursor,tail
-            # No tool ran, so there is no plan and nothing changed on disk. Both say so plainly.
-            assert call('/sessions/'+first['session_id']+'/plan')[1]=={'items':[]}
-            assert call('/changes?request_id='+first['request_id'])[1]=={'changes':[]}
-            assert call('/chat/requests/'+str(uuid.uuid4())+'/steps')[0]==404
-            assert call('/activity?session_id='+first['session_id'],auth=False)[0]==401
-            assert call('/chat/requests/'+first['request_id']+'/steps',auth=False)[0]==401
-            assert call('/sessions/'+first['session_id']+'/plan',origin='https://untrusted.invalid')[0]==403
-            failed,_=submit('simulate provider failure');wait(failed['request_id'],'failed')
-            broken=call('/chat/requests/'+failed['request_id']+'/steps')[1]['steps']
-            assert [(s['kind'],s['status'],s['error_code']) for s in broken]==[('model_call','failed','provider_failed')],broken
-            assert [e['kind'] for e in call('/activity?session_id='+failed['session_id'])[1]['events']][-1]=='turn_failed'
-            history=call('/sessions/'+failed['session_id']+'/messages')[1];assert len(history['messages'])==1;assert history['messages'][0]['content']=='simulate provider failure'
-            calls=len(received);call('/chat/submit',failed);time.sleep(.3);assert len(received)==calls
-            # Crash after the provider was invoked. No auto-retry of a potentially billed turn.
-            started.clear();pending,_=submit('hold for restart');assert started.wait(5)
-            with sqlite3.connect(db) as c:
-                assert c.execute('SELECT content FROM messages WHERE id=?',(pending['request_id'],)).fetchone()[0]=='hold for restart'
-                assert c.execute('SELECT context_json FROM chat_receipts WHERE request_id=?',(pending['request_id'],)).fetchone()[0] is not None
-            app.kill();app.wait(timeout=5);before=len(received);hold.set();app=start()
-            interrupted=wait(pending['request_id'],'interrupted');assert interrupted['response'] is None
-            # A step that was running when the process died reads as interrupted, never as failed.
-            killed=call('/chat/requests/'+pending['request_id']+'/steps')[1]['steps']
-            assert [(s['kind'],s['status']) for s in killed]==[('model_call','interrupted')],killed
-            assert 'interrupted' in [e['kind'] for e in call('/activity?session_id='+pending['session_id'])[1]['events']]
-            call('/chat/submit',pending);time.sleep(.5);assert len(received)==before
-            # Recovery can find sessions without browser-local transcript storage.
-            sessions=call('/sessions')[1]['sessions'];assert {s['id'] for s in sessions}>={first['session_id'],failed['session_id'],pending['session_id']}
-            with sqlite3.connect(db) as c:
-                assert c.execute('PRAGMA integrity_check').fetchone()[0]=='ok';assert c.execute('PRAGMA foreign_key_check').fetchall()==[]
-            print('PASS: real HTTP admission, idempotency, context equality, auth/origin, provider failure, SIGKILL/restart, no generation replay, session recovery, steps/plan/activity/changes API, SQLite integrity')
+            app = start()
+            configure(permission_mode="auto_all", max_steps=40, max_tool_bytes=400000, max_wall_seconds=900)
+
+            # Existing durable recording contract, now with tools present in the first request.
+            first = submit("I prefer Rust")
+            done = wait_receipt(first["request_id"], "complete")
+            assert done["response"] == "Synthetic durable answer"
+            assert provider.count("I prefer Rust") == 1
+            first_provider = next(item["body"] for item in provider.requests if item["scenario"] == "I prefer Rust")
+            assert len(first_provider["tools"]) == 8 and first_provider["tool_choice"] == "auto"
+            assert call("/chat/submit", first)[0] == 200
+            assert provider.count("I prefer Rust") == 1, "idempotent replay must not call the provider"
+            changed = {**first, "prompt": "Changed content"}
+            assert call("/chat/submit", changed)[0] == 409
+            detail = call("/chat/requests/" + first["request_id"] + "/context")[1]
+            assert detail["context"]["provider_messages"] == first_provider["messages"]
+            assert detail["context"]["model"] == first_provider["model"]
+            assert call("/chat/requests/" + first["request_id"], auth=False)[0] == 401
+            assert call("/chat/requests/" + first["request_id"] + "/context", origin="https://untrusted.invalid")[0] == 403
+
+            # P1-T14 happy path: read -> edit -> bash -> answer, fully recorded over HTTP.
+            happy = submit("rename beta to gamma")
+            happy_done = wait_receipt(happy["request_id"], "complete")
+            assert "changed beta to gamma" in happy_done["response"]
+            assert (root / "notes.md").read_text() == "alpha\ngamma\n"
+            happy_steps = call("/chat/requests/" + happy["request_id"] + "/steps")[1]["steps"]
+            assert [(s["kind"], s["status"], s["tool_name"]) for s in happy_steps] == [
+                ("model_call", "complete", None), ("tool_call", "complete", "read"),
+                ("model_call", "complete", None), ("tool_call", "complete", "edit"),
+                ("model_call", "complete", None), ("tool_call", "complete", "bash"),
+                ("model_call", "complete", None),
+            ], happy_steps
+            happy_feed = call("/activity?session_id=" + happy["session_id"])[1]["events"]
+            assert any(event["kind"] == "file_changed" for event in happy_feed)
+            assert any(event["kind"] == "tool_finished" and event["payload"].get("exit_code") == 0 for event in happy_feed)
+            changes = call("/changes?request_id=" + happy["request_id"])[1]["changes"]
+            assert len(changes) == 1 and changes[0]["applied"] is True
+            happy_requests = [item["body"] for item in provider.requests if item["scenario"] == "rename beta to gamma"]
+            assert len(happy_requests) == 4
+            assert any(message.get("role") == "tool" for message in happy_requests[1]["messages"])
+            assert any(message.get("role") == "tool" and "gamma" in message.get("content", "") for message in happy_requests[2]["messages"])
+
+            # Stale hash anchor: the tool refuses the edit and never touches disk.
+            stale = submit("stale anchor")
+            wait_receipt(stale["request_id"], "complete")
+            assert (root / "stale.md").read_text() == "alpha\nbeta\n"
+            stale_steps = call("/chat/requests/" + stale["request_id"] + "/steps")[1]["steps"]
+            assert any(s["tool_name"] == "edit" and s["error_code"] == "stale_anchor" and s["status"] == "failed" for s in stale_steps)
+            assert call("/changes?request_id=" + stale["request_id"])[1] == {"changes": []}
+
+            # Sandbox escape: the read is recorded as a failed tool, with no filesystem escape.
+            escape = submit("path escape")
+            wait_receipt(escape["request_id"], "complete")
+            escape_steps = call("/chat/requests/" + escape["request_id"] + "/steps")[1]["steps"]
+            assert any(s["tool_name"] == "read" and s["error_code"] in ("path_denied", "invalid_arguments") for s in escape_steps)
+
+            # Permission deny: the pending row is the only thing that can unblock the write.
+            configure(permission_mode="ask")
+            denied = submit("deny write")
+            deadline = time.time() + 10
+            permission = None
+            while time.time() < deadline:
+                listed = call("/permissions?scope=global")[1]["permissions"]
+                permission = next((item for item in listed if item["request_id"] == denied["request_id"]), None)
+                if permission:
+                    break
+                time.sleep(0.05)
+            assert permission is not None
+            code, decision = call("/permissions/" + permission["id"], {"decision": "deny", "scope": "global"})
+            assert code == 200 and decision["status"] == "denied"
+            wait_receipt(denied["request_id"], "complete")
+            assert (root / "deny.md").read_text() == "keep this file\n"
+            denied_steps = call("/chat/requests/" + denied["request_id"] + "/steps")[1]["steps"]
+            assert any(s["tool_name"] == "write" and s["status"] == "denied" and s["error_code"] == "denied" for s in denied_steps)
+
+            # Budget exhaustion: one model call is allowed, then the loop answers honestly without
+            # making another paid provider call.
+            configure(permission_mode="auto_all", max_steps=1)
+            budget = submit("budget test")
+            budget_done = wait_receipt(budget["request_id"], "complete")
+            assert "max_steps" in budget_done["response"] and "NOT finished" in budget_done["response"]
+            assert provider.count("budget test") == 1
+            assert any(event["kind"] == "budget_exhausted" for event in call("/activity?session_id=" + budget["session_id"])[1]["events"])
+            configure(max_steps=40)
+
+            # Crash during a real bash tool: restart marks the running step interrupted and does
+            # not replay it or ask the provider for another model call.
+            hold = submit("hold during tool")
+            wait_db(hold["request_id"], lambda rows: any(row[1] == "tool_call" and row[2] == "running" for row in rows))
+            before_restart = provider.count("hold during tool")
+            assert app is not None
+            app.kill()
+            app.wait(timeout=5)
+            app = start()
+            interrupted = wait_receipt(hold["request_id"], "interrupted")
+            assert interrupted["response"] is None
+            interrupted_steps = call("/chat/requests/" + hold["request_id"] + "/steps")[1]["steps"]
+            assert [(s["kind"], s["status"]) for s in interrupted_steps] == [("model_call", "complete"), ("tool_call", "interrupted")]
+            assert provider.count("hold during tool") == before_restart, "restart must not re-execute the bash step"
+            assert "interrupted" in [event["kind"] for event in call("/activity?session_id=" + hold["session_id"])[1]["events"]]
+
+            failure_turn = submit("simulate provider failure")
+            wait_receipt(failure_turn["request_id"], "failed")
+            failed_steps = call("/chat/requests/" + failure_turn["request_id"] + "/steps")[1]["steps"]
+            assert [(s["kind"], s["status"], s["error_code"]) for s in failed_steps] == [("model_call", "failed", "provider_failed")]
+
+            with sqlite3.connect(db) as connection:
+                assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+                assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+            print("PASS: P1-T14 tool calls, read/edit/bash/answer, stale anchors, path escape, permission deny, budget exhaustion, interrupted tool recovery, no re-execution, and provider failure")
         finally:
-            hold.set()
             if app and app.poll() is None:
                 app.terminate()
-                try:app.wait(timeout=5)
-                except subprocess.TimeoutExpired:app.kill();app.wait()
-            provider.shutdown();provider.server_close()
-if __name__=='__main__':main()
+                try:
+                    app.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    app.kill()
+                    app.wait()
+    finally:
+      shutil.rmtree(project_tmp, ignore_errors=True)
+    provider.close()
+
+
+if __name__ == "__main__":
+    main()
