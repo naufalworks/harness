@@ -168,6 +168,38 @@ async fn decide_permission(State(h):State<Harness>,Path(id):Path<String>,Json(re
     }
 }
 
+// P1-T12: the read side. Every field below is a row the loop already committed, so what the UI
+// shows is the record itself and not a second, prettier version of it.
+async fn request_steps(State(h):State<Harness>,Path(id):Path<String>)->ApiResult<Json<Value>>{
+    Uuid::parse_str(&id).map_err(|_|invalid("Invalid request identifier"))?;
+    // 404 on an unknown turn: an empty step list would otherwise read as "this turn did nothing".
+    h.store.recording_receipt(id.clone()).await.map_err(db_error)?.ok_or(ApiError(StatusCode::NOT_FOUND,"Recording receipt not found"))?;
+    Ok(Json(h.store.turn_steps(id).await.map_err(db_error)?))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RequestQuery{request_id:String}
+async fn request_changes(State(h):State<Harness>,Query(q):Query<RequestQuery>)->ApiResult<Json<Value>>{
+    Uuid::parse_str(&q.request_id).map_err(|_|invalid("Invalid request identifier"))?;
+    h.store.recording_receipt(q.request_id.clone()).await.map_err(db_error)?.ok_or(ApiError(StatusCode::NOT_FOUND,"Recording receipt not found"))?;
+    Ok(Json(h.store.turn_changes(q.request_id).await.map_err(db_error)?))
+}
+async fn session_plan(State(h):State<Harness>,Path(session):Path<String>)->ApiResult<Json<Value>>{
+    Uuid::parse_str(&session).map_err(|_|invalid("Invalid session identifier"))?;
+    // A session with no plan and a session that does not exist both read as empty, exactly as
+    // `/sessions/{id}/messages` does. The plan is a view of the session, not proof it exists.
+    Ok(Json(h.store.plan(session).await.map_err(db_error)?))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ActivityQuery{session_id:String,#[serde(default)]after_seq:Option<i64>}
+async fn activity(State(h):State<Harness>,Query(q):Query<ActivityQuery>)->ApiResult<Json<Value>>{
+    Uuid::parse_str(&q.session_id).map_err(|_|invalid("Invalid session identifier"))?;
+    let after=q.after_seq.unwrap_or(0);
+    if after<0 {return Err(invalid("Activity cursor cannot be negative"));}
+    Ok(Json(h.store.activity_since(q.session_id,after).await.map_err(db_error)?))
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct IngestRequest{name:String,content:String,#[serde(default)]format:Option<String>,#[serde(default="default_scope")]scope:String}
@@ -197,6 +229,8 @@ fn router(state:Harness)->Router{
         .route("/jobs",get(jobs)).route("/jobs/{id}/retry",post(retry_job))
         .route("/scopes/{scope}",get(get_scope).post(set_scope))
         .route("/permissions",get(permissions)).route("/permissions/{id}",post(decide_permission))
+        .route("/chat/requests/{id}/steps",get(request_steps)).route("/sessions/{id}/plan",get(session_plan))
+        .route("/activity",get(activity)).route("/changes",get(request_changes))
         .route_layer(middleware::from_fn_with_state(state.clone(),authenticate));
     Router::new().route("/",get(index)).route("/app.js",get(js)).route("/style.css",get(css)).merge(api)
         .layer(DefaultBodyLimit::max(2*1024*1024)).layer(middleware::from_fn(headers)).with_state(state)
@@ -302,6 +336,94 @@ mod tests{
     #[tokio::test]async fn permissions_require_auth(){
         let response=app().oneshot(axum::http::Request::builder().uri("/permissions").body(Body::empty()).unwrap()).await.unwrap();
         assert_eq!(response.status(),StatusCode::UNAUTHORIZED);
+    }
+
+    /// P1-T12: steps, plan and activity are read back from the rows the loop wrote. This builds
+    /// those rows directly (the loop's own coverage lives in `agent_loop`) and checks the shape,
+    /// the bounds and the cursor the UI will depend on.
+    #[tokio::test]async fn steps_plan_and_activity_read_back_what_the_loop_recorded(){
+        let store=DbStore::init(":memory:").unwrap();
+        let app=app_with(store.clone());
+        let (request,session)=(storage::uid(),storage::uid());
+        store.capture_chat(recording::CaptureInput{request:request.clone(),session:session.clone(),scope:"global".into(),
+            prompt:"rename beta to gamma".into(),model:"m".into(),signature:storage::uid(),redacted:false}).await.unwrap();
+
+        // A model call whose stored message array is far larger than the 2 KB preview.
+        let wall="x".repeat(4096);
+        let first=store.begin_step(agent_loop::NewStep{request:request.clone(),session:session.clone(),kind:"model_call",
+            tool_name:None,tool_call_id:None,input:json!({"messages":[{"role":"user","content":wall}]}),
+            event:"model_call_started",payload:json!({"attempt":1})}).await.unwrap();
+        let mut done=agent_loop::StepOutcome{step:first,request:request.clone(),session:session.clone(),status:"complete",
+            output:json!({"text":Value::Null,"tool_calls":[{"name":"edit"}]}),bytes:64,truncated:false,
+            tokens_in:Some(11),tokens_out:Some(7),error_code:None,event:"model_call_finished",
+            payload:json!({"tokens_in":11,"tokens_out":7,"tool_call_count":1}),artifacts:vec![]};
+        store.finish_step(done).await.unwrap();
+
+        // A tool call that changed a file and wrote the plan, exactly as `finish_step` does.
+        let second=store.begin_step(agent_loop::NewStep{request:request.clone(),session:session.clone(),kind:"tool_call",
+            tool_name:Some("edit".into()),tool_call_id:Some("call-1".into()),input:json!({"path":"notes.md"}),
+            event:"tool_started",payload:json!({"tool":"edit","summary":"edit notes.md (+1 -1)"})}).await.unwrap();
+        done=agent_loop::StepOutcome{step:second,request:request.clone(),session:session.clone(),status:"complete",
+            output:json!({"content":"edited","summary":"edit notes.md (+1 -1)","error_code":Value::Null}),bytes:1234,truncated:true,
+            tokens_in:None,tokens_out:None,error_code:None,event:"tool_finished",payload:json!({"tool":"edit","status":"complete"}),
+            artifacts:vec![tools::Artifact::FileChange{path:"notes.md".into(),action:"modify",before_hash:Some("aaaa".into()),
+                after_hash:Some("bbbb".into()),diff:"-beta\n+gamma".into(),plus:1,minus:1},
+                tools::Artifact::Plan{items:vec![("read notes.md".into(),"done".into()),("rename beta".into(),"in_progress".into())]}]};
+        store.finish_step(done).await.unwrap();
+
+        let steps=body_json(app.clone().oneshot(authorized("GET",&format!("/chat/requests/{request}/steps")).body(Body::empty()).unwrap()).await.unwrap()).await;
+        let steps=steps["steps"].as_array().unwrap().clone();
+        assert_eq!(steps.len(),2);
+        assert_eq!((&steps[0]["seq"],&steps[0]["kind"],&steps[0]["status"]),(&json!(0),&json!("model_call"),&json!("complete")));
+        assert_eq!((&steps[0]["tokens_in"],&steps[0]["tokens_out"]),(&json!(11),&json!(7)));
+        assert_eq!(steps[0]["input_preview"].as_str().unwrap().len(),storage::PREVIEW_BYTES,"a huge message array is cut to the preview cap");
+        assert_eq!(steps[0]["previews_capped"],json!(true),"the client has to know the preview is not the whole story");
+        assert_eq!(steps[0]["summary"],Value::Null,"only a tool names itself");
+        assert_eq!((&steps[1]["tool_name"],&steps[1]["summary"]),(&json!("edit"),&json!("edit notes.md (+1 -1)")));
+        assert_eq!((&steps[1]["output_bytes"],&steps[1]["truncated"],&steps[1]["previews_capped"]),(&json!(1234),&json!(true),&json!(false)),
+            "a capped tool output and a capped preview are different facts");
+
+        let plan=body_json(app.clone().oneshot(authorized("GET",&format!("/sessions/{session}/plan")).body(Body::empty()).unwrap()).await.unwrap()).await;
+        assert_eq!(plan["items"].as_array().unwrap().len(),2);
+        assert_eq!((&plan["items"][0]["text"],&plan["items"][1]["status"]),(&json!("read notes.md"),&json!("in_progress")));
+
+        let feed=body_json(app.clone().oneshot(authorized("GET",&format!("/activity?session_id={session}")).body(Body::empty()).unwrap()).await.unwrap()).await;
+        let kinds:Vec<&str>=feed["events"].as_array().unwrap().iter().map(|e|e["kind"].as_str().unwrap()).collect();
+        // `activity_events` is the agentic feed only; the receipt timeline (`captured`, ...) stays
+        // in `recording_events` behind `/chat/requests/{id}/context`.
+        assert_eq!(kinds,vec!["model_call_started","model_call_finished","tool_started","tool_finished","file_changed","plan_updated"],"{feed:#?}");
+        assert_eq!(feed["events"][2]["payload"]["summary"],json!("edit notes.md (+1 -1)"),"a running step's name lives in its event");
+        assert_eq!(feed["events"][4]["payload"]["path"],json!("notes.md"));
+        let cursor=feed["next_after_seq"].as_i64().unwrap();
+        assert_eq!(cursor,feed["events"].as_array().unwrap().last().unwrap()["seq"].as_i64().unwrap());
+        let tail=body_json(app.clone().oneshot(authorized("GET",&format!("/activity?session_id={session}&after_seq={cursor}")).body(Body::empty()).unwrap()).await.unwrap()).await;
+        assert!(tail["events"].as_array().unwrap().is_empty(),"the cursor must not replay events");
+        assert_eq!(tail["next_after_seq"],json!(cursor),"an empty poll leaves the cursor where it was");
+
+        let changes=body_json(app.clone().oneshot(authorized("GET",&format!("/changes?request_id={request}")).body(Body::empty()).unwrap()).await.unwrap()).await;
+        assert_eq!(changes["changes"].as_array().unwrap().len(),1);
+        assert_eq!((&changes["changes"][0]["path"],&changes["changes"][0]["applied"],&changes["changes"][0]["diff"]),
+            (&json!("notes.md"),&json!(true),&json!("-beta\n+gamma")));
+
+        // Bounds and identity.
+        for (uri,expected) in [
+            (format!("/chat/requests/{}/steps",storage::uid()),StatusCode::NOT_FOUND),
+            ("/chat/requests/not-a-uuid/steps".to_string(),StatusCode::BAD_REQUEST),
+            (format!("/changes?request_id={}",storage::uid()),StatusCode::NOT_FOUND),
+            (format!("/activity?session_id={session}&after_seq=-1"),StatusCode::BAD_REQUEST),
+            ("/activity?session_id=nope".to_string(),StatusCode::BAD_REQUEST),
+            ("/activity".to_string(),StatusCode::BAD_REQUEST),
+            (format!("/sessions/{}/plan","not-a-uuid"),StatusCode::BAD_REQUEST),
+        ]{
+            let response=app.clone().oneshot(authorized("GET",&uri).body(Body::empty()).unwrap()).await.unwrap();
+            assert_eq!(response.status(),expected,"{uri}");
+        }
+        for uri in [format!("/chat/requests/{request}/steps"),format!("/sessions/{session}/plan"),format!("/activity?session_id={session}"),format!("/changes?request_id={request}")]{
+            let response=app.clone().oneshot(axum::http::Request::builder().uri(&uri).body(Body::empty()).unwrap()).await.unwrap();
+            assert_eq!(response.status(),StatusCode::UNAUTHORIZED,"{uri}");
+        }
+        let unknown=body_json(app.oneshot(authorized("GET",&format!("/sessions/{}/plan",storage::uid())).body(Body::empty()).unwrap()).await.unwrap()).await;
+        assert_eq!(unknown,json!({"items":[]}),"a session without a plan reads as empty, like its message history");
     }
 }
 

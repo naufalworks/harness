@@ -31,6 +31,10 @@ pub const MAX_PLAN_ITEMS: usize = 30;
 pub const MAX_PLAN_TEXT: usize = 200;
 pub const PLAN_STATUSES: [&str; 4] = ["pending", "in_progress", "done", "failed"];
 
+/// Preview cap for the step API (P1-T12), matching the `substr(...,1,2048)` in `STEPS_LIST`.
+/// Kept next to that constant's only reader so the two cannot drift.
+pub const PREVIEW_BYTES: usize = 2048;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ScopeConfig {
     pub scope: String,
@@ -343,6 +347,73 @@ impl DbStore {
     /// The stored plan, for the `plan_updated` event and the UI's plan panel.
     pub async fn plan(&self,session_id:String)->Result<Value>{
         self.run(move|c|plan_rows(c,&session_id)).await
+    }
+
+    // ---- P1-T12 read side: what the UI polls between turns ----------------------------
+    // These only read rows the loop already committed. Nothing here recomputes a summary or
+    // re-renders a diff, so the UI can never show a version of the turn the record disagrees with.
+
+    /// Every step of one turn in `seq` order. `input_preview`/`output_preview` are the first
+    /// 2 KB of the stored JSON as text (`SQL substr`), so a long tool output or a whole message
+    /// array cannot blow up a poll; `previews_capped` says when that cut happened, because a
+    /// chopped JSON string that pretends to be complete is worse than no preview at all.
+    /// `summary` is the tool's own phrase, read back from the finished step's output; a step that
+    /// is still running has none yet, and its `tool_started` activity event carries it instead.
+    pub async fn turn_steps(&self,request_id:String)->Result<Value>{
+        self.run(move|c|{
+            let mut stmt=c.prepare(crate::agentic_sql::STEPS_LIST)?;
+            let rows=stmt.query_map([request_id],|r|{
+                let input:Option<String>=r.get(6)?;
+                let output:Option<String>=r.get(7)?;
+                let capped=[input.as_deref(),output.as_deref()].iter().flatten().any(|p|p.len()>=PREVIEW_BYTES);
+                let summary=output.as_deref().and_then(|p|serde_json::from_str::<Value>(p).ok())
+                    .and_then(|v|v.get("summary").and_then(Value::as_str).map(str::to_string));
+                Ok(json!({
+                    "id":r.get::<_,String>(0)?,"seq":r.get::<_,i64>(1)?,"kind":r.get::<_,String>(2)?,
+                    "status":r.get::<_,String>(3)?,"tool_name":r.get::<_,Option<String>>(4)?,
+                    "tool_call_id":r.get::<_,Option<String>>(5)?,"summary":summary,
+                    "input_preview":input,"output_preview":output,"previews_capped":capped,
+                    "output_bytes":r.get::<_,i64>(8)?,"truncated":r.get::<_,i64>(9)?==1,
+                    "tokens_in":r.get::<_,Option<i64>>(10)?,"tokens_out":r.get::<_,Option<i64>>(11)?,
+                    "error_code":r.get::<_,Option<String>>(12)?,
+                    "started_at":r.get::<_,String>(13)?,"finished_at":r.get::<_,Option<String>>(14)?,
+                }))
+            })?.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(json!({"steps":rows}))
+        }).await
+    }
+
+    /// The session's activity feed after `after_seq`, capped at 200 rows by `EVENTS_AFTER`.
+    /// `next_after_seq` is the cursor to send back; it only moves when rows were returned, so a
+    /// poll that finds nothing cannot skip an event that commits a moment later.
+    pub async fn activity_since(&self,session_id:String,after_seq:i64)->Result<Value>{
+        self.run(move|c|{
+            let mut stmt=c.prepare(crate::agentic_sql::EVENTS_AFTER)?;
+            let rows=stmt.query_map(params![session_id,after_seq],|r|Ok(json!({
+                "seq":r.get::<_,i64>(0)?,"request_id":r.get::<_,String>(1)?,"step_id":r.get::<_,Option<String>>(2)?,
+                "kind":r.get::<_,String>(3)?,
+                "payload":serde_json::from_str::<Value>(&r.get::<_,String>(4)?).unwrap_or(Value::Null),
+                "created_at":r.get::<_,String>(5)?,
+            })))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            let next=rows.last().and_then(|e|e["seq"].as_i64()).unwrap_or(after_seq);
+            Ok(json!({"events":rows,"next_after_seq":next}))
+        }).await
+    }
+
+    /// The file changes one turn applied, with the diff the tool produced. `applied` is the row's
+    /// own word: the loop writes it when the file was already written, never in advance.
+    pub async fn turn_changes(&self,request_id:String)->Result<Value>{
+        self.run(move|c|{
+            let mut stmt=c.prepare(crate::agentic_sql::FILE_CHANGES_LIST)?;
+            let rows=stmt.query_map([request_id],|r|Ok(json!({
+                "id":r.get::<_,String>(0)?,"step_id":r.get::<_,String>(1)?,"path":r.get::<_,String>(2)?,
+                "action":r.get::<_,String>(3)?,"before_hash":r.get::<_,Option<String>>(4)?,
+                "after_hash":r.get::<_,Option<String>>(5)?,"diff":r.get::<_,Option<String>>(6)?,
+                "applied":r.get::<_,i64>(7)?==1,"reverted_at":r.get::<_,Option<String>>(8)?,
+                "created_at":r.get::<_,String>(9)?,
+            })))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(json!({"changes":rows}))
+        }).await
     }
 }
 

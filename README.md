@@ -81,6 +81,9 @@ Context receipt: `GET /chat/requests/{id}/context`. History: `GET /sessions`,
 `POST /memory/confirm`. Pending tool approvals: `GET /permissions?scope=…`,
 `POST /permissions/{id}` with `{"decision":"approve"|"deny"}` (idempotent; 409 if
 already resolved the other way, 410 once the waiting turn gave up).
+Turn record: `GET /chat/requests/{id}/steps` (previews ≤ 2 KB),
+`GET /sessions/{id}/plan`, `GET /activity?session_id=…&after_seq=N` (≤ 200 events,
+poll with the returned `next_after_seq`), `GET /changes?request_id=…`.
 Full behavior: `docs/RECORDING_PROTOCOL.md`.
 
 ## Remaining work

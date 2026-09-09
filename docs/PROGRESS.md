@@ -18,6 +18,31 @@ Suggested first message to an AI continuing this work:
 
 ---
 
+## 2026-09-09 · AI session (Notion AI via Local) · P1-T12 API for steps, plan, activity
+
+**Changed.**
+- Readers in `src/storage.rs`: `turn_steps`, `activity_since`, `turn_changes` (`plan` already existed), with thin handlers in `src/main.rs` under the existing auth and Origin middleware. They only read rows the loop already committed — nothing recomputes a summary or re-renders a diff — so the UI cannot show a version of a turn that the record disagrees with.
+- `GET /chat/requests/{id}/steps` returns steps in `seq` order with 2 KB previews. Two decisions worth knowing: it **404s** on an unknown request, because an empty step list would otherwise read as "this turn did nothing"; and `previews_capped` is reported separately from `truncated`, because the preview hitting 2 KB and the tool's own output being capped are different facts.
+- `summary` is the tool's own phrase, read back from the finished step's output. A step that is still running therefore has none — its `tool_started` activity event carries it, which is what the live UI polls anyway. No summary is ever recomputed from the model's text.
+- `GET /activity?session_id=&after_seq=N` returns ≤ 200 events plus `next_after_seq`, which only advances when rows came back, so a poll that finds nothing cannot skip an event that commits a moment later. This feed is the agentic log only; `captured`/`generation_started` stay in `recording_events` behind `/chat/requests/{id}/context`.
+- `GET /sessions/{id}/plan` treats an unknown session and a session without a plan identically (`{items:[]}`), matching `/sessions/{id}/messages`. The plan is a view of a session, not proof one exists.
+- Added `GET /changes?request_id=` from the same design section, beyond the task's done-when: ten lines, it consumes the last dead SQL constant, and P1-T13 / P2-T03 both need it. `POST /changes/{id}/revert` stays P2-T03.
+
+**Verified.**
+- `python3 tests/recording_integration.py` → PASS, now including the read side over real HTTP: a completed turn's single `model_call` step (bounded previews, no `error_code`) and its `turn_started → model_call_started → model_call_finished → answer_saved` feed with cursor paging that neither replays nor skips; a provider failure reading `failed / provider_failed` and ending in `turn_failed`; a SIGKILL'd step reading `interrupted`, not `failed`; empty plan and empty changes for a turn that ran no tools; 401 / 403 / 404 on the new routes.
+- `cargo test --locked` → **80** passed (new: steps/plan/activity/changes read back what `begin_step`/`finish_step` wrote, including the preview cap, the cursor and every bounds case). `bash scripts/verify_release.sh` → exit 0.
+
+**Open.**
+- The suite's provider is text-only, so no *tool* step, plan item or file change is asserted over HTTP yet — those paths are covered by `cargo test` against the scripted provider, and P1-T14 owns the scripted-tool-call HTTP suite.
+- Every endpoint is polling. SSE is P2, and `/activity` has no per-request filter (session only), which is all the P1 UI needs.
+- `ToolCtx.request_id` is now the only remaining deliberate dead-code warning (with `Tool::plan` / `PendingChange`, which wait on a dry-run tool contract). All 23 SQL constants are used.
+- Unchanged: `.harness/logs/` is never pruned; a background `pid` is the owning shell, not the job; `permission_payload` diffs cap at 64 KiB; the browser suites were not run.
+
+**Next.**
+- P1-T13 minimal UI for steps and permissions — its dependencies (T04, T11, T12) are all done now, and it is the first task that makes any of this visible without curl.
+
+---
+
 ## 2026-09-09 · AI session (Notion AI via Local) · P1-T11 permission gate
 
 **Changed.**

@@ -76,7 +76,30 @@ def main():
             assert call('/chat/requests/'+first['request_id'],auth=False)[0]==401
             assert call('/chat/requests/'+first['request_id']+'/context',origin='https://untrusted.invalid')[0]==403
             assert call('/sessions',auth=False)[0]==401
+            # P1-T12: the read side over real HTTP. A text-only turn still runs the agentic loop,
+            # so it has a step row and an activity feed of its own.
+            steps=call('/chat/requests/'+first['request_id']+'/steps')[1]['steps']
+            assert [s['kind'] for s in steps]==['model_call'],steps
+            assert steps[0]['status']=='complete' and steps[0]['seq']==0 and steps[0]['tool_name'] is None
+            assert steps[0]['error_code'] is None and steps[0]['finished_at']
+            assert len(steps[0]['input_preview'])<=2048 and len(steps[0]['output_preview'])<=2048
+            feed=call('/activity?session_id='+first['session_id'])[1]
+            assert [e['kind'] for e in feed['events']]==['turn_started','model_call_started','model_call_finished','answer_saved'],feed
+            assert len(feed['events'])<=200
+            cursor=feed['next_after_seq'];assert cursor==feed['events'][-1]['seq']
+            tail=call('/activity?session_id=%s&after_seq=%d'%(first['session_id'],cursor))[1]
+            assert tail['events']==[] and tail['next_after_seq']==cursor,tail
+            # No tool ran, so there is no plan and nothing changed on disk. Both say so plainly.
+            assert call('/sessions/'+first['session_id']+'/plan')[1]=={'items':[]}
+            assert call('/changes?request_id='+first['request_id'])[1]=={'changes':[]}
+            assert call('/chat/requests/'+str(uuid.uuid4())+'/steps')[0]==404
+            assert call('/activity?session_id='+first['session_id'],auth=False)[0]==401
+            assert call('/chat/requests/'+first['request_id']+'/steps',auth=False)[0]==401
+            assert call('/sessions/'+first['session_id']+'/plan',origin='https://untrusted.invalid')[0]==403
             failed,_=submit('simulate provider failure');wait(failed['request_id'],'failed')
+            broken=call('/chat/requests/'+failed['request_id']+'/steps')[1]['steps']
+            assert [(s['kind'],s['status'],s['error_code']) for s in broken]==[('model_call','failed','provider_failed')],broken
+            assert [e['kind'] for e in call('/activity?session_id='+failed['session_id'])[1]['events']][-1]=='turn_failed'
             history=call('/sessions/'+failed['session_id']+'/messages')[1];assert len(history['messages'])==1;assert history['messages'][0]['content']=='simulate provider failure'
             calls=len(received);call('/chat/submit',failed);time.sleep(.3);assert len(received)==calls
             # Crash after the provider was invoked. No auto-retry of a potentially billed turn.
@@ -86,12 +109,16 @@ def main():
                 assert c.execute('SELECT context_json FROM chat_receipts WHERE request_id=?',(pending['request_id'],)).fetchone()[0] is not None
             app.kill();app.wait(timeout=5);before=len(received);hold.set();app=start()
             interrupted=wait(pending['request_id'],'interrupted');assert interrupted['response'] is None
+            # A step that was running when the process died reads as interrupted, never as failed.
+            killed=call('/chat/requests/'+pending['request_id']+'/steps')[1]['steps']
+            assert [(s['kind'],s['status']) for s in killed]==[('model_call','interrupted')],killed
+            assert 'interrupted' in [e['kind'] for e in call('/activity?session_id='+pending['session_id'])[1]['events']]
             call('/chat/submit',pending);time.sleep(.5);assert len(received)==before
             # Recovery can find sessions without browser-local transcript storage.
             sessions=call('/sessions')[1]['sessions'];assert {s['id'] for s in sessions}>={first['session_id'],failed['session_id'],pending['session_id']}
             with sqlite3.connect(db) as c:
                 assert c.execute('PRAGMA integrity_check').fetchone()[0]=='ok';assert c.execute('PRAGMA foreign_key_check').fetchall()==[]
-            print('PASS: real HTTP admission, idempotency, context equality, auth/origin, provider failure, SIGKILL/restart, no generation replay, session recovery, SQLite integrity')
+            print('PASS: real HTTP admission, idempotency, context equality, auth/origin, provider failure, SIGKILL/restart, no generation replay, session recovery, steps/plan/activity/changes API, SQLite integrity')
         finally:
             hold.set()
             if app and app.poll() is None:

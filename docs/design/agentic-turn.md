@@ -114,9 +114,9 @@ Payloads are small JSON; bodies live in `turn_steps`/`file_changes`.
 
 ## API (P1)
 
-- `GET /chat/requests/{id}/steps` → `{steps:[{id, seq, kind, status, tool_name, summary, input_preview, output_preview, output_bytes, truncated, tokens_in, tokens_out, error_code, started_at, finished_at}]}`; previews ≤ 2 KB.
+- `GET /chat/requests/{id}/steps` → `{steps:[{id, seq, kind, status, tool_name, tool_call_id, summary, input_preview, output_preview, previews_capped, output_bytes, truncated, tokens_in, tokens_out, error_code, started_at, finished_at}]}`; previews ≤ 2 KB. 404 for an unknown request, because an empty step list would otherwise read as "this turn did nothing". `summary` is the tool's own phrase read back from the finished step's output, so a step still running has none — its `tool_started` event carries it. `previews_capped` (the preview hit 2 KB) and `truncated` (the tool's own output was capped) are different facts and both are reported.
 - `GET /sessions/{id}/plan` → `{items:[{seq, text, status}]}`.
-- `GET /activity?session_id=&after_seq=N` → `{events:[...], next_after_seq}` (≤ 200).
+- `GET /activity?session_id=&after_seq=N` → `{events:[{seq, request_id, step_id, kind, payload, created_at}], next_after_seq}` (≤ 200). `next_after_seq` only moves when rows were returned, so a poll that finds nothing cannot skip an event that commits a moment later. This feed is the agentic log only; the receipt timeline (`captured`, `generation_started`, ...) stays in `recording_events` behind `/chat/requests/{id}/context`.
 - `GET /permissions?scope=`, `POST /permissions/{id}`.
 - `GET /scopes/{scope}`, `POST /scopes/{scope}`.
 - `GET /changes?request_id=` → file changes with diffs; (P2) `POST /changes/{id}/revert`.
