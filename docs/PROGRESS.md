@@ -18,6 +18,14 @@ Suggested first message to an AI continuing this work:
 
 ---
 
+## 2026-09-10 · AI session (Notion AI via Local) · P3-T02–P4-T04 context and ambient memory
+
+- **Delivered**: Tool-result compaction with a stable three-call boundary, unchanged-read references with full durable audit output, 70%-token turn compaction with exact receipts and review-only episodic candidates, and deterministic per-scope repository maps capped at 8 KiB.
+- **Memory**: Added schema 004 with three new memory kinds and embedding storage. Hybrid recall now unions FTS5 and bundled deterministic offline vectors, preserves project shadowing, uses recency/usefulness in reranking, and retains the 6,000-byte output ceiling. Extraction separates untrusted plan context from exact user evidence and gives explicit corrections high priority.
+- **Ambient UI**: Chat suggestions now appear beneath their source turn with Save/Edit/Dismiss; the Inbox is import-only. Candidate edits preserve evidence and expected revision, hostile text remains inert, and the real HTTP smoke suite covers filtering and editing.
+- **Verification**: Release gate passed: 107 Rust tests, Clippy/build, migration 001→004, 8 tool schemas, 51 Python contracts, and both mock-provider HTTP suites. Both browser suites passed (21 ambient-UI checks and 15 recording checks); JavaScript syntax and `git diff --check` passed.
+- **Delivery**: implementation commit `4fbc037` (`P3/P4: ship context management and ambient memory`).
+
 ## 2026-09-10 · AI session (Notion AI via Local) · P3-T01 deterministic context manager
 
 **Why.** The first provider window had one coarse 24 KB history trim, embedded memory and plan text inside the prompt, and no receipt explaining what fit. Tool schemas were regenerated later by the loop, so the immutable receipt could not prove the definitions on the first call.
