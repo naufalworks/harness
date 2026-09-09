@@ -2,7 +2,7 @@ use anyhow::{bail, Result};
 use axum::{extract::{DefaultBodyLimit,Path,Query,Request,State},http::{header,StatusCode},middleware::{self,Next},response::{IntoResponse,Response},routing::{get,post},Json,Router};
 use serde::Deserialize;
 use serde_json::{json,Value};
-use std::{collections::BTreeMap,env,net::SocketAddr,sync::Arc};
+use std::{collections::BTreeMap,env,net::SocketAddr,sync::Arc,time::Duration};
 use tokio::sync::Semaphore;
 use uuid::Uuid;
 mod ingest;
@@ -205,6 +205,67 @@ async fn activity(State(h):State<Harness>,Query(q):Query<ActivityQuery>)->ApiRes
     Ok(Json(h.store.activity_since(q.session_id,after).await.map_err(db_error)?))
 }
 
+// P2-T01: the same feed as a live stream. Every frame is a row `activity_events` already holds
+// and the DB sequence is the only cursor, so the socket carries no state worth losing: a client
+// that reconnects with the last `id` it saw is replayed from the row after it, exactly once.
+// The token stays in the `Authorization` header (the client uses `fetch`, never `EventSource`,
+// which cannot send one), and `authenticate` releases its concurrency permit as soon as the
+// response head is returned, so an open stream never occupies one of the 8 API slots.
+const STREAM_POLL:Duration=Duration::from_millis(200);
+const STREAM_HEARTBEAT:Duration=Duration::from_secs(15);
+const STREAM_BATCH:usize=200;                                   // `agentic_sql::EVENTS_AFTER` LIMIT
+const STREAM_READ_FAILURES:u32=25;                              // ~5 s of failed reads, then close
+/// The stream's only clock: an idle turn still says something every 15 s, so a client cannot
+/// read a dead socket as a quiet agent. A sent event resets it; the comment is not an event.
+fn heartbeat_due(quiet:Duration)->bool{quiet>=STREAM_HEARTBEAT}
+/// One SSE frame per recorded row, `id` first so a reconnect can resume from it.
+fn activity_frame(event:&Value)->Option<String>{
+    let seq=event["seq"].as_i64()?;
+    Some(format!("id: {seq}\nevent: {}\ndata: {event}\n\n",event["kind"].as_str().unwrap_or("activity")))
+}
+struct Frames(tokio::sync::mpsc::Receiver<String>);
+impl futures_core::Stream for Frames{
+    type Item=std::result::Result<String,std::convert::Infallible>;
+    fn poll_next(mut self:std::pin::Pin<&mut Self>,cx:&mut std::task::Context<'_>)->std::task::Poll<Option<Self::Item>>{
+        self.0.poll_recv(cx).map(|frame|frame.map(Ok))
+    }
+}
+async fn activity_stream(State(h):State<Harness>,Query(q):Query<ActivityQuery>)->ApiResult<Response>{
+    Uuid::parse_str(&q.session_id).map_err(|_|invalid("Invalid session identifier"))?;
+    let after=q.after_seq.unwrap_or(0);
+    if after<0 {return Err(invalid("Activity cursor cannot be negative"));}
+    let (tx,rx)=tokio::sync::mpsc::channel::<String>(64);
+    tokio::spawn(async move{
+        let (mut cursor,mut quiet,mut failures)=(after,tokio::time::Instant::now(),0u32);
+        // A closed channel is the client hanging up; stop reading the database for a tab that left.
+        while !tx.is_closed(){
+            match h.store.activity_since(q.session_id.clone(),cursor).await{
+                // Contention on the database queue is transient and must not look like "turn over":
+                // hold the cursor, try again, and give up only after the failures stop being a blip.
+                Err(_)=>{failures+=1;if failures>=STREAM_READ_FAILURES{return;}}
+                Ok(batch)=>{
+                    failures=0;
+                    let events=batch["events"].as_array().cloned().unwrap_or_default();
+                    for event in &events{
+                        let Some(frame)=activity_frame(event)else{continue};
+                        if tx.send(frame).await.is_err(){return;}
+                        cursor=event["seq"].as_i64().unwrap_or(cursor);
+                        quiet=tokio::time::Instant::now();
+                    }
+                    // A full batch means more rows are already committed; drain before sleeping.
+                    if events.len()>=STREAM_BATCH{continue;}
+                }
+            }
+            if heartbeat_due(quiet.elapsed()){
+                if tx.send(": heartbeat\n\n".into()).await.is_err(){return;}
+                quiet=tokio::time::Instant::now();
+            }
+            tokio::time::sleep(STREAM_POLL).await;
+        }
+    });
+    Ok(([(header::CONTENT_TYPE,"text/event-stream; charset=utf-8")],axum::body::Body::from_stream(Frames(rx))).into_response())
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct IngestRequest{name:String,content:String,#[serde(default)]format:Option<String>,#[serde(default="default_scope")]scope:String}
@@ -235,7 +296,7 @@ fn router(state:Harness)->Router{
         .route("/scopes",get(list_scopes)).route("/scopes/{scope}",get(get_scope).post(set_scope))
         .route("/permissions",get(permissions)).route("/permissions/{id}",post(decide_permission))
         .route("/chat/requests/{id}/steps",get(request_steps)).route("/sessions/{id}/plan",get(session_plan))
-        .route("/activity",get(activity)).route("/changes",get(request_changes))
+        .route("/activity",get(activity)).route("/activity/stream",get(activity_stream)).route("/changes",get(request_changes))
         .route_layer(middleware::from_fn_with_state(state.clone(),authenticate));
     Router::new().route("/",get(index)).route("/app.js",get(js)).route("/style.css",get(css)).merge(api)
         .layer(DefaultBodyLimit::max(2*1024*1024)).layer(middleware::from_fn(headers)).with_state(state)
@@ -450,6 +511,77 @@ mod tests{
         }
         let unknown=body_json(app.oneshot(authorized("GET",&format!("/sessions/{}/plan",storage::uid())).body(Body::empty()).unwrap()).await.unwrap()).await;
         assert_eq!(unknown,json!({"items":[]}),"a session without a plan reads as empty, like its message history");
+    }
+
+    /// Read the stream until `until` frames carry an `id`, or the deadline passes. A stream never
+    /// ends on its own, so a test must say how much it wants and how long it will wait for it.
+    async fn read_frames(response:Response,until:usize,millis:u64)->String{
+        use futures_core::Stream;
+        let mut stream=response.into_body().into_data_stream();
+        let mut text=String::new();
+        let deadline=tokio::time::Instant::now()+Duration::from_millis(millis);
+        while text.matches("id: ").count()<until{
+            let Ok(Some(Ok(bytes)))=tokio::time::timeout_at(deadline,std::future::poll_fn(|cx|std::pin::Pin::new(&mut stream).poll_next(cx))).await else{break};
+            text.push_str(&String::from_utf8_lossy(&bytes));
+        }
+        text
+    }
+    /// P2-T01: the live feed carries the same rows `/activity` returns, keyed by the DB sequence.
+    /// The cursor is the whole recovery story: reconnecting with the last `id` must not replay it.
+    #[tokio::test]async fn activity_stream_frames_recorded_rows_and_resumes_from_the_cursor(){
+        let store=DbStore::init(":memory:").unwrap();
+        let app=app_with(store.clone());
+        let (request,session)=(storage::uid(),storage::uid());
+        store.capture_chat(recording::CaptureInput{request:request.clone(),session:session.clone(),scope:"global".into(),
+            prompt:"stream this turn".into(),model:"m".into(),signature:storage::uid(),redacted:false}).await.unwrap();
+        let step=store.begin_step(agent_loop::NewStep{request:request.clone(),session:session.clone(),kind:"model_call",
+            tool_name:None,tool_call_id:None,input:json!({"messages":[]}),
+            event:"model_call_started",payload:json!({"attempt":1})}).await.unwrap();
+        store.finish_step(agent_loop::StepOutcome{step,request:request.clone(),session:session.clone(),status:"complete",
+            output:json!({"text":"done","tool_calls":[]}),bytes:4,truncated:false,tokens_in:Some(3),tokens_out:Some(2),
+            error_code:None,event:"model_call_finished",payload:json!({"tokens_in":3,"tokens_out":2}),artifacts:vec![]}).await.unwrap();
+
+        let live=app.clone().oneshot(authorized("GET",&format!("/activity/stream?session_id={session}")).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(live.status(),StatusCode::OK);
+        assert_eq!(live.headers().get(header::CONTENT_TYPE).unwrap(),"text/event-stream; charset=utf-8");
+        let frames=read_frames(live,2,5000).await;
+        let ids:Vec<i64>=frames.lines().filter_map(|line|line.strip_prefix("id: ")).filter_map(|seq|seq.parse().ok()).collect();
+        let kinds:Vec<&str>=frames.lines().filter_map(|line|line.strip_prefix("event: ")).collect();
+        assert_eq!(kinds,vec!["model_call_started","model_call_finished"],"{frames}");
+        assert_eq!(ids.len(),2);
+        assert!(ids[1]>ids[0],"the id is the row's own sequence: {ids:?}");
+        let payloads:Vec<Value>=frames.lines().filter_map(|line|line.strip_prefix("data: ")).map(|data|serde_json::from_str(data).unwrap()).collect();
+        assert_eq!((&payloads[0]["seq"],&payloads[0]["kind"],&payloads[0]["request_id"]),(&json!(ids[0]),&json!("model_call_started"),&json!(request)),
+            "a frame is the /activity row itself, not a second rendering of it");
+        assert_eq!(payloads[1]["payload"]["tokens_in"],json!(3));
+
+        let resumed=app.clone().oneshot(authorized("GET",&format!("/activity/stream?session_id={session}&after_seq={}",ids[1])).body(Body::empty()).unwrap()).await.unwrap();
+        let replayed=read_frames(resumed,1,500).await;
+        assert!(!replayed.contains("id: "),"a resumed stream must not replay a delivered event: {replayed}");
+
+        for (uri,expected) in [
+            (format!("/activity/stream?session_id={session}&after_seq=-1"),StatusCode::BAD_REQUEST),
+            ("/activity/stream?session_id=nope".to_string(),StatusCode::BAD_REQUEST),
+            ("/activity/stream".to_string(),StatusCode::BAD_REQUEST),
+        ]{
+            let response=app.clone().oneshot(authorized("GET",&uri).body(Body::empty()).unwrap()).await.unwrap();
+            assert_eq!(response.status(),expected,"{uri}");
+        }
+        let anonymous=app.oneshot(axum::http::Request::builder().uri(format!("/activity/stream?session_id={session}")).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(anonymous.status(),StatusCode::UNAUTHORIZED,"the stream is behind the same bearer token as the feed");
+    }
+    /// A quiet turn still owes the client a sign of life every 15 s. Virtual time keeps that
+    /// assertion real without a 15-second test.
+    #[tokio::test(start_paused=true)]async fn activity_stream_heartbeats_a_quiet_session(){
+        assert!(!heartbeat_due(STREAM_HEARTBEAT-Duration::from_millis(1)));
+        assert!(heartbeat_due(STREAM_HEARTBEAT));
+        let response=app().oneshot(authorized("GET",&format!("/activity/stream?session_id={}",storage::uid())).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(response.status(),StatusCode::OK,"a session with no events yet is empty, not missing");
+        // Nothing carries an `id`, so this reads until the virtual clock passes the deadline.
+        let quiet=read_frames(response,1,20_000).await;
+        assert!(!quiet.contains("id: "),"a session with no rows must not invent events: {quiet}");
+        assert!(quiet.split_inclusive("\n\n").all(|frame|frame==": heartbeat\n\n"),"an idle stream sends comments only: {quiet}");
+        assert!(quiet.contains(": heartbeat\n\n"),"an idle stream must distinguish a quiet agent from a dead socket: {quiet}");
     }
 }
 

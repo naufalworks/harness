@@ -18,6 +18,27 @@ Suggested first message to an AI continuing this work:
 
 ---
 
+## 2026-09-09 · AI session (Notion AI via Local) · P2-T01 SSE endpoint over activity_events
+
+**Why.** The rail was accurate but late. P1-T13's 1 s poll re-fetched the whole turn on a timer, so a step appeared up to a second after it committed and every open tab paid a full `/activity` read per second. P2-T02 deliberately left the transport alone so this task only had to swap it.
+
+**Changed.**
+- `src/main.rs` — `GET /activity/stream?session_id=&after_seq=N`, inside the existing auth and Origin layer. A spawned task polls `agentic_sql::EVENTS_AFTER` every 200 ms (batch 200, matching the statement's own LIMIT) and pushes `id: <seq>` / `event: <kind>` / `data: <row>` frames into a 64-frame channel drained by `Frames`, a small `futures_core::Stream` handed to `Body::from_stream`; a `: heartbeat` comment goes out after 15 s of quiet, and the task gives up after 25 consecutive read failures. Bounds match `/activity`: 400 on a non-UUID `session_id` or a negative cursor, 401 without the bearer token.
+- `static/app.js` — `followActivityStream(sessionId)` reads that stream with `fetch` + `TextDecoder` and an `AbortController`, subscribed per turn from `followReceipt` and closed on a terminal state. Header auth keeps the token out of the URL, which is the whole reason this is not `EventSource`. Frames advance a cursor and mark the rail live; refreshes are debounced 150 ms; a hidden tab marks itself stale instead of rendering; reconnects back off 1 s → 5 s and after 3 failures fall back to the old poll, which stays as the safety net.
+- `Cargo.toml` — `futures-core` for the stream impl, tokio's `test-util` dev feature for virtual time. `README.md` documents the endpoint and why callers must use `fetch`, not `EventSource`.
+- `tests/recording_integration.py` — a `stream a turn` script, an SSE reader, and the gate's new assertions: frames from a stream opened before the turn equal the `/activity` rows for that session (seq, kind and payload), resuming at `next_after_seq` replays nothing, `after_seq=-1` and a bad `session_id` are 400, no token is 401.
+- `tests/recording_ui.cjs` — a mock `/activity/stream` route returning a finite SSE body plus a heartbeat, and a new `activity_stream_subscribed` check asserting the rail actually subscribes.
+
+**Verified.** `cargo test --locked` → 85 passed (83 + `activity_stream_frames_recorded_rows_and_resumes_from_the_cursor` and `activity_stream_heartbeats_a_quiet_session`). `python3 tests/recording_integration.py` → PASS. `bash scripts/verify_release.sh` → exit 0 (clippy, build, migrations 001→003, 8 schemas, 50 Python contracts, both HTTP suites). `node tests/ui_smoke.cjs` → 14/14, `node tests/recording_ui.cjs` → 15/15, `node --check static/app.js` → OK. Browser suites again needed playwright-core in /tmp/harness-qa symlinked as `playwright` plus `CHROMIUM_PATH`.
+
+**Continuity note.** The code landed in a session that was cut before any gate ran; this session re-verified the working tree unchanged, then did the bookkeeping and the commit. Nothing was marked done on trust.
+
+**Gotchas.** (1) A missing `session_id` is an axum `Query` rejection with a plain-text body, so that status is asserted in the Rust test — the Python helper parses JSON. (2) Never hand a streaming path to the suite's `call` helper; it reads to EOF and hangs. (3) The 15 s heartbeat is only testable under `#[tokio::test(start_paused = true)]`; real time would add 15 s to the suite. (4) Exactly-once lives in the cursor: it advances only past frames already queued, so a mid-turn disconnect neither repeats nor drops a row.
+
+**Open / deferred.** Frames still come from a 200 ms DB poll rather than a write notification — fine for a single-user SQLite install, revisit if the loop ever grows a broadcast channel. The two clippy dead-code warnings (`ToolCtx.request_id`, `Tool::plan`) stay parked on P2-T03. Assistant markdown rendering and composer auto-grow remain open P2 items.
+
+**Next.** P2-T03 diff cards with accept/reject and undo (`POST /changes/{id}/revert`) — now the first `todo` whose dependencies are done.
+
 ## 2026-09-09 · AI session (Notion AI via Local) · P2-T02 full UI redesign
 
 **Why.** The owner's verdict on the P1 minimal UI: too rigid, too bland, too much chrome on the chat. They asked for a full redesign before P2-T01 and picked the direction by survey: terminal-flat chat (no bubbles, like omp/claude-code), a collapsible right activity rail, dark-first theme with a light toggle, cozy 15px density. Task was reordered ahead of P2-T01 with the owner; the rail still uses the P1-T13 polling and T01 now only swaps the transport.

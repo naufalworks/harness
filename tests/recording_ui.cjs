@@ -7,7 +7,7 @@ const root=path.resolve(__dirname,'..'), out=path.join(root,'docs/qa');fs.mkdirS
  try {
   const page=await browser.newPage({viewport:{width:1120,height:900},colorScheme:'light'});
   const errors=[];page.on('pageerror',e=>errors.push(String(e)));
-  const records=new Map();let submits=0, nextState='complete', abortSubmit=false, offline=false, hold=false, polls=0;
+  const records=new Map();let submits=0, nextState='complete', abortSubmit=false, offline=false, hold=false, polls=0, streams=0;
   const hostile='<img src=x onerror="window.INJECTED=1">';
   function receipt(item){return {request_id:item.request_id,session_id:item.session_id,scope:item.scope,model:'synthetic-main',state:hold?'generating':item.final,response:hold?null:item.final==='complete'?'Keep the conversation. Be selective about what becomes memory.':null,memory_status:'deferred',redacted:false,recalled:[],events:[{kind:'captured',at:'2026-09-08T13:01:00Z'},{kind:'generation_started',at:'2026-09-08T13:01:01Z'},{kind:'context_saved',at:'2026-09-08T13:01:01Z'},...(!hold&&item.final==='complete'?[{kind:'answer_saved',at:'2026-09-08T13:01:03Z'}]:[])],context:{model:'synthetic-main',provider_messages:[{role:'user',content:item.prompt}],memories:[{key:'explanation_style',value:'Concise, with runnable examples. '+hostile,revision:4,scope:'global',evidence:{quote:'I like concise explanations with runnable examples.'}}]}};}
   await page.route('http://127.0.0.1:8080/**',async route=>{
@@ -31,6 +31,9 @@ const root=path.resolve(__dirname,'..'), out=path.join(root,'docs/qa');fs.mkdirS
     return route.fulfill({status:202,json:receipt(records.get(body.request_id))});
    }
    if(p.startsWith('/chat/requests/')){polls++;const id=p.split('/')[3];if(!records.has(id))return route.fulfill({status:404,json:{error:'Recording receipt not found'}});return route.fulfill({json:receipt(records.get(id))});}
+   // P2-T01: a short SSE body. The client must read frames, keep the cursor and survive the end
+   // of a stream without throwing; a finite mock is the cheapest way to hold it to that.
+   if(p==='/activity/stream'){streams++;return route.fulfill({contentType:'text/event-stream',body:'id: 1\nevent: model_call_started\ndata: {"seq":1,"kind":"model_call_started","request_id":"live","payload":{}}\n\n: heartbeat\n\n'});}
    return route.fulfill({status:404,json:{error:'Unmocked route '+p}});
   });
   const connect=async()=>{await page.fill('#token','fixture-token');await page.click('#authform button');await page.waitForFunction(()=>!document.getElementById('workspace').hidden);};
@@ -71,9 +74,9 @@ const root=path.resolve(__dirname,'..'), out=path.join(root,'docs/qa');fs.mkdirS
   // History really reopens a previous session rather than starting a new one.
   await page.setViewportSize({width:1120,height:900});await page.click('#sessionhistory>summary');await page.waitForSelector('.session-entry');await shot('history-desktop');
   await page.locator('.session-entry').first().click();await page.waitForFunction(()=>document.getElementById('log').textContent.includes('How should we'));
-  assert(submits>=5);assert(polls>0);assert.deepStrictEqual(errors,[]);
+  assert(submits>=5);assert(polls>0);assert(streams>0,'the rail must subscribe to the activity stream');assert.deepStrictEqual(errors,[]);
   await page.click('#lock');assert.strictEqual(await page.locator('#log').innerText(),'');assert.strictEqual(await page.locator('#sessionlist').innerText(),'');
-  const result={status:'passed',scope:'Mocked API only — Rust not executed',checks:['saved_before_answer','raw_prompt_not_persisted_in_browser','context_receipt','memory_backlog_does_not_hide_answer','hostile_context_as_text','desktop_mobile_dark_light_no_overflow','lost_submit_response_recovers_without_resend','reload_recovers_without_resend','token_not_persisted','provider_failure_retains_message','restart_interruption_retains_message','session_reopen','lock_clears_visible_history','no_javascript_exceptions']};
+  const result={status:'passed',scope:'Mocked API only — Rust not executed',checks:['saved_before_answer','raw_prompt_not_persisted_in_browser','context_receipt','memory_backlog_does_not_hide_answer','hostile_context_as_text','desktop_mobile_dark_light_no_overflow','lost_submit_response_recovers_without_resend','reload_recovers_without_resend','token_not_persisted','provider_failure_retains_message','restart_interruption_retains_message','session_reopen','activity_stream_subscribed','lock_clears_visible_history','no_javascript_exceptions']};
   fs.writeFileSync(path.join(out,'recording-ui-results.json'),JSON.stringify(result,null,2));console.log(JSON.stringify(result));
  } finally {await browser.close();}
 })().then(()=>process.exit(0)).catch(e=>{console.error(e);process.exit(1)});

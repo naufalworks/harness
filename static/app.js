@@ -124,9 +124,11 @@ async function followReceipt(first, myEpoch) {
   for (let i=0; i<120; i++) {
     if (!token || myEpoch !== epoch) return;
     accepted(data);
+    // P2-T01: subscribe once per turn; the stream itself decides when the rail re-reads.
+    if (data.session_id) followActivityStream(data.session_id).catch(() => {});
     await refreshAgentTurn(data).catch(() => {});
     if (['complete','failed','interrupted'].includes(data.state)) {
-      rememberPending(null); $('retryrequest').hidden = true;
+      rememberPending(null); closeActivityStream(); $('retryrequest').hidden = true;
       await loadHistory(); await loadSessions();
       if (data.state === 'complete') notice(data.redacted ? 'Answer saved. Sensitive-looking input was filtered before saving.' : 'Answer saved on this device.');
       else notice(data.state === 'interrupted' ? 'Your message is saved. The server restarted before the answer completed; nothing was resent.' : 'Your message is saved, but the answer did not complete.', true);
@@ -256,10 +258,73 @@ for (const tab of document.querySelectorAll('[data-view]')) tab.addEventListener
 });
 setInterval(() => { if (token && !document.hidden) refreshStatus().catch(() => {}); }, 5000);
 
-// P1-T13: the agent activity view is deliberately polling for now. The durable receipt remains
-// the source of truth, while these read-only endpoints make the current turn visible between
-// model calls. No model/tool text is inserted as HTML.
-const agentState = { requestId: null, sessionId: null, scope: null, permission: null, busyDecision: false };
+// P1-T13: the agent activity view reads the recorded rows; the durable receipt remains the
+// source of truth, while these read-only endpoints make the current turn visible between model
+// calls. No model/tool text is inserted as HTML.
+const agentState = { requestId: null, sessionId: null, scope: null, permission: null, busyDecision: false, steps: [] };
+
+// P2-T01: the rail's transport is now the SSE feed instead of a 1 s clock. A frame only says
+// that a row was committed — the rail still re-reads the durable endpoints — so the socket can
+// never show something the database does not hold. `cursor` is the DB sequence, so a dropped
+// stream is not a lost update: the reconnect resumes from the last `id` this tab received.
+// Polling stays as the fallback for a browser or proxy that cannot hold a stream open.
+const activityStream = { controller: null, sessionId: null, cursor: 0, live: false, failures: 0, retry: null, stale: false };
+let railRefresh = null;
+function requestRailRefresh() {
+  // A hidden tab only records that something changed and re-reads once it is visible again.
+  if (document.hidden) { activityStream.stale = true; return; }
+  if (railRefresh) return;
+  railRefresh = setTimeout(() => { railRefresh = null; activityStream.stale = false; refreshAgentTurn().catch(() => {}); }, 150);
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden && activityStream.stale) requestRailRefresh(); });
+function closeActivityStream() {
+  if (activityStream.retry) clearTimeout(activityStream.retry);
+  if (activityStream.controller) activityStream.controller.abort();
+  Object.assign(activityStream, { controller: null, sessionId: null, cursor: 0, live: false, failures: 0, retry: null, stale: false });
+}
+function consumeActivityFrame(frame) {
+  // A comment frame (`: heartbeat`) is the socket proving it is alive; it is not an event.
+  if (!frame.trim() || frame.startsWith(':')) return;
+  let seq = null, kind = '';
+  for (const line of frame.split('\n')) {
+    if (line.startsWith('id:')) seq = Number(line.slice(3).trim());
+    else if (line.startsWith('event:')) kind = line.slice(6).trim();
+  }
+  if (seq !== null && Number.isFinite(seq) && seq > activityStream.cursor) activityStream.cursor = seq;
+  if (kind) requestRailRefresh();
+}
+async function followActivityStream(sessionId) {
+  if (!token || !sessionId || activityStream.controller) return;
+  if (activityStream.sessionId !== sessionId) { activityStream.sessionId = sessionId; activityStream.cursor = 0; }
+  const controller = new AbortController(); const myEpoch = epoch;
+  activityStream.controller = controller;
+  try {
+    // `fetch` and not `EventSource`: the bearer token belongs in a header, never in a URL.
+    const response = await fetch(`/activity/stream?session_id=${encodeURIComponent(sessionId)}&after_seq=${activityStream.cursor}`,
+      { headers: { 'Authorization': `Bearer ${token}` }, signal: controller.signal });
+    if (!response.ok || !response.body) throw new Error(`Activity stream unavailable (${response.status})`);
+    activityStream.live = true; activityStream.failures = 0; requestRailRefresh();
+    const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = '';
+    for (;;) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      if (!token || myEpoch !== epoch) return;
+      buffer += decoder.decode(chunk.value, { stream: true });
+      // Frames end at a blank line; an incomplete frame waits in the buffer for its rest.
+      const frames = buffer.split('\n\n'); buffer = frames.pop();
+      for (const frame of frames) consumeActivityFrame(frame);
+    }
+  } catch (error) { if (error?.name !== 'AbortError') activityStream.failures++; }
+  finally {
+    if (activityStream.controller === controller) { activityStream.controller = null; activityStream.live = false; }
+    controller.abort();
+  }
+  // Reconnect only while this tab still owns the turn, and stop after a few refusals so a
+  // server or proxy without the endpoint falls back to polling instead of looping.
+  if (token && myEpoch === epoch && pending?.session_id === sessionId && activityStream.failures < 3 && !activityStream.controller) {
+    activityStream.retry = setTimeout(() => { activityStream.retry = null; followActivityStream(sessionId); }, Math.min(1000 * 2 ** activityStream.failures, 5000));
+  }
+}
 
 function agentIcon(status) {
   if (status === 'complete') return '●';
@@ -370,7 +435,8 @@ async function refreshAgentTurn(receipt) {
   // P2-T02: the turn record lives in the right rail; auto-open it on wide screens only.
   if (!window.matchMedia('(max-width: 1100px)').matches) $('rail').hidden = false;
   $('agent-turn-status').textContent = agentStatusLabel(receipt?.state);
-  renderAgentSteps(data[0].steps || []);
+  agentState.steps = data[0].steps || [];
+  renderAgentSteps(agentState.steps);
   renderAgentPlan(data[1]);
   // P2 context meter placeholder: real tokens-so-far from step receipts; the budget bar lands in P3.
   const tokens = (data[0].steps || []).reduce((sum, s) => sum + (s.tokens_in || 0) + (s.tokens_out || 0), 0);
@@ -401,9 +467,12 @@ async function decideAgentPermission(decision) {
 $('permission-approve').addEventListener('click', () => decideAgentPermission('approve'));
 $('permission-deny').addEventListener('click', () => decideAgentPermission('deny'));
 
-// Keep the activity card alive after the user returns to a tab with an unfinished request.
+// The turn's own clock. While the stream is live this only re-renders the running step's
+// elapsed time from rows already fetched; with no stream it is the P1-T13 poll, unchanged.
 setInterval(() => {
-  if (token && pending && !document.hidden) refreshAgentTurn().catch(() => {});
+  if (!token || !pending || document.hidden) return;
+  if (activityStream.live) { if (agentState.steps.length) renderAgentSteps(agentState.steps); }
+  else refreshAgentTurn().catch(() => {});
 }, 1000);
 
 function fillProjectSettings(data) {

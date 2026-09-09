@@ -61,6 +61,7 @@ def main() -> None:
         "budget test": [
             tool_calls(("budget-1", "read", {"path": "notes.md"})),
         ],
+        "stream a turn": [text("Streamed answer")],
         "hold during tool": [
             tool_calls(("sleep-1", "bash", {"command": "echo started; sleep 30", "description": "hold for restart"})),
             text("This answer must never be reached after the crash."),
@@ -108,6 +109,32 @@ def main() -> None:
                     return response.status, json.load(response)
             except urllib.error.HTTPError as error:
                 return error.code, json.loads(error.read())
+
+        def open_stream(path: str, timeout: float = 8):
+            """P2-T01: an SSE reader. Never pass a streaming path to `call`; it reads to EOF."""
+            request = urllib.request.Request(f"http://127.0.0.1:{server_port}{path}", headers={"Authorization": "Bearer " + token})
+            return urllib.request.urlopen(request, timeout=timeout)
+
+        def read_frames(response, wanted: int, seconds: float = 10) -> list[tuple[int, str, dict]]:
+            frames: list[tuple[int, str, dict]] = []
+            deadline = time.time() + seconds
+            seq: int | None = None
+            kind: str | None = None
+            while len(frames) < wanted and time.time() < deadline:
+                try:
+                    line = response.readline().decode()
+                except OSError:  # socket timeout: an idle stream, which is a result too
+                    break
+                if not line:
+                    break
+                line = line.rstrip("\n")
+                if line.startswith("id:"):
+                    seq = int(line[3:].strip())
+                elif line.startswith("event:"):
+                    kind = line[6:].strip()
+                elif line.startswith("data:"):
+                    frames.append((seq, kind, json.loads(line[5:].strip())))
+            return frames
 
         def start() -> subprocess.Popen[bytes]:
             process = subprocess.Popen([str(binary)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -198,6 +225,32 @@ def main() -> None:
             assert len(happy_requests) == 4
             assert any(message.get("role") == "tool" for message in happy_requests[1]["messages"])
             assert any(message.get("role") == "tool" and "gamma" in message.get("content", "") for message in happy_requests[2]["messages"])
+
+            # P2-T01: the same rows, live. The stream is opened before the turn, so the frames are
+            # produced as the loop commits them, and every frame must be the `/activity` row itself.
+            stream_session = str(uuid.uuid4())
+            live = open_stream("/activity/stream?session_id=" + stream_session)
+            streamed_turn = submit("stream a turn", session=stream_session)
+            wait_receipt(streamed_turn["request_id"], "complete")
+            polled = call("/activity?session_id=" + stream_session)[1]
+            assert len(polled["events"]) >= 2, polled
+            streamed = read_frames(live, len(polled["events"]))
+            live.close()
+            assert [(seq, kind) for seq, kind, _ in streamed] == [(event["seq"], event["kind"]) for event in polled["events"]], (streamed, polled)
+            assert [row for _, _, row in streamed] == polled["events"], "a frame carries the recorded row, not a second rendering of it"
+            # Exactly-once comes from the sequence, not the socket: resuming replays nothing.
+            resumed = open_stream(f"/activity/stream?session_id={stream_session}&after_seq={polled['next_after_seq']}", timeout=1.5)
+            assert read_frames(resumed, 1, seconds=3) == [], "a resumed stream must not repeat a delivered event"
+            resumed.close()
+            # The stream keeps the feed's bounds and the same bearer token (never a URL token).
+            # A missing `session_id` is an axum rejection with a plain-text body, so its status is
+            # asserted in the Rust test instead of here, where `call` expects JSON.
+            for path, code in [
+                (f"/activity/stream?session_id={stream_session}&after_seq=-1", 400),
+                ("/activity/stream?session_id=nope", 400),
+            ]:
+                assert call(path)[0] == code, path
+            assert call("/activity/stream?session_id=" + stream_session, auth=False)[0] == 401
 
             # Stale hash anchor: the tool refuses the edit and never touches disk.
             stale = submit("stale anchor")

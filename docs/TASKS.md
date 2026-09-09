@@ -172,12 +172,13 @@ Each task has: `status`, `depends`, `design` (doc section), `files` (touched),
 ## P2 · Streaming and activity rail
 
 ### P2-T01 · SSE endpoint over activity_events
-- status: todo
+- status: done
 - depends: P1-T12
 - design: docs/design/agentic-turn.md#sse
 - files: src/main.rs
 - done-when: `GET /activity/stream?after_seq=N` (auth header via fetch, not EventSource) sends `id: <seq>` events, heartbeats every 15 s, resumes from `after_seq` with exactly-once delivery from the DB.
 - verify: python3 tests/recording_integration.py
+- note (done): the rail is live. New `GET /activity/stream?session_id=&after_seq=N` sits under the same auth and Origin layer as `/activity`: a spawned task polls `EVENTS_AFTER` every 200 ms (batch 200, the statement's own LIMIT) and pushes `id: <seq>` / `event: <kind>` / `data: <the row /activity would return>` frames through a 64-frame channel into `Body::from_stream`, emits a `: heartbeat` comment after 15 s of quiet, and gives up after 25 consecutive read failures. Bounds match the polled feed: 400 on a non-UUID session or a negative cursor, 401 without a bearer token. Exactly-once is the DB sequence, not the socket — the cursor advances only past frames already queued, so reconnecting with the last `id` replays nothing and drops nothing. `static/app.js` swaps `refreshAgentTurn`'s 1 s poll for one `fetch` + `TextDecoder` reader per turn (header auth, so the token never enters a URL; `EventSource` cannot send headers), debounces rail refreshes at 150 ms, marks a hidden tab stale instead of rendering, closes the stream on a terminal receipt state, and falls back to the old poll after 3 failed reconnects (1 s → 5 s backoff). Adds `futures-core` and tokio's `test-util` dev feature. verify passed: `python3 tests/recording_integration.py` → PASS with the new SSE block (streamed frames equal the `/activity` rows for the same session, resuming at `next_after_seq` replays nothing, `after_seq=-1` and a bad session are 400, no token is 401); `cargo test --locked` → 85 (two new: frames-and-resume, plus a 15 s heartbeat under `start_paused` virtual time); `bash scripts/verify_release.sh` → exit 0; `node tests/ui_smoke.cjs` 14/14 and `node tests/recording_ui.cjs` 15/15 with the new `activity_stream_subscribed` check. Deliberately left: the 1 s poll stays as the fallback path, and frames still come from a 200 ms DB poll rather than a write notification.
 
 ### P2-T02 · Three-pane layout and activity rail
 - status: done

@@ -14,8 +14,15 @@ anyhow = "1.0"
 rusqlite = { version = "0.32", features = ["bundled"] }
 uuid = { version = "1.10", features = ["v4"] }
 chrono = "0.4"
+# P2-T01: the SSE body is a stream; this is the `Stream` trait axum already depends on, so the
+# activity feed needs no new runtime, only the trait to hand a channel to `Body::from_stream`.
+futures-core = "0.3"
 
 ring = "0.17"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+# P2-T01: `start_paused` asserts the 15 s stream heartbeat in virtual time instead of waiting
+# 15 real seconds. Test-only on purpose: dev-dependency features are not unified into the
+# `cargo build` binary, so the shipped server keeps tokio's normal clock.
+tokio = { version = "1", features = ["test-util"] }

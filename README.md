@@ -84,6 +84,10 @@ already resolved the other way, 410 once the waiting turn gave up).
 Turn record: `GET /chat/requests/{id}/steps` (previews ≤ 2 KB),
 `GET /sessions/{id}/plan`, `GET /activity?session_id=…&after_seq=N` (≤ 200 events,
 poll with the returned `next_after_seq`), `GET /changes?request_id=…`.
+Live feed: `GET /activity/stream?session_id=…&after_seq=N` (`text/event-stream`,
+`id: <seq>` per frame, `: heartbeat` every 15 s). Use `fetch` with the
+`Authorization` header, not `EventSource`, and reconnect with the last `id` you
+received; delivery is exactly-once because the cursor is the database sequence.
 Full behavior: `docs/RECORDING_PROTOCOL.md`.
 
 ## Remaining work
