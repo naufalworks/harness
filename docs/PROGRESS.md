@@ -18,6 +18,19 @@ Suggested first message to an AI continuing this work:
 
 ---
 
+## 2026-09-10 · AI session (Notion AI via Local) · P2-T03 create-revert coverage follow-up
+
+**Why.** A post-ship audit found that the modify/revert path was proved end to end, but undoing a file the turn created had never crossed the real HTTP handler, and the browser mock never returned its distinct `status="deleted"` result. That was a small but real first-use risk.
+
+**Changed.**
+- `src/main.rs` — extended the existing revert integration test with an `action="create"`, `before_hash=NULL` change. It proves the card is initially revertable, the handler returns `status="deleted"`, the file is absent rather than zero-byte, a second request is 409, exactly one `file_reverted` event exists for that change, and the relisted card says Already reverted.
+- `tests/ui_smoke.cjs` — added a second create card and mock result so the browser clicks both kinds of Revert, proves the create-specific "file this turn created was removed" notice, and stops offering the action afterward. The suite now reports 17 checks.
+- `docs/TASKS.md` and the handler comment — clarified that `action="delete"` restoration is forward-compatible only. No current tool emits delete rows, so that branch is not described as a shipped or end-to-end-covered user path. The browser API remains mocked; the Rust test is what proves server behavior.
+
+**Verified.** `cargo test --locked changes` → 5 passed; `node --check static/app.js` → OK; ui_smoke → 17/17 including `diff_card_create_revert`; `git diff --check` → clean; `bash scripts/verify_release.sh` → exit 0 (89 Rust tests, Clippy/build, migrations 001→003, 8 schemas, 51 Python contracts, both HTTP suites). Final gate log: `/tmp/verify-p2t03-followup-final.log`.
+
+**Open.** The filesystem restore and `reverted_at` bookkeeping still cannot be one atomic operation; a database failure after the file write can leave a stale card. `/changes` also re-hashes each changed file on rail refresh. Both are deferred follow-ups rather than hidden inside this coverage-only correction.
+
 ## 2026-09-09 · AI session (Notion AI via Local) · P2-T03 diff cards with undo
 
 **Why.** The rail could say a file changed but not show what changed, and there was no way back. `file_changes` has carried `before_hash`, `after_hash` and the unified diff since P1-T14, so the data for both a card and an undo was already recorded — only the read side and one endpoint were missing.

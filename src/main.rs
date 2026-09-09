@@ -216,7 +216,8 @@ fn revert_state(root:Option<&str>,change:&Value)->(bool,&'static str){
     match std::fs::read_to_string(&resolved){
         Ok(text) if tools::content_hash(&text)==after=>(true,""),
         Ok(_)=>(false,"File changed since; revert unavailable"),
-        // A delete card is the one case where the file being gone is the recorded state.
+        // Forward-compatible only: no current tool emits `action=delete`. If one does, the file
+        // being gone is the recorded after-state and the diff can rebuild its prior contents.
         Err(_) if change["action"]==json!("delete")=>(true,""),
         Err(_)=>(false,"File is no longer there; revert unavailable"),
     }
@@ -592,6 +593,7 @@ mod tests{
 
     /// P2-T03: the diff card's footer and the undo behind it. A revert is offered only while the
     /// file still hashes to `after_hash`, and what it writes back is proved against `before_hash`.
+    /// A file created by the turn has no `before_hash`, so its honest undo is removing that file.
     #[tokio::test]async fn reverting_recorded_changes_restores_the_file_and_refuses_once_it_moved_on(){
         let store=DbStore::init(":memory:").unwrap();
         let app=app_with(store.clone());
@@ -617,6 +619,12 @@ mod tests{
                 before_hash:Some(tools::content_hash(before)),after_hash:Some(tools::content_hash(after)),
                 diff:diff.text.clone(),plus:diff.plus,minus:diff.minus});
         }
+        let (created_name,created_after)=("new.md","created by the turn\n");
+        std::fs::write(root.join(created_name),created_after).unwrap();
+        let created_diff=tools::textdiff::unified(created_name,"",created_after);
+        artifacts.push(tools::Artifact::FileChange{path:created_name.into(),action:"create",before_hash:None,
+            after_hash:Some(tools::content_hash(created_after)),diff:created_diff.text.clone(),
+            plus:created_diff.plus,minus:created_diff.minus});
         store.finish_step(agent_loop::StepOutcome{step,request:request.clone(),session:session.clone(),status:"complete",
             output:json!({"content":"edited"}),bytes:12,truncated:false,tokens_in:None,tokens_out:None,error_code:None,
             event:"tool_finished",payload:json!({"tool":"edit","status":"complete"}),artifacts}).await.unwrap();
@@ -624,10 +632,12 @@ mod tests{
 
         let listed=body_json(app.clone().oneshot(authorized("GET",&format!("/changes?request_id={request}")).body(Body::empty()).unwrap()).await.unwrap()).await;
         let rows=listed["changes"].as_array().unwrap().clone();
-        assert_eq!(rows.len(),2);
+        assert_eq!(rows.len(),3);
         let card=rows.iter().find(|row|row["path"]==json!("notes.md")).unwrap().clone();
         let stale=rows.iter().find(|row|row["path"]==json!("keep.md")).unwrap().clone();
+        let created=rows.iter().find(|row|row["path"]==json!(created_name)).unwrap().clone();
         assert_eq!((&card["revertable"],&card["revert_note"]),(&json!(true),&Value::Null));
+        assert_eq!((&created["revertable"],&created["revert_note"]),(&json!(true),&Value::Null));
         assert_eq!((&stale["revertable"],&stale["revert_note"]),(&json!(false),&json!("File changed since; revert unavailable")),
             "the card says why on its own, without the user pressing anything");
 
@@ -637,17 +647,30 @@ mod tests{
         assert_eq!(body_json(done).await,json!({"status":"restored","path":"notes.md","recorded":true}));
         assert_eq!(std::fs::read_to_string(root.join("notes.md")).unwrap(),"alpha\nbeta\ngamma\n","the file is byte for byte what it was");
 
+        let created_id=created["id"].as_str().unwrap().to_string();
+        let removed=app.clone().oneshot(authorized("POST",&format!("/changes/{created_id}/revert")).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(removed.status(),StatusCode::OK);
+        assert_eq!(body_json(removed).await,json!({"status":"deleted","path":created_name,"recorded":true}));
+        assert!(!root.join(created_name).exists(),"undoing a create removes the file instead of leaving an empty one");
+        let removed_again=app.clone().oneshot(authorized("POST",&format!("/changes/{created_id}/revert")).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(removed_again.status(),StatusCode::CONFLICT,"a second create undo neither reappears nor records another event");
+        assert!(!root.join(created_name).exists());
+
         let again=app.clone().oneshot(authorized("POST",&format!("/changes/{id}/revert")).body(Body::empty()).unwrap()).await.unwrap();
         assert_eq!(again.status(),StatusCode::CONFLICT,"a double-clicked Revert writes nothing");
         let feed=body_json(app.clone().oneshot(authorized("GET",&format!("/activity?session_id={session}")).body(Body::empty()).unwrap()).await.unwrap()).await;
         let reverts:Vec<&Value>=feed["events"].as_array().unwrap().iter().filter(|e|e["kind"]==json!("file_reverted")).collect();
-        assert_eq!(reverts.len(),1,"the undo is announced once, on the feed the edit used: {feed:#?}");
-        assert_eq!(reverts[0]["payload"]["path"],json!("notes.md"));
+        assert_eq!(reverts.len(),2,"each undo is announced once, on the feed the edit used: {feed:#?}");
+        assert!(reverts.iter().any(|e|e["payload"]["path"]==json!("notes.md")));
+        assert!(reverts.iter().any(|e|e["payload"]["path"]==json!(created_name)));
 
         let relisted=body_json(app.clone().oneshot(authorized("GET",&format!("/changes?request_id={request}")).body(Body::empty()).unwrap()).await.unwrap()).await;
         let reverted=relisted["changes"].as_array().unwrap().iter().find(|row|row["path"]==json!("notes.md")).unwrap().clone();
         assert!(reverted["reverted_at"].is_string());
         assert_eq!((&reverted["revertable"],&reverted["revert_note"]),(&json!(false),&json!("Already reverted")));
+        let removed_card=relisted["changes"].as_array().unwrap().iter().find(|row|row["path"]==json!(created_name)).unwrap().clone();
+        assert!(removed_card["reverted_at"].is_string());
+        assert_eq!((&removed_card["revertable"],&removed_card["revert_note"]),(&json!(false),&json!("Already reverted")));
 
         let stale_id=stale["id"].as_str().unwrap().to_string();
         let refused=app.clone().oneshot(authorized("POST",&format!("/changes/{stale_id}/revert")).body(Body::empty()).unwrap()).await.unwrap();

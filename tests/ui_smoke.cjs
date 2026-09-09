@@ -8,9 +8,12 @@ const root=path.resolve(__dirname,'..');const out=process.env.QA_DIR || path.joi
   const page=await browser.newPage({viewport:{width:1120,height:900},colorScheme:'light'});const errors=[];page.on('pageerror',e=>errors.push(String(e)));
   let candidate=true,failConfirm=false,chatHistory=[],receipt=null,importCalls=0,retryCalls=0,reverts=0;
   const malicious='<img src=x onerror="window.INJECTED=1">';
-  // P2-T03 fixture: one applied change whose diff carries hostile text, so the card is held to
-  // colouring by class and to never parsing tool text as HTML.
-  let change={id:'synthetic-change',step_id:'synthetic-step',path:'notes.md',action:'modify',applied:true,reverted_at:null,revertable:true,revert_note:null,created_at:'2026-09-09T05:41:00Z',diff:'--- a/notes.md\n+++ b/notes.md\n@@ -1,3 +1,3 @@\n keep\n-beta '+malicious+'\n+BETA\n'};
+  // P2-T03 fixtures: a hostile modify diff proves inert rendering; a create proves its distinct
+  // undo result and user-facing copy rather than assuming it behaves like a modification.
+  let changes=[
+   {id:'synthetic-change',step_id:'synthetic-step',path:'notes.md',action:'modify',applied:true,reverted_at:null,revertable:true,revert_note:null,created_at:'2026-09-09T05:41:00Z',diff:'--- a/notes.md\n+++ b/notes.md\n@@ -1,3 +1,3 @@\n keep\n-beta '+malicious+'\n+BETA\n'},
+   {id:'synthetic-create',step_id:'synthetic-step',path:'draft.md',action:'create',applied:true,reverted_at:null,revertable:true,revert_note:null,created_at:'2026-09-09T05:41:01Z',diff:'--- a/draft.md\n+++ b/draft.md\n@@ -1,0 +1,1 @@\n+first draft\n'}
+  ];
   const data={id:'synthetic-proposal',scope:'global',key:'preferred_language',value:'Rust for local tools. '+malicious,old_value:'Python for prototypes.',category:'preference',expected_revision:1,evidence:{quote:'I prefer Rust for local tools.'}};
   await page.route('http://127.0.0.1:8080/**',async route=>{
    const req=route.request();const u=new URL(req.url());const p=u.pathname;
@@ -36,8 +39,13 @@ const root=path.resolve(__dirname,'..');const out=process.env.QA_DIR || path.joi
    else if(p==='/config')result=req.method()==='GET'?{main:'synthetic-main',extraction:'synthetic-small'}:{status:'saved'};
    else if(p==='/models')result={data:[{id:malicious},{id:'synthetic-main'}]};
    else if(p==='/permissions')result={permissions:[]};
-   else if(p==='/changes')result={changes:[change]};
-   else if(p===`/changes/${change.id}/revert`){reverts++;change={...change,revertable:false,revert_note:'Already reverted',reverted_at:'2026-09-09T05:42:00Z'};result={status:'restored',path:change.path,recorded:true};}
+   else if(p==='/changes')result={changes};
+   else if(p.startsWith('/changes/')&&p.endsWith('/revert')){
+    const changed=changes.find(change=>p===`/changes/${change.id}/revert`);
+    if(!changed)return route.fulfill({status:404,json:{error:'Unexpected change id'}});
+    reverts++;changes=changes.map(change=>change.id===changed.id?{...change,revertable:false,revert_note:'Already reverted',reverted_at:'2026-09-09T05:42:00Z'}:change);
+    result={status:changed.action==='create'?'deleted':'restored',path:changed.path,recorded:true};
+   }
    else return route.fulfill({status:404,json:{error:'Unexpected mock route'}});
    await route.fulfill({json:result});
   });
@@ -46,17 +54,24 @@ const root=path.resolve(__dirname,'..');const out=process.env.QA_DIR || path.joi
   assert.strictEqual(await page.locator('#token').inputValue(),'');assert(!await page.evaluate(()=>JSON.stringify({...localStorage,...sessionStorage}).includes('test-token')));
   await page.fill('#prompt','Help me choose the next implementation step.');await page.click('#send');await page.waitForFunction(()=>document.getElementById('notice').textContent.startsWith('Answer saved'));
   // P2-T03: the rail's diff card, its per-line colouring and the undo behind it.
-  await page.waitForSelector('#agent-changes .diff-card');
+  await page.waitForFunction(()=>document.querySelectorAll('#changes-list .diff-card').length===2);
   const diffText=await page.locator('#changes-list .diff-body').first().innerText();
   assert(diffText.includes('-beta '+malicious)&&diffText.includes('+BETA'),'the diff renders as text: '+diffText);
   assert.strictEqual(await page.locator('#changes-list img').count(),0);assert.strictEqual(await page.evaluate(()=>window.INJECTED),undefined);
-  assert.deepStrictEqual([await page.locator('.diff-line.add').count(),await page.locator('.diff-line.del').count(),await page.locator('.diff-line.meta').count()],[1,1,3]);
+  const modifyCard=page.locator('#changes-list .diff-card').first();
+  assert.deepStrictEqual([await modifyCard.locator('.diff-line.add').count(),await modifyCard.locator('.diff-line.del').count(),await modifyCard.locator('.diff-line.meta').count()],[1,1,3]);
   await shot('conversation-desktop');
-  await page.locator('#changes-list .diff-foot button').click();
+  await modifyCard.locator('.diff-foot button').click();
   await page.waitForFunction(()=>document.getElementById('notice').textContent.startsWith('Reverted'));
   assert.strictEqual(reverts,1);
-  await page.waitForFunction(()=>!document.querySelector('#changes-list .diff-foot button'));
-  assert((await page.locator('#changes-list .diff-foot').first().innerText()).includes('Already reverted'),'a reverted card says so instead of offering another undo');
+  await page.waitForFunction(()=>!document.querySelector('#changes-list .diff-card:first-child .diff-foot button'));
+  assert((await page.locator('#changes-list .diff-card').first().locator('.diff-foot').innerText()).includes('Already reverted'),'a reverted card says so instead of offering another undo');
+  const createCard=page.locator('#changes-list .diff-card').nth(1);
+  await createCard.locator('.diff-foot button').click();
+  await page.waitForFunction(()=>document.getElementById('notice').textContent.includes('file this turn created was removed'));
+  assert.strictEqual(reverts,2);
+  await page.waitForFunction(()=>!document.querySelector('#changes-list .diff-card:nth-child(2) .diff-foot button'));
+  assert((await page.locator('#changes-list .diff-card').nth(1).locator('.diff-foot').innerText()).includes('Already reverted'),'an undone create also stops offering Revert');
   await page.click('[data-view="memory"]');await page.waitForSelector('.candidate h3');
   assert.strictEqual(await page.locator('#candidates img').count(),0);assert.strictEqual(await page.evaluate(()=>window.INJECTED),undefined);
   await shot('memory-desktop');
@@ -73,7 +88,7 @@ const root=path.resolve(__dirname,'..');const out=process.env.QA_DIR || path.joi
   assert.strictEqual(await page.locator('#modelnames img').count(),0);await shot('settings-desktop');
   await page.click('#lock');assert(await page.locator('#workspace').isHidden());assert.strictEqual(await page.locator('#candidates').innerText(),'');
   assert.deepStrictEqual(errors,[]);
-  const result={status:'passed',scope:'Mocked API browser checks; Rust server not executed',checks:['connect','token_not_persisted','conversation','diff_card_rendered','diff_card_revert','memory_evidence','html_injection_rendered_as_text','failed_approval_recoverable','approval','import','job_retry','model_settings','mobile_overflow','dark_mode','lock','no_javascript_exceptions']};
+  const result={status:'passed',scope:'Mocked API browser checks; Rust server not executed',checks:['connect','token_not_persisted','conversation','diff_card_rendered','diff_card_revert','diff_card_create_revert','memory_evidence','html_injection_rendered_as_text','failed_approval_recoverable','approval','import','job_retry','model_settings','mobile_overflow','dark_mode','lock','no_javascript_exceptions']};
   fs.writeFileSync(path.join(out,'ui-results.json'),JSON.stringify(result,null,2));console.log(JSON.stringify(result));
  }finally{await browser.close();}
 })().then(()=>process.exit(0)).catch(e=>{console.error(e);process.exit(1)});
