@@ -3,8 +3,8 @@
 use anyhow::{bail, Result};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde_json::{json, Value};
-use crate::{agent_loop, agentic_sql as agentic, ingest::Event, memory_agents::MemoryAgents,
-    recording_sql as sql, safety, storage::{now, uid, DbStore, Recall, ScopeConfig}};
+use crate::{agent_loop, agentic_sql as agentic, context, ingest::Event, memory_agents::MemoryAgents,
+    recording_sql as sql, safety, storage::{now, uid, DbStore, Recall, ScopeConfig}, tools::Registry};
 
 pub struct CaptureInput {
     pub request: String, pub session: String, pub scope: String, pub prompt: String,
@@ -110,7 +110,6 @@ impl DbStore {
                 let mut rows=stmt.query_map(params![session,seq],|r|Ok(Event{id:r.get(0)?,role:r.get(1)?,content:r.get(2)?}))?.collect::<rusqlite::Result<Vec<_>>>()?;
                 rows.reverse(); rows
             };
-            while (events.len()>20 || events.iter().map(|e|e.content.len()).sum::<usize>()>24_000) && events.len()>=2 {events.drain(..2);}
             while events.first().is_some_and(|e|e.role!="user") {events.remove(0);}
             events.push(Event{id:request.clone(),role:"user".into(),content:prompt.clone()});
             if tx.execute(sql::CLAIM,params![request,now()])?!=1 {bail!("recording was not captured");}
@@ -214,18 +213,33 @@ pub(crate) async fn generate(store:&DbStore,agents:&MemoryAgents,turn:Generation
     let plan=match store.plan(turn.session.clone()).await {
         Ok(plan)=>plan,Err(_)=>return store.fail_recording(turn.request,"context_failed").await,
     };
-    let agentic_turn=scope.root_path.is_some();
-    let messages=if agentic_turn {agent_loop::window(&scope,&recalled,&plan,&turn.events)?} else {agents.chat_messages(&turn.events,&recalled)?};
-    let context=json!({"format_version":1,"adapter":if agentic_turn {"tool_calls_v1"} else {"text_completion_v1"},
-        "model":turn.model,"provider_messages":messages.clone(),"memories":recalled,
+    let offered_tools=if scope.root_path.is_some() {
+        match Registry::standard().schemas() {Ok(tools)=>tools,Err(_)=>return store.fail_recording(turn.request,"context_failed").await}
+    } else {Vec::new()};
+    let Some((user_message,recent_steps))=turn.events.split_last() else {
+        return store.fail_recording(turn.request,"context_failed").await;
+    };
+    if user_message.id!=turn.request {
+        return store.fail_recording(turn.request,"context_failed").await;
+    }
+    let built=match context::build(context::BuildInput {scope:&scope,tools:&offered_tools,
+        sources:&context::Sources::default(),memories:&recalled,plan:&plan,recent_steps,user_message,
+        budgets:context::Budgets::default()}) {
+        Ok(window)=>window,Err(_)=>return store.fail_recording(turn.request,"context_failed").await,
+    };
+    let context::Window {messages,tools,memories,receipt:context_receipt}=built;
+    let agentic_turn=!tools.is_empty();
+    let receipt=json!({"format_version":2,"adapter":if agentic_turn {"tool_calls_v1"} else {"text_completion_v1"},
+        "model":turn.model,"provider_messages":messages.clone(),"provider_tools":tools.clone(),"memories":memories,
+        "context_receipt":context_receipt,
         "scope":{"root_path":scope.root_path.clone(),"permission_mode":scope.permission_mode.clone(),"diagnostics_cmd":scope.diagnostics_cmd.clone(),"tools_enabled":agentic_turn},
-        "note":"Exact sanitized message array prepared for the provider's FIRST call in this turn, not model reasoning or proof of provider receipt. Later calls append tool results; each one stores its own full array in turn_steps.input_json."});
-    if store.save_recording_context(turn.request.clone(),context).await.is_err() {
+        "note":"Exact sanitized message and tool arrays prepared for the provider's FIRST call in this turn, not model reasoning or proof of provider receipt. Later calls append tool results; each one stores its own full message array and tool names in turn_steps.input_json."});
+    if store.save_recording_context(turn.request.clone(),receipt).await.is_err() {
         return store.fail_recording(turn.request,"context_failed").await;
     }
     // No provider call is allowed before context persistence succeeds.
     let outcome=agent_loop::run(agent_loop::Turn{
-        store,agents,request:turn.request.clone(),session:turn.session.clone(),model:turn.model.clone(),scope,messages,
+        store,agents,request:turn.request.clone(),session:turn.session.clone(),model:turn.model.clone(),scope,messages,tools,
     }).await?;
     let answer=match outcome {
         agent_loop::Outcome::Answer(text)=>safety::redact(&text),

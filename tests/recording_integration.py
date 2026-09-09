@@ -200,7 +200,18 @@ def main() -> None:
             assert call("/chat/submit", changed)[0] == 409
             detail = call("/chat/requests/" + first["request_id"] + "/context")[1]
             assert detail["context"]["provider_messages"] == first_provider["messages"]
+            assert detail["context"]["provider_tools"] == first_provider["tools"]
             assert detail["context"]["model"] == first_provider["model"]
+            assert detail["context"]["format_version"] == 2
+            budget = detail["context"]["context_receipt"]
+            categories = budget["categories"]
+            assert [row["name"] for row in categories] == [
+                "system_rules", "tool_definitions", "skills_index", "repo_map",
+                "recalled_memories", "plan", "compacted_history", "recent_steps", "user_message",
+            ]
+            assert all(row["candidate_bytes"] == row["included_bytes"] + row["excluded_bytes"] for row in categories)
+            assert all(row["included_bytes"] <= row["budget_bytes"] for row in categories)
+            assert budget["totals"]["candidate_bytes"] == budget["totals"]["included_bytes"] + budget["totals"]["excluded_bytes"]
             assert call("/chat/requests/" + first["request_id"], auth=False)[0] == 401
             assert call("/chat/requests/" + first["request_id"] + "/context", origin="https://untrusted.invalid")[0] == 403
 

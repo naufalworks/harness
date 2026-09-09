@@ -14,6 +14,7 @@ mod recording_sql;
 mod agentic_sql; // P1 SQL constants (schema 003); contract-tested by tests/test_agentic_sql.py
 mod tools;       // P1-T05/T06 tool registry (needs-verify: written without cargo)
 mod agent_loop;  // P1-T10 agentic turn loop: steps, tools, activity events, budgets
+mod context;     // P3-T01 deterministic initial window and per-category byte receipts
 use memory_agents::MemoryAgents;
 use storage::DbStore;
 

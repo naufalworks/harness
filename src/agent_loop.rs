@@ -11,12 +11,10 @@ use anyhow::{bail, Result};
 use rusqlite::{params, OptionalExtension, TransactionBehavior};
 use serde_json::{json, Value};
 use std::{sync::Arc, time::{Duration, Instant}};
-use crate::{agentic_sql as sql, ingest::Event, memory_agents::{self, MemoryAgents, ToolCall},
-    safety, storage::{now, uid, DbStore, Recall, ScopeConfig},
+use crate::{agentic_sql as sql, memory_agents::{self, MemoryAgents, ToolCall},
+    safety, storage::{now, uid, DbStore, ScopeConfig},
     tools::{Artifact, PermissionMode, Registry, ToolResult, ToolStatus, MAX_OUTPUT}};
 
-/// System prompt for a tool-enabled turn. Rendered once per turn, never model-authored.
-const AGENT_PROMPT: &str = include_str!("../prompts/main_agent.md");
 /// How often the loop looks for a human decision on a pending approval.
 const PERMISSION_POLL: Duration = Duration::from_millis(500);
 /// docs/design/agentic-turn.md#permissions gives an approval 30 minutes. A turn's wall budget
@@ -229,6 +227,8 @@ pub struct Turn<'a> {
     pub model: String,
     pub scope: ScopeConfig,
     pub messages: Vec<Value>,
+    /// Exact definitions already budgeted and stored in the immutable initial context receipt.
+    pub tools: Vec<Value>,
 }
 
 /// A finished turn. `ProviderFailed` is distinct from an `Err` so the caller can record the
@@ -246,44 +246,12 @@ struct Ctx<'a> {
     mode: PermissionMode,
 }
 
-/// What the prompt says about tools. The loop attaches tool schemas only for a scope with a
-/// `root_path` (P1-T04), so saying "you have tools" unconditionally taught the model to answer
-/// "I have no terminal in this conversation" - true-sounding, and the wrong diagnosis. P1-T15
-/// makes the withheld case name its own cause and the one fix.
-const TOOLS_ATTACHED: &str = "You have tools. Use them; do not narrate what you would do.";
-const TOOLS_WITHHELD: &str = concat!(
-    "You have NO tools in this turn. Tools are not attached because scope `{{scope}}` has no project root configured; ",
-    "nothing is wrong with the model or the connection. If the user asks you to read files, edit code, or run commands, ",
-    "say exactly that: tool access is off for this scope until a project root is set, in the UI under `Project & models` -> ",
-    "`Project scope settings` (or `POST /scopes/{{scope}}` with `{\"root_path\":\"/absolute/path/to/project\"}`). ",
-    "Do not claim the conversation type or the provider lacks tool support, and do not guess at file contents or command output.");
-
-/// The initial provider window for a tool-enabled scope: the rendered agent prompt plus the
-/// conversation. Recalled memories and the plan are rendered into the system message because
-/// they are reviewed context, not another untrusted user turn.
-pub fn window(scope: &ScopeConfig, recall: &[Recall], plan: &Value, events: &[Event]) -> Result<Vec<Value>> {
-    let memories = if recall.is_empty() { "(none recalled for this turn)".to_string() } else { serde_json::to_string(recall)? };
-    let items = plan.get("items").and_then(Value::as_array).cloned().unwrap_or_default();
-    let plan_text = if items.is_empty() { "(no plan yet)".to_string() } else {
-        items.iter().map(|item| format!("- [{}] {}", item["status"].as_str().unwrap_or("pending"), item["text"].as_str().unwrap_or("")))
-            .collect::<Vec<_>>().join("\n")
-    };
-    let system = AGENT_PROMPT
-        .replace("{{tools}}", if scope.root_path.is_some() { TOOLS_ATTACHED } else { TOOLS_WITHHELD })
-        .replace("{{root_path}}", scope.root_path.as_deref().unwrap_or("(not configured)"))
-        .replace("{{scope}}", &scope.scope)
-        .replace("{{recall}}", &memories)
-        .replace("{{plan}}", &plan_text);
-    let mut messages = vec![json!({"role":"system","content":system})];
-    for event in events { messages.push(json!({"role":event.role,"content":event.content})); }
-    Ok(messages)
-}
-
 pub async fn run(turn: Turn<'_>) -> Result<Outcome> {
-    let Turn { store, agents, request, session, model, scope, messages } = turn;
+    let Turn { store, agents, request, session, model, scope, messages, tools } = turn;
     let ctx = Ctx { store, agents, mode: scope.mode(), registry: Arc::new(Registry::standard()), request, session, model, scope };
-    // No `root_path` means no tools: the model is told nothing it cannot use (P1-T04).
-    let mut tools = if ctx.scope.root_path.is_some() { ctx.registry.schemas()? } else { Vec::new() };
+    // The context manager, receipt, and provider must share one exact definition array. Never
+    // recreate or widen it after the receipt's write-once commit.
+    let mut tools = tools;
     let (max_steps, max_tool_bytes, max_wall) = ctx.scope.budgets();
     let started = Instant::now();
     let mut messages = messages;
@@ -293,7 +261,7 @@ pub async fn run(turn: Turn<'_>) -> Result<Outcome> {
         "permission_mode":ctx.mode.as_str(),"max_steps":max_steps,"max_tool_bytes":max_tool_bytes,"max_wall_seconds":max_wall})).await?;
     // P1-T15: a tool-less turn is a configuration state, not a mystery. Record it once, next to
     // `turn_started`, so the UI and `/activity` can say why the agent only talked.
-    if tools.is_empty() {
+    if ctx.scope.root_path.is_none() {
         ctx.event("tools_withheld", json!({"scope":ctx.scope.scope,"reason":"no_root_path",
             "hint":"set a project root for this scope in Project & models -> Project scope settings, or POST /scopes/{scope}"})).await?;
     }
@@ -305,8 +273,8 @@ pub async fn run(turn: Turn<'_>) -> Result<Outcome> {
             return Ok(Outcome::Answer(budget_message(reason, steps, tool_bytes, elapsed)));
         }
 
-        // The full array sent on this call is stored with the step; the receipt keeps only the
-        // first window. Tool *names* stand in for the schemas, which are identical every call.
+        // The full array sent on this call is stored with the step; the receipt keeps the exact
+        // first window and full definitions. Tool names identify that immutable definition set.
         let step = ctx.store.begin_step(NewStep {
             request: ctx.request.clone(), session: ctx.session.clone(), kind: "model_call",
             tool_name: None, tool_call_id: None,
@@ -539,15 +507,12 @@ mod tests {
     /// promised tools unconditionally, so the model reported "no terminal in this conversation"
     /// instead of the actual cause the user could fix.
     #[test] fn the_prompt_names_the_missing_project_root_instead_of_promising_tools() {
-        let plan = json!({});
-        let withheld = window(&ScopeConfig::blank("global"), &[], &plan, &[]).unwrap();
-        let text = withheld[0]["content"].as_str().unwrap().to_string();
+        let text = crate::context::system_rules(&ScopeConfig::blank("global"));
         assert!(text.contains("You have NO tools"), "{text}");
         assert!(text.contains("scope `global` has no project root configured"), "{text}");
         assert!(text.contains("Project scope settings"), "{text}");
         let configured = ScopeConfig { root_path: Some("/tmp".into()), ..ScopeConfig::blank("global") };
-        let ready = window(&configured, &[], &plan, &[]).unwrap();
-        let ready_text = ready[0]["content"].as_str().unwrap();
+        let ready_text = crate::context::system_rules(&configured);
         assert!(ready_text.contains("You have tools."), "{ready_text}");
         assert!(!ready_text.contains("NO tools"), "{ready_text}");
     }

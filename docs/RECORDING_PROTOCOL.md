@@ -3,13 +3,13 @@
 ## Admission and generation
 `POST /chat/submit` accepts `{prompt, session_id?, request_id?, scope?, model?}` using the existing UUID/length/scope/auth/Origin validation. The browser always supplies stable IDs. A receipt (HTTP 202 for pending work, 200 for terminal replay) is returned only after sanitized message, receipt, outbox intent and capture event commit under SQLite WAL + synchronous=FULL. IDs are not authorization secrets; every endpoint requires authentication.
 
-A background serial worker claims captured turns, builds bounded prior completed history plus active scoped FTS5 recall, commits the exact prepared model message array and memory snapshots, and then calls the provider. A frontend disconnect has no ownership over this worker. One unresolved generation per session preserves pair ordering. Up to 100 outstanding generations globally; 1000 outstanding extraction jobs, with deferred recording outbox intents independent of that cap.
+A background serial worker claims captured turns, builds a deterministic initial window with independent budgets for system rules, tools, future skills/repo/compaction slots, active scoped FTS5 recall, plan, recent completed turns and the current message, then commits the exact prepared message/tool arrays plus the included/excluded byte ledger before calling the provider. A frontend disconnect has no ownership over this worker. One unresolved generation per session preserves pair ordering. Up to 100 outstanding generations globally; 1000 outstanding extraction jobs, with deferred recording outbox intents independent of that cap.
 
 `POST /chat` remains a compatibility helper: wait about five seconds for a terminal result; otherwise return 202 + receipt. Clients MUST handle 202 and poll. This is a documented behavior change from the old blocking endpoint, not full legacy compatibility.
 
 ## Retrieval
 - `GET /chat/requests/{request_id}`: durable state, timestamps, saved answer (if complete), redaction flag, memory-job status and recalled snapshots.
-- `GET /chat/requests/{request_id}/context`: above plus event timeline and prepared model message array. Reference data only; not model-private reasoning or proof of provider delivery.
+- `GET /chat/requests/{request_id}/context`: above plus event timeline, exact first-call message/tool arrays, included memory snapshots, and all nine category ledgers. Reference data only; not model-private reasoning or proof of provider delivery.
 - `GET /sessions/{id}/messages?before_seq=N`: up to 100 chronological messages, `has_more`, `next_before_seq`.
 - `GET /sessions?before_seq=N`: up to 50 most-recent sessions with saved title excerpt and message count. Keyset paging is not a frozen snapshot; concurrently updated sessions can move toward the newest page—refresh newest to see them.
 

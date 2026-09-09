@@ -203,11 +203,12 @@ Each task has: `status`, `depends`, `design` (doc section), `files` (touched),
 ## P3 · Context Manager, compaction, repo map
 
 ### P3-T01 · Context Manager with per-category budgets
-- status: todo
+- status: done
 - depends: P1-T10
-- design: docs/design/context.md (to write when starting)
+- design: docs/design/context.md
 - done-when: window = system rules + tool defs + skills index + repo map + recalled memories + plan + compacted history + recent steps + user message, each with a byte budget; receipt lists included/excluded parts and sizes.
 - verify: cargo test --locked context
+- note (2026-09-10): added `src/context.rs` with fixed independent UTF-8 source-byte budgets and a deterministic nine-row ledger (`included_parts`, `excluded_parts`, byte totals, state) plus exact first-call provider-array sizes. System rules, current user input, and the configured registry are atomic/fail-closed; optional structured parts are whole-item prefixes; recent history is the newest complete user-led turn suffix. `recording::generate` now uses the manager for tool and chat-only scopes, persists format-v2 `provider_messages` + `provider_tools` + only the included memories before any provider call, and hands that exact tool array to `agent_loop` instead of rebuilding it. Skills/repo-map/compacted-history inputs are typed but intentionally empty until P5-T02/P3-T04/P3-T03. Verified: focused context filter 7 passed; all 93 Rust tests passed; release gate passed (Clippy/build, migrations 001→003, 8 schemas, 51 Python contracts, both HTTP suites). Browser suites were not rerun because no UI asset or UI behavior changed.
 
 ### P3-T02 · Tool-result compaction and read cache
 - status: todo

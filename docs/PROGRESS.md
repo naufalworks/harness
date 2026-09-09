@@ -18,6 +18,19 @@ Suggested first message to an AI continuing this work:
 
 ---
 
+## 2026-09-10 · AI session (Notion AI via Local) · P3-T01 deterministic context manager
+
+**Why.** The first provider window had one coarse 24 KB history trim, embedded memory and plan text inside the prompt, and no receipt explaining what fit. Tool schemas were regenerated later by the loop, so the immutable receipt could not prove the definitions on the first call.
+
+**Changed.**
+- `docs/design/context.md`, `src/context.rs` — defined and implemented nine stable categories with independent source-byte budgets totalling 95,872 bytes. Every successful build emits a fixed-order ledger with budget/candidate/included/excluded byte counts and explicit part IDs; no category borrows from another. Required system rules/current message/registry fail closed, optional structured parts stay whole, and recent chat history keeps the newest complete turn suffix. UTF-8 and overflow behavior are unit-tested.
+- `src/recording.rs`, `src/agent_loop.rs`, `prompts/main_agent.md` — both project and chat-only turns now use the same builder. The write-once format-v2 receipt stores exact first-call `provider_messages` and `provider_tools`, only memories that actually reached the window, and the category receipt before any provider call. The loop receives that exact tool array instead of regenerating it. Synthetic skills/map/memory/plan/summary material is one explicitly untrusted reference message; the current user message remains last and exact.
+- `tests/recording_integration.py`, `docs/RECORDING_PROTOCOL.md` — the real HTTP gate proves stored messages and full tool definitions equal the first provider request and validates all nine ledgers. The old claim-time 24 KB trim is gone so exclusions inside the existing 20-message source bound are auditable.
+
+**Verified.** `cargo test --locked context` → 7 passed; `cargo test --locked` → 93 passed; `python3 -m py_compile tests/recording_integration.py` → OK; `git diff --check` → clean; `bash scripts/verify_release.sh` → exit 0 (93 Rust tests, Clippy/release build, migrations 001→003, 8 tool schemas, 51 Python contracts, both local mock-provider HTTP suites). Log: `/tmp/verify-p3t01.log`. Browser suites were not rerun because no UI asset or browser behavior changed.
+
+**Open / next.** The typed `skills_index`, `repo_map`, and `compacted_history` sources remain empty until P5-T02, P3-T04, and P3-T03. Current-turn tool bodies are still appended verbatim after the immutable first window; P3-T02 is next and owns old-result compaction plus the unchanged-file read cache.
+
 ## 2026-09-10 · AI session (Notion AI via Local) · P2-T03 create-revert coverage follow-up
 
 **Why.** A post-ship audit found that the modify/revert path was proved end to end, but undoing a file the turn created had never crossed the real HTTP handler, and the browser mock never returned its distinct `status="deleted"` result. That was a small but real first-use risk.
