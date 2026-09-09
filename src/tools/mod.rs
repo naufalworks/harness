@@ -9,10 +9,9 @@ use crate::safety;
 pub mod paths;
 pub mod fs_tools;
 pub mod textdiff;
-// P1-T07..T09 (not written yet — see docs/TASKS.md). Uncomment as each lands:
-// pub mod edit_tools;   // Edit, Write   (uses textdiff + Artifact::FileChange)
-// pub mod bash_tool;    // Bash + is_dangerous()
-// pub mod meta_tools;   // Think, TodoWrite (Artifact::Plan)
+pub mod edit_tools;
+pub mod bash_tool;
+pub mod meta_tools;
 
 pub const MAX_OUTPUT: usize = 32 * 1024;
 const HEAD: usize = 24 * 1024;
@@ -47,6 +46,32 @@ pub enum Artifact {
     Plan { items: Vec<(String, String)> },
 }
 
+/// A file change computed from the current on-disk content but **not yet written**.
+/// `Tool::plan` returns it so the loop can record `file_changes(applied=0)` and render a diff
+/// for approval; `Tool::run` re-plans, applies atomically, and the row then flips to 1.
+#[derive(Clone, Debug)]
+pub struct PendingChange {
+    pub path: PathBuf,
+    /// Root-relative path shown to the model, the UI and the `file_changes` row.
+    pub display: String,
+    pub action: &'static str,
+    pub before: Option<String>,
+    pub after: String,
+    pub before_hash: Option<String>,
+    pub after_hash: String,
+    pub diff: String,
+    pub plus: usize,
+    pub minus: usize,
+}
+
+impl PendingChange {
+    pub fn artifact(&self) -> Artifact {
+        Artifact::FileChange { path: self.display.clone(), action: self.action, before_hash: self.before_hash.clone(), after_hash: Some(self.after_hash.clone()), diff: self.diff.clone(), plus: self.plus, minus: self.minus }
+    }
+    /// Rewriting a file with the content it already has is not a change worth recording.
+    pub fn is_noop(&self) -> bool { self.before.as_deref() == Some(self.after.as_str()) }
+}
+
 #[derive(Clone, Debug)]
 pub struct ToolResult {
     pub content: String,
@@ -55,18 +80,26 @@ pub struct ToolResult {
     pub status: ToolStatus,
     pub summary: String,
     pub error_code: Option<&'static str>,
+    /// Process exit status, for `tool_finished {exit_code?}`. Only `bash` sets it.
+    pub exit_code: Option<i32>,
     pub artifacts: Vec<Artifact>,
 }
 
 impl ToolResult {
     pub fn ok(summary: impl Into<String>, content: String) -> Self {
-        Self { content, bytes: 0, truncated: false, status: ToolStatus::Complete, summary: summary.into(), error_code: None, artifacts: Vec::new() }.finish()
+        Self { content, bytes: 0, truncated: false, status: ToolStatus::Complete, summary: summary.into(), error_code: None, exit_code: None, artifacts: Vec::new() }.finish()
     }
     pub fn err(code: &'static str, detail: impl std::fmt::Display) -> Self {
         let content = json!({ "error": code, "detail": detail.to_string() }).to_string();
-        Self { content, bytes: 0, truncated: false, status: ToolStatus::Failed, summary: format!("error: {code}"), error_code: Some(code), artifacts: Vec::new() }.finish()
+        Self { content, bytes: 0, truncated: false, status: ToolStatus::Failed, summary: format!("error: {code}"), error_code: Some(code), exit_code: None, artifacts: Vec::new() }.finish()
+    }
+    /// A failure whose *output* is still the useful part — a timed-out or signalled command.
+    /// Unlike `err`, the content stays the command's own output instead of a JSON envelope.
+    pub fn failed(code: &'static str, summary: impl Into<String>, content: String) -> Self {
+        Self { content, bytes: 0, truncated: false, status: ToolStatus::Failed, summary: summary.into(), error_code: Some(code), exit_code: None, artifacts: Vec::new() }.finish()
     }
     pub fn with_artifact(mut self, a: Artifact) -> Self { self.artifacts.push(a); self }
+    pub fn with_exit_code(mut self, code: Option<i32>) -> Self { self.exit_code = code; self }
     /// Redact and cap. Idempotent.
     pub fn finish(mut self) -> Self {
         let redacted = safety::redact(&self.content);
@@ -87,6 +120,13 @@ impl ToolResult {
 fn floor_char(s: &str, mut i: usize) -> usize { while i > 0 && !s.is_char_boundary(i) { i -= 1; } i }
 fn ceil_char(s: &str, mut i: usize) -> usize { while i < s.len() && !s.is_char_boundary(i) { i += 1; } i }
 
+/// Shorten a label to `max` characters (not bytes), with an ellipsis when it had to cut.
+/// Used for summaries and permission prompts, never for tool output.
+pub(crate) fn truncate_chars(text: &str, max: usize) -> String {
+    if text.chars().count() <= max { return text.to_string(); }
+    text.chars().take(max.saturating_sub(1)).collect::<String>() + "…"
+}
+
 pub trait Tool: Send + Sync {
     fn name(&self) -> &'static str;
     fn schema(&self) -> &'static str;
@@ -95,6 +135,9 @@ pub trait Tool: Send + Sync {
     fn summary(&self, args: &Value) -> String;
     /// Extra permission payload for the UI (diff preview, command). Default: the args.
     fn permission_payload(&self, ctx: &ToolCtx, args: &Value) -> Value { let _ = ctx; args.clone() }
+    /// File-mutating tools describe their change here, without touching disk, so the loop can
+    /// record `file_changes(applied=0)` and show a diff before approval. `None` for the rest.
+    fn plan(&self, ctx: &ToolCtx, args: &Value) -> Option<std::result::Result<PendingChange, ToolResult>> { let _ = (ctx, args); None }
     fn run(&self, ctx: &ToolCtx, args: Value) -> ToolResult;
 }
 
@@ -104,11 +147,23 @@ impl Registry {
     pub fn standard() -> Self {
         Self { tools: vec![
             Box::new(fs_tools::Read), Box::new(fs_tools::Grep), Box::new(fs_tools::Glob),
-            // P1-T07..T09: Box::new(edit_tools::Edit), Box::new(edit_tools::Write),
-            // Box::new(bash_tool::Bash), Box::new(meta_tools::Think), Box::new(meta_tools::TodoWrite),
+            Box::new(edit_tools::Edit), Box::new(edit_tools::Write),
+            Box::new(bash_tool::Bash),
+            Box::new(meta_tools::Think), Box::new(meta_tools::TodoWrite),
         ] }
     }
     pub fn get(&self, name: &str) -> Option<&dyn Tool> { self.tools.iter().find(|t| t.name() == name).map(|b| b.as_ref()) }
+    /// The loop's only entry point. `ctx` is `None` when the scope has no `root_path`,
+    /// and then every tool refuses instead of touching the filesystem (P1-T04).
+    pub fn invoke(&self, ctx: Option<&ToolCtx>, name: &str, args: Value) -> ToolResult {
+        let Some(ctx) = ctx else {
+            return ToolResult::err("tools_disabled", "this scope has no root_path; configure one with POST /scopes/{scope} before using tools");
+        };
+        match self.get(name) {
+            Some(tool) => tool.run(ctx, args),
+            None => ToolResult::err("unknown_tool", name),
+        }
+    }
     /// OpenAI `tools` array built from tools/schemas/*.json (embedded at compile time).
     pub fn schemas(&self) -> Result<Vec<Value>> {
         self.tools.iter().map(|t| Ok(serde_json::from_str(t.schema())?)).collect()
@@ -151,4 +206,22 @@ pub fn render_line(no: usize, text: &str) -> String {
     let mut t = text.to_string();
     if t.chars().count() > 2000 { t = t.chars().take(2000).collect::<String>() + "…"; }
     format!("{no}:{}│{t}", line_hash(text))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn ctx() -> ToolCtx {
+        ToolCtx { root: std::env::temp_dir(), scope: "global".into(), request_id: "request".into(), step_id: "step".into(), diagnostics_cmd: None }
+    }
+    #[test] fn scopes_without_root_path_refuse_every_tool() {
+        let refused = Registry::standard().invoke(None, "read", json!({ "path": "src/main.rs" }));
+        assert_eq!(refused.status, ToolStatus::Failed);
+        assert_eq!(refused.error_code, Some("tools_disabled"));
+        assert!(refused.content.contains("root_path"));
+    }
+    #[test] fn scopes_with_a_root_path_still_reject_unknown_tools() {
+        let unknown = Registry::standard().invoke(Some(&ctx()), "teleport", json!({}));
+        assert_eq!(unknown.error_code, Some("unknown_tool"));
+    }
 }

@@ -202,7 +202,66 @@ impl Tool for Glob {
 
 #[cfg(test)]
 mod tests {
-    use super::glob_match;
+    use super::*;
+    use crate::tools::ToolStatus;
+    use serde_json::json;
+
+    /// A throwaway project: two searchable files plus a secret that must stay invisible.
+    fn project() -> (PathBuf, ToolCtx) {
+        let dir = std::env::temp_dir().join(format!("harness-fs-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/lib.rs"), "fn alpha() {}\nfn beta() {}\nfn gamma() {}\n").unwrap();
+        std::fs::write(dir.join("README.md"), "alpha docs\n").unwrap();
+        std::fs::write(dir.join(".env"), "SECRET=alpha\n").unwrap();
+        let root = std::fs::canonicalize(&dir).unwrap();
+        let ctx = ToolCtx { root: root.clone(), scope: "global".into(), request_id: "request".into(), step_id: "step".into(), diagnostics_cmd: None };
+        (root, ctx)
+    }
+
+    #[test] fn read_numbers_lines_reports_totals_and_honours_the_sandbox() {
+        let (root, ctx) = project();
+        let whole = Read.run(&ctx, json!({ "path": "src/lib.rs" }));
+        assert_eq!(whole.status, ToolStatus::Complete);
+        assert!(whole.content.contains("lines 1-3 of 3"), "{}", whole.content);
+        assert!(whole.content.contains(&render_line(1, "fn alpha() {}")), "{}", whole.content);
+        let window = Read.run(&ctx, json!({ "path": "src/lib.rs", "offset": 2, "limit": 1 }));
+        let shown: Vec<&str> = window.content.lines().skip(1).filter(|l| !l.is_empty()).collect();
+        assert_eq!(shown.len(), 1, "{}", window.content);
+        assert!(shown[0].starts_with("2:"), "{}", window.content);
+        assert_eq!(Read.run(&ctx, json!({ "path": ".env" })).error_code, Some("path_denied"));
+        assert_eq!(Read.run(&ctx, json!({ "path": "../outside.txt" })).error_code, Some("invalid_arguments"));
+        assert_eq!(Read.run(&ctx, json!({ "path": "src" })).error_code, Some("is_directory"));
+        assert_eq!(Read.run(&ctx, json!({})).error_code, Some("invalid_arguments"));
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test] fn grep_counts_matches_and_never_reaches_a_denied_file() {
+        let (root, ctx) = project();
+        let hits = Grep.run(&ctx, json!({ "pattern": "alpha", "context": 0 }));
+        assert_eq!(hits.status, ToolStatus::Complete);
+        assert!(hits.content.contains("src/lib.rs:1:"), "{}", hits.content);
+        assert!(hits.content.contains("README.md:1:"), "{}", hits.content);
+        // .env holds the same needle; the deny-list, not the count, is what keeps it out.
+        assert!(!hits.content.contains(".env"), "{}", hits.content);
+        assert!(hits.content.contains("2 matches"), "{}", hits.content);
+        let scoped = Grep.run(&ctx, json!({ "pattern": "alpha", "glob": "*.md", "context": 0 }));
+        assert!(scoped.content.contains("1 matches"), "{}", scoped.content);
+        assert_eq!(Grep.run(&ctx, json!({ "pattern": "" })).error_code, Some("invalid_arguments"));
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test] fn glob_lists_matches_relative_to_the_root() {
+        let (root, ctx) = project();
+        let out = Glob.run(&ctx, json!({ "pattern": "**/*.rs" }));
+        assert_eq!(out.status, ToolStatus::Complete);
+        assert!(out.content.contains("src/lib.rs"), "{}", out.content);
+        assert!(!out.content.contains("README.md"), "{}", out.content);
+        assert!(out.content.trim_end().ends_with("1 total"), "{}", out.content);
+        assert_eq!(Glob.run(&ctx, json!({ "pattern": "*.rs", "path": ".." })).error_code, Some("invalid_arguments"));
+        assert_eq!(Glob.run(&ctx, json!({})).error_code, Some("invalid_arguments"));
+        std::fs::remove_dir_all(root).ok();
+    }
+
     #[test] fn globs() {
         assert!(glob_match("src/**/*.rs", "src/main.rs"));
         assert!(glob_match("src/**/*.rs", "src/a/b/c.rs"));

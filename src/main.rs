@@ -132,6 +132,18 @@ async fn models(State(h):State<Harness>)->ApiResult<Json<Value>>{Ok(Json(h.agent
 async fn jobs(State(h):State<Harness>)->ApiResult<Json<Value>>{Ok(Json(h.store.jobs().await.map_err(db_error)?))}
 async fn retry_job(State(h):State<Harness>,Path(id):Path<String>)->ApiResult<Json<Value>>{if !h.store.retry_job(id).await.map_err(db_error)?{return Err(ApiError(StatusCode::CONFLICT,"Only failed jobs can be retried"));}Ok(Json(json!({"status":"queued"})))}
 
+// P1-T04: a scope owns a project root. Tools stay disabled until root_path is set, and an
+// unmentioned field keeps its stored value so a partial POST cannot silently disable them.
+async fn get_scope(State(h):State<Harness>,Path(scope):Path<String>)->ApiResult<Json<storage::ScopeConfig>>{
+    safety::scope(&scope).map_err(|_|invalid("Invalid scope"))?;
+    Ok(Json(h.store.scope_config(scope).await.map_err(db_error)?.ok_or(ApiError(StatusCode::NOT_FOUND,"This scope has no project configuration yet"))?))
+}
+async fn set_scope(State(h):State<Harness>,Path(scope):Path<String>,Json(patch):Json<storage::ScopePatch>)->ApiResult<Json<storage::ScopeConfig>>{
+    safety::scope(&scope).map_err(|_|invalid("Invalid scope"))?;
+    let patch=patch.validate().map_err(invalid)?;
+    Ok(Json(h.store.upsert_scope(scope,patch).await.map_err(db_error)?))
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct IngestRequest{name:String,content:String,#[serde(default)]format:Option<String>,#[serde(default="default_scope")]scope:String}
@@ -159,6 +171,7 @@ fn router(state:Harness)->Router{
         .route("/memory/status",get(status)).route("/memory/candidates",get(candidates)).route("/memory/confirm",post(confirm))
         .route("/memory/ingest",post(ingest_memory)).route("/sessions/{id}/messages",get(history))
         .route("/jobs",get(jobs)).route("/jobs/{id}/retry",post(retry_job))
+        .route("/scopes/{scope}",get(get_scope).post(set_scope))
         .route_layer(middleware::from_fn_with_state(state.clone(),authenticate));
     Router::new().route("/",get(index)).route("/app.js",get(js)).route("/style.css",get(css)).merge(api)
         .layer(DefaultBodyLimit::max(2*1024*1024)).layer(middleware::from_fn(headers)).with_state(state)
@@ -194,6 +207,30 @@ mod tests{
     #[tokio::test]async fn api_requires_auth(){let response=app().oneshot(axum::http::Request::builder().uri("/memory/status").body(Body::empty()).unwrap()).await.unwrap();assert_eq!(response.status(),StatusCode::UNAUTHORIZED);}
     #[tokio::test]async fn authenticated_status_succeeds(){let response=app().oneshot(axum::http::Request::builder().uri("/memory/status").header("Authorization",format!("Bearer {}","x".repeat(32))).body(Body::empty()).unwrap()).await.unwrap();assert_eq!(response.status(),StatusCode::OK);}
     #[tokio::test]async fn foreign_origin_is_rejected(){let response=app().oneshot(axum::http::Request::builder().uri("/memory/status").header("Authorization",format!("Bearer {}","x".repeat(32))).header("Origin","https://untrusted.invalid").body(Body::empty()).unwrap()).await.unwrap();assert_eq!(response.status(),StatusCode::FORBIDDEN);}
+    fn authorized(method:&str,uri:&str)->axum::http::request::Builder{axum::http::Request::builder().method(method).uri(uri).header("Authorization",format!("Bearer {}","x".repeat(32)))}
+    async fn body_json(response:Response)->Value{serde_json::from_slice(&axum::body::to_bytes(response.into_body(),64*1024).await.unwrap()).unwrap()}
+    #[tokio::test]async fn scopes_are_absent_until_configured_then_read_back_canonicalized(){
+        let app=app();
+        let missing=app.clone().oneshot(authorized("GET","/scopes/global").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(missing.status(),StatusCode::NOT_FOUND);
+        let dir=std::env::temp_dir().join(format!("harness-api-scope-{}",storage::uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let canonical=std::fs::canonicalize(&dir).unwrap();
+        let request=json!({"root_path":dir.to_string_lossy(),"permission_mode":"auto_all","diagnostics_cmd":"cargo check -q"}).to_string();
+        let saved=app.clone().oneshot(authorized("POST","/scopes/global").header("content-type","application/json").body(Body::from(request)).unwrap()).await.unwrap();
+        assert_eq!(saved.status(),StatusCode::OK);
+        assert_eq!(body_json(saved).await["root_path"],json!(canonical.to_string_lossy()));
+        let stored=app.clone().oneshot(authorized("GET","/scopes/global").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(stored.status(),StatusCode::OK);
+        let row=body_json(stored).await;
+        assert_eq!((&row["permission_mode"],&row["diagnostics_cmd"],&row["max_steps"]),(&json!("auto_all"),&json!("cargo check -q"),&Value::Null));
+        std::fs::remove_dir_all(dir).ok();
+    }
+    #[tokio::test]async fn scopes_refuse_a_root_path_that_is_not_an_existing_directory(){
+        let request=json!({"root_path":"/definitely/not/a/real/harness/project/root"}).to_string();
+        let response=app().oneshot(authorized("POST","/scopes/global").header("content-type","application/json").body(Body::from(request)).unwrap()).await.unwrap();
+        assert_eq!(response.status(),StatusCode::BAD_REQUEST);
+    }
 }
 
 #[cfg(test)]

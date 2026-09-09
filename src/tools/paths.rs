@@ -23,7 +23,9 @@ pub fn is_denied_name(name: &str) -> bool {
     DENY_EXACT.contains(&n.as_str()) || DENY_PREFIX.iter().any(|p| n.starts_with(p)) || DENY_SUFFIX.iter().any(|s| n.ends_with(s))
 }
 
-fn harness_data_dir() -> Option<PathBuf> {
+/// Directory holding the harness database. P1-T04 refuses it as a scope `root_path`
+/// and `resolve` denies every path inside it.
+pub fn harness_data_dir() -> Option<PathBuf> {
     let db = std::env::var("HARNESS_DB").unwrap_or_else(|_| "data/harness_v2.db".into());
     Path::new(&db).parent().and_then(|p| std::fs::canonicalize(p).ok())
 }

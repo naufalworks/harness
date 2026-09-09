@@ -18,6 +18,151 @@ Suggested first message to an AI continuing this work:
 
 ---
 
+## 2026-09-09 · AI session (Notion AI via Local Ops) · P1-T09 think / todo_write
+
+**Changed.**
+- Implemented P1-T09 as one file `src/tools/meta_tools.rs` (the name the `mod.rs` stub reserved) instead of `think.rs` + `todo.rs`. All eight tools of P1 are now registered.
+- Neither tool is `side_effecting`, so a scratchpad note and a plan update can never sit waiting for an approval, in any permission mode.
+- `think` returns the trimmed text as the step **output** — the collapsed reasoning card the UI will render — and puts the "noted" acknowledgement in the `summary`, because one result field cannot be both. Over 4000 characters is `too_large`; blank is `invalid_arguments`.
+- `todo_write` normalizes (trim, absent `status` → `pending`, `seq` = position) and enforces ≤ 30 items, ≤ 200 characters and one `in_progress` as `invalid_arguments`, so the model can repair its own plan instead of hitting a CHECK. The result goes to the loop as `Artifact::Plan`; `DbStore::replace_plan` does the writing, so tools still never touch the database.
+- `src/storage.rs` gains `replace_plan` (one Immediate transaction: `PLAN_CLEAR`, `PLAN_INSERT` per item, read back through `PLAN_LIST`) and `plan` for the `plan_updated` event and the P1-T13 panel. It re-checks the same limits, because a CHECK failure would otherwise reach the caller as an opaque 500. `MAX_PLAN_ITEMS` / `MAX_PLAN_TEXT` / `PLAN_STATUSES` live there as the single source of truth and the tool reads them.
+- `truncate_chars` moved into `src/tools/mod.rs` so `bash` and `todo_write` share one label shortener.
+- The old `verify:` line named `tools::todo`, which matches no test path. It is now `cargo test --locked plan`, which covers both halves of the task — the tool tests and the storage test — in one command.
+
+**Verified.**
+- `cargo test --locked plan` → 6 passed (think's output and refusals, todo_write normalization and artifact, seven rejected plan shapes, whole-plan replacement with rollback, plus the pre-existing edit_tools plan test the filter also catches).
+- A new registry test asserts all eight schema files parse and their `function.name`s match the registered tools in order — this also retired the `schema`/`schemas` dead-code warnings.
+- `bash scripts/verify_release.sh` → passed: 64 Rust tests, Clippy, release build, 50 Python contracts, both mock-provider HTTP suites, `node --check static/app.js`.
+
+**Open.**
+- `think` echoes the thought back to the model, which costs tokens on every turn it is used. Worth revisiting if P3 compaction shows it dominating.
+- Nothing calls `replace_plan` or `plan` outside tests until P1-T10 consumes `Artifact::Plan` and emits `plan_updated`.
+- The Local Ops bridge dropped mid-task; the code was already on disk and was verified once the connection returned.
+
+**Next.**
+- P1-T10: the agent loop in the generation worker — all its dependencies (T03, T05, T07, T08, T09) are now `done`. It must call `plan` → record `file_changes(applied=0)` → approve → `run` → flip to `applied=1`, and persist `Artifact::Plan` through `replace_plan`.
+
+---
+
+## 2026-09-09 · AI session (Notion AI via Local Ops) · P1-T08 bash
+
+**Changed.**
+- Implemented P1-T08 as `src/tools/bash_tool.rs` — the name the `src/tools/mod.rs` stub already reserved, rather than the `src/tools/bash.rs` in TASKS.md. The `verify:` filter still matches, because `tools::bash` is a prefix of `tools::bash_tool::tests`.
+- Foreground calls reuse `edit_tools::run_capped`, so the env whitelist (`PATH HOME LANG LC_ALL TERM` + `HARNESS_SCOPE`), the cwd and the temp-file output capture are shared with `diagnostics_cmd` and cannot drift apart.
+- `run_capped` gained two things for this task. The child now runs in its own process group (`process_group(0)`) and a timeout kills the **group**, so a `make`-style process tree cannot outlive the step that started it. A `started` flag also separates "could not spawn" (`spawn_failed`) from "killed by a signal" (`signal`).
+- A non-zero exit is deliberately not a failed step: status stays `complete`, the code goes into the new `ToolResult::exit_code` (the `tool_finished {exit_code?}` field the events contract already promised) and the output ends with `[exit N]`. A red test run is information the loop has to act on, not a harness error.
+- A timeout **is** a failed step but keeps its partial output, via a new `ToolResult::failed` that leaves the content as raw output instead of the JSON envelope `err` produces.
+- `timeout_seconds` over the 600 s maximum is clamped, with a note appended to the output; a fractional or `< 1` value is `invalid_arguments`. A missing `description` falls back to the first 60 chars of the command instead of failing the call.
+- Background runs `sh -c '<cmd>' >>log 2>&1 &` and reports `$!`, not `setsid`: macOS does not ship `setsid`, and the util-linux builds that fork print the wrapper's pid rather than the job's. The outer shell exits immediately, so the job is reparented to init, and the new process group already puts it out of reach of signals aimed at the harness. Logs go to `<root>/.harness/logs/<step_id>.log`, with the step id reduced to a safe filename stem.
+- The deny-list was already in `mod.rs` (`is_dangerous_command`, consulted by `Registry::requires_permission`). This task covers it with tests and surfaces it to the future UI as `dangerous` in `permission_payload`, alongside the command, cwd, timeout and background flag.
+
+**Verified.**
+- `cargo test --locked tools::bash` → 8 passed (cwd + stripped env, failing command, timeout with partial output, clamped timeout, seven bad argument shapes, background pid/log round trip, deny-list in every permission mode, summary and payload).
+- `bash scripts/verify_release.sh` → passed: 59 Rust tests, Clippy, release build, 50 Python contracts, both mock-provider HTTP suites, `node --check static/app.js`.
+
+**Open.**
+- The reported pid is the shell that owns the job, so `kill <pid>` stops a simple command but not every child of a compound one. The returned note tells the model how to tail and stop the job.
+- Nothing prunes `.harness/logs/`; a long-lived scope will accumulate one log per background step.
+- `exit_code` is plumbed but unread until P1-T10 emits `tool_finished`.
+
+**Next.**
+- P1-T09 (`think` / `todo_write` over the existing `plan_items` SQL), then P1-T10 wires the provider adapter, the registry, the permission gate and `file_changes` into the generation worker.
+
+---
+
+## 2026-09-09 · AI session (Notion AI via Local Ops) · P1-T07 edit / write
+
+**Changed.**
+- Implemented P1-T07 as one new file `src/tools/edit_tools.rs` (`Edit` + `Write` + shared plan/apply/diagnostics helpers), matching the `fs_tools.rs` precedent. `docs/TASKS.md` named `src/tools/edit.rs` and `src/tools/write.rs`; the `verify:` line named `tools::write`, which matches no test path, so it was corrected.
+- The prepare/record/apply requirement became a default trait method in `src/tools/mod.rs`: `Tool::plan(ctx, args) -> Option<Result<PendingChange, ToolResult>>`, plus a `PendingChange` struct. `plan` never writes, so P1-T10 can record `file_changes(applied=0)`, render the diff for approval, then call `run` and flip the row to `applied=1`. Non-editing tools inherit `None` and are unaffected.
+- `run` re-plans before applying rather than trusting the plan it was approved on: the file can change while a permission request is pending, and the hash anchors must still hold at write time.
+- `edit` anchors on the `content_hash` and per-line hashes that `read` emits. A drifted anchor fails with `stale_anchor` and three lines of current context instead of overwriting; `old_string` must match exactly once (`no_match` / `ambiguous_match` with the offending line numbers). `write` refuses an existing file unless `overwrite:true`, caps input at 512 KiB, and rejects directories.
+- Writes are atomic: `.<name>.harness-tmp-<step>` in the destination directory, then rename, preserving the existing file mode; the temp file is removed on failure. An identical rewrite reports "already had this content" and records no `file_changes` row, so a model re-issuing the same edit does not queue a redundant approval.
+- `permission_payload` carries `{path, action, plus, minus, before_hash, after_hash, diff}` (diff capped at 64 KiB) for the P1-T13 UI. `summary` stays `edit <path>` because the trait gives it no filesystem access, so the ± counts live in the payload.
+- Diagnostics go through a shared `run_capped` helper (`sh -c`, cwd = root, env stripped to `PATH HOME LANG LC_ALL TERM` + `HARNESS_SCOPE`, 60 s cap, 4 KiB of output kept, output interleaved through a temp file so a full pipe cannot deadlock the timeout poll). It is `pub(crate)` because P1-T08 reuses it for `bash`.
+
+**Verified.**
+- `cargo test --locked tools::edit_tools` → 7 passed (stale anchor, ambiguous and missing `old_string`, first write, clobber refusal, no-op rewrite, atomic replace with mode preserved).
+- `cargo clippy --locked --all-targets` → exit 0; only the pre-existing `needless_range_loop` pair in the `grep` fallback plus the dead-code cascade below.
+- `bash scripts/verify_release.sh` → passed: 51 Rust tests, Clippy, release build, 50 Python contracts, both mock-provider HTTP suites, `node --check static/app.js`.
+
+**Open.**
+- The diff in `permission_payload` is truncated at 64 KiB; a larger change is still applied in full but reviewed partially. P1-T13 should say so in the UI.
+- `PendingChange`, `Registry::invoke` and the new caps report dead-code warnings until P1-T10 consumes them.
+- Nothing has been committed yet this session.
+
+**Next.**
+- P1-T08 (`bash`: `sh -c` at the scope root, env whitelist, 120 s default / 600 s max, `background:true` via `setsid` logging to `<root>/.harness/logs/<step_id>.log`, deny-list that always prompts even in `auto_all`), then P1-T09 (`think` / `todo_write`), then P1-T10 wires the loop.
+
+---
+
+## 2026-09-09 · AI session (Notion AI via Local Ops) · P1-T04 scopes + P1-T05/T06 verified
+
+**Changed.**
+- Implemented P1-T04. `src/storage.rs` gains `ScopeConfig` (with `mode()`, `budgets()` defaulting to 40 / 400000 / 900, and `tool_ctx()`), a `ScopePatch` request type, `canonical_root()`, and `DbStore::scope_config` / `upsert_scope` on the existing `SCOPE_GET`/`SCOPE_UPSERT` constants. `src/main.rs` gains `GET`/`POST /scopes/{scope}` behind the existing auth + origin middleware.
+- `POST` merges into the stored row: an absent field keeps its value, an explicit `null` clears it. This is why the request type uses `Option<Option<T>>` — a partial POST must not be able to silently drop `root_path` and disable tools.
+- Validation runs before SQLite so a bad request is a 400 instead of a CHECK failure: `root_path` must be absolute, is canonicalized (symlinks resolved), must be an existing directory, must not be the filesystem root, and must not sit inside the harness data dir; `permission_mode` goes through `PermissionMode::parse`; `diagnostics_cmd` is trimmed, capped at 512 chars, and refused when it matches the bash deny-list; the three budgets are range-checked to mirror the 003 CHECKs.
+- Tool gate: `Registry::invoke(ctx, name, args)` in `src/tools/mod.rs` is now the loop's single entry point. `ctx` is `None` for a scope without `root_path`, and every call then fails with `tools_disabled` instead of guessing a working directory. `paths::harness_data_dir()` became `pub` so P1-T04 can reuse it.
+- P1-T05 and P1-T06 moved from `needs-verify` to `done`: both compiled unchanged in this checkout, and `src/tools/fs_tools.rs` gained end-to-end tests for `read`, `grep` and `glob` over a temp project (numbered lines and `content_hash`, `offset`/`limit` windowing, `.env` refusal, directory and missing-argument errors, match counts, glob filtering, `..` rejection).
+- P1-T06's `verify:` line named three module paths (`tools::read`, `tools::grep`, `tools::glob`) that never existed — all three tools share `tools::fs_tools`. Corrected the command rather than splitting the file; the existing note already documented the one-file decision.
+
+**Verified.**
+- `cargo test --locked scopes` → 6 passed (storage merge/gate, validation rejections, HTTP round trip, HTTP 400).
+- `cargo test --locked tools::paths` → 4 passed. `cargo test --locked tools::fs_tools` → 4 passed. `cargo test --locked tools::` → 10 passed.
+- `bash scripts/verify_release.sh` → passed: 41 Rust tests, Clippy, build, 50 Python contracts, both mock-provider HTTP suites, `node --check static/app.js`.
+
+**Open.**
+- `rg` is installed here, so `grep`'s literal fallback branch (and the `.gitignore` behaviour that only ripgrep provides) is still untested.
+- Nothing calls `Registry::invoke`, `ScopeConfig::budgets` or `tool_ctx` outside tests yet, so the crate still reports dead-code warnings; P1-T10 consumes them.
+- No UI for scopes yet; that is P1-T13. Browser suites remain separate.
+
+**Next.**
+- P1-T07 (`edit`/`write` with hash anchors and `file_changes`), then P1-T08 (`bash`), P1-T09 (`think`/`todo_write`), then P1-T10 wires the provider adapter to the registry.
+
+---
+
+## 2026-09-09 · AI session (Notion AI via Local Ops) · P1-T03 provider adapter + P1-T01 verification
+
+**Changed.**
+- Implemented P1-T03 in `src/memory_agents.rs`: non-streaming OpenAI-style tools, `tool_calls`, usage, assistant-message replay, bounded provider errors, and safe malformed-argument parsing; the text-only extraction path remains intact.
+- Marked P1-T01 done after verifying the migration chain and storage test in the owner's checkout.
+
+**Verified.**
+- `cargo test --locked provider` → 6 passed.
+- `cargo test --locked` → 35 passed.
+- `python3 tests/test_migrations.py && cargo test --locked storage` → passed.
+- `bash scripts/verify_release.sh` → passed: native, SQL, and local mock-provider HTTP gates.
+
+**Open.**
+- Browser UI suites remain separate.
+- The provider adapter is ready for P1-T10 to consume; malformed arguments still need to be turned into persisted `invalid_arguments` tool steps by the agent loop.
+
+**Next.**
+- P1-T04: scopes (`root_path`, `permission_mode`, `diagnostics_cmd`), then the remaining tool modules and agent loop.
+
+---
+
+## 2026-09-09 · AI session (Notion AI via Local Ops) · P0 baseline verification
+
+**Changed.**
+- No application code changed.
+- Updated `docs/TASKS.md`: P0-T01 is `done`; clarified that agentic recovery belongs to P1-T10, corrected the P1-T06 file path, added the prepare/record/apply requirement for file changes, and repaired later task dependencies.
+
+**Verified.**
+- `bash scripts/verify_release.sh` → passed in the owner's local checkout.
+- Cargo/Rust 1.92.0: 29 Rust tests, Clippy, and release build passed.
+- Python contracts and both local mock-provider HTTP suites passed.
+- `node --check static/app.js` passed.
+
+**Open.**
+- Browser UI suites remain separate.
+- P1-T01, P1-T05, and P1-T06 retain their existing `needs-verify` status until their task-specific verification and dependency sequencing is completed.
+
+**Next.**
+- P1-T03 is now the first dependency-satisfied implementation task: add the non-streaming provider adapter for OpenAI-style tool calls while preserving the extraction path.
+
+---
+
 ## 2026-09-09 · AI session (Notion AI, sandbox without cargo) · Planning + P1 groundwork
 
 **Context.** Owner asked for (1) tooling like oh-my-pi / OpenClaude, (2) a thin main agent backed by context/recall/advisor managers so coding does not hallucinate, (3) a chat UI that shows plan, running tools, logs and diffs, and (4) a written plan an AI can continue from.

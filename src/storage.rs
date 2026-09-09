@@ -18,6 +18,130 @@ pub struct Proposal { pub key:String, pub value:String, pub category:String, pub
 pub struct Recall { pub id:String, pub scope:String, pub key:String, pub value:String, pub revision:i64, pub evidence:Value }
 pub struct Job { pub id:String, pub scope:String, pub source_id:String, pub events:Vec<Event>, pub attempts:i64 }
 
+// ---- Scopes (P1-T04) ----------------------------------------------------------------
+// A scope owns a project: docs/design/agentic-turn.md#scopes. `root_path` stays NULL until
+// the owner points the scope at a directory, and every tool refuses until it is set.
+pub const DEFAULT_MAX_STEPS: i64 = 40;
+pub const DEFAULT_MAX_TOOL_BYTES: i64 = 400_000;
+pub const DEFAULT_MAX_WALL_SECONDS: i64 = 900;
+
+/// Plan limits from docs/design/tools.md#todo_write, mirroring the 003 CHECK constraints.
+/// `todo_write` reads them so the tool and the schema can never disagree.
+pub const MAX_PLAN_ITEMS: usize = 30;
+pub const MAX_PLAN_TEXT: usize = 200;
+pub const PLAN_STATUSES: [&str; 4] = ["pending", "in_progress", "done", "failed"];
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ScopeConfig {
+    pub scope: String,
+    pub root_path: Option<String>,
+    pub permission_mode: String,
+    pub diagnostics_cmd: Option<String>,
+    pub max_steps: Option<i64>,
+    pub max_tool_bytes: Option<i64>,
+    pub max_wall_seconds: Option<i64>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+impl ScopeConfig {
+    /// Unsaved defaults for a scope that has never been configured.
+    pub fn blank(scope: &str) -> Self {
+        Self { scope: scope.into(), root_path: None, permission_mode: "ask".into(), diagnostics_cmd: None, max_steps: None, max_tool_bytes: None, max_wall_seconds: None, created_at: String::new(), updated_at: String::new() }
+    }
+    /// An unreadable stored value degrades to the safest mode instead of failing the turn.
+    pub fn mode(&self) -> crate::tools::PermissionMode {
+        crate::tools::PermissionMode::parse(&self.permission_mode).unwrap_or(crate::tools::PermissionMode::Ask)
+    }
+    /// `(max_steps, max_tool_bytes, max_wall_seconds)` with the design defaults applied.
+    pub fn budgets(&self) -> (i64, i64, i64) {
+        (self.max_steps.unwrap_or(DEFAULT_MAX_STEPS), self.max_tool_bytes.unwrap_or(DEFAULT_MAX_TOOL_BYTES), self.max_wall_seconds.unwrap_or(DEFAULT_MAX_WALL_SECONDS))
+    }
+    /// `None` means "chat only". The loop hands it to `Registry::invoke`, which then refuses
+    /// every call instead of guessing a working directory.
+    pub fn tool_ctx(&self, request_id: &str, step_id: &str) -> Option<crate::tools::ToolCtx> {
+        let root = self.root_path.as_ref()?;
+        Some(crate::tools::ToolCtx { root: root.into(), scope: self.scope.clone(), request_id: request_id.into(), step_id: step_id.into(), diagnostics_cmd: self.diagnostics_cmd.clone() })
+    }
+}
+
+fn scope_row(r: &rusqlite::Row) -> rusqlite::Result<ScopeConfig> {
+    Ok(ScopeConfig { scope: r.get(0)?, root_path: r.get(1)?, permission_mode: r.get(2)?, diagnostics_cmd: r.get(3)?, max_steps: r.get(4)?, max_tool_bytes: r.get(5)?, max_wall_seconds: r.get(6)?, created_at: r.get(7)?, updated_at: r.get(8)? })
+}
+
+/// An absent field leaves the stored column alone; an explicit `null` clears it.
+/// The session plan in `seq` order. Shared by `plan` and `replace_plan` so the value the tool
+/// returns to the model is read back from the same rows the UI will show.
+fn plan_rows(c: &Connection, session_id: &str) -> Result<Value> {
+    let mut stmt = c.prepare(crate::agentic_sql::PLAN_LIST)?;
+    let rows = stmt.query_map([session_id], |r| Ok(json!({
+        "seq": r.get::<_, i64>(0)?, "text": r.get::<_, String>(1)?,
+        "status": r.get::<_, String>(2)?, "updated_at": r.get::<_, String>(3)?,
+    })))?;
+    Ok(json!({ "items": rows.collect::<rusqlite::Result<Vec<_>>>()? }))
+}
+
+fn patch_field<'de, D, T>(d: D) -> std::result::Result<Option<Option<T>>, D::Error>
+where D: serde::Deserializer<'de>, T: Deserialize<'de> {
+    Option::deserialize(d).map(Some)
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScopePatch {
+    #[serde(default, deserialize_with = "patch_field")] pub root_path: Option<Option<String>>,
+    #[serde(default)] pub permission_mode: Option<String>,
+    #[serde(default, deserialize_with = "patch_field")] pub diagnostics_cmd: Option<Option<String>>,
+    #[serde(default, deserialize_with = "patch_field")] pub max_steps: Option<Option<i64>>,
+    #[serde(default, deserialize_with = "patch_field")] pub max_tool_bytes: Option<Option<i64>>,
+    #[serde(default, deserialize_with = "patch_field")] pub max_wall_seconds: Option<Option<i64>>,
+}
+
+impl ScopePatch {
+    /// Normalize and reject before anything reaches SQLite, so a bad request is a 400 and
+    /// never a CHECK-constraint failure. Canonicalizing `root_path` touches the filesystem.
+    pub fn validate(mut self) -> std::result::Result<Self, &'static str> {
+        if let Some(Some(raw)) = &self.root_path {
+            let canonical = canonical_root(raw)?;
+            self.root_path = Some(Some(canonical));
+        }
+        if let Some(mode) = self.permission_mode.as_deref() {
+            if crate::tools::PermissionMode::parse(mode).is_none() { return Err("permission_mode must be ask, auto_edit or auto_all"); }
+        }
+        if let Some(Some(raw)) = &self.diagnostics_cmd {
+            let cmd = raw.trim().to_string();
+            if cmd.is_empty() { self.diagnostics_cmd = Some(None); }
+            else if cmd.chars().count() > 512 || cmd.chars().any(char::is_control) { return Err("diagnostics_cmd must be 1-512 characters without control characters"); }
+            else if crate::tools::is_dangerous_command(&cmd) { return Err("diagnostics_cmd matches the destructive-command deny-list"); }
+            else { self.diagnostics_cmd = Some(Some(cmd)); }
+        }
+        bounded(self.max_steps, 1, 500, "max_steps must be between 1 and 500")?;
+        bounded(self.max_tool_bytes, 1024, 50_000_000, "max_tool_bytes must be between 1024 and 50000000")?;
+        bounded(self.max_wall_seconds, 10, 86_400, "max_wall_seconds must be between 10 and 86400")?;
+        Ok(self)
+    }
+}
+
+fn bounded(value: Option<Option<i64>>, low: i64, high: i64, message: &'static str) -> std::result::Result<(), &'static str> {
+    match value { Some(Some(n)) if !(low..=high).contains(&n) => Err(message), _ => Ok(()) }
+}
+
+/// `root_path` must be an absolute, existing directory outside the harness data directory
+/// (which holds the database and is denied to every tool).
+pub fn canonical_root(input: &str) -> std::result::Result<String, &'static str> {
+    let raw = input.trim();
+    if raw.is_empty() || raw.len() > 4096 || raw.chars().any(char::is_control) { return Err("root_path must be 1-4096 characters without control characters"); }
+    let requested = std::path::Path::new(raw);
+    if !requested.is_absolute() { return Err("root_path must be an absolute path"); }
+    let canonical = std::fs::canonicalize(requested).map_err(|_| "root_path does not exist")?;
+    if !canonical.is_dir() { return Err("root_path must be a directory"); }
+    if canonical.parent().is_none() { return Err("root_path must not be the filesystem root"); }
+    if crate::tools::paths::harness_data_dir().is_some_and(|data| canonical.starts_with(data)) {
+        return Err("root_path must not be inside the harness data directory");
+    }
+    canonical.to_str().map(str::to_string).ok_or("root_path must be valid UTF-8")
+}
+
 impl DbStore {
     pub fn init(path: &str) -> Result<Self> {
         let mut conn = Connection::open(path)?;
@@ -171,6 +295,51 @@ impl DbStore {
             Ok(json!({"jobs":rows.collect::<rusqlite::Result<Vec<_>>>()?}))
         }).await
     }
+    /// The stored scope row, or `None` when the scope was never configured (API answers 404).
+    pub async fn scope_config(&self,scope:String)->Result<Option<ScopeConfig>>{
+        self.run(move|c|Ok(c.query_row(crate::agentic_sql::SCOPE_GET,[scope],scope_row).optional()?)).await
+    }
+    /// Merge a validated patch into the stored row so a partial POST never clears a column
+    /// the caller did not mention; `created_at` survives every later update.
+    pub async fn upsert_scope(&self,scope:String,patch:ScopePatch)->Result<ScopeConfig>{
+        safety::scope(&scope)?;
+        self.run(move|c|{
+            let tx=c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let mut next=tx.query_row(crate::agentic_sql::SCOPE_GET,[&scope],scope_row).optional()?.unwrap_or_else(||ScopeConfig::blank(&scope));
+            if let Some(value)=patch.root_path {next.root_path=value;}
+            if let Some(value)=patch.permission_mode {next.permission_mode=value;}
+            if let Some(value)=patch.diagnostics_cmd {next.diagnostics_cmd=value;}
+            if let Some(value)=patch.max_steps {next.max_steps=value;}
+            if let Some(value)=patch.max_tool_bytes {next.max_tool_bytes=value;}
+            if let Some(value)=patch.max_wall_seconds {next.max_wall_seconds=value;}
+            tx.execute(crate::agentic_sql::SCOPE_UPSERT,params![next.scope,next.root_path,next.permission_mode,next.diagnostics_cmd,next.max_steps,next.max_tool_bytes,next.max_wall_seconds,now()])?;
+            let stored=tx.query_row(crate::agentic_sql::SCOPE_GET,[&scope],scope_row)?;
+            tx.commit()?;Ok(stored)
+        }).await
+    }
+    /// Replace a session's plan in one transaction. `todo_write` is a whole-plan replacement, so
+    /// a half-written plan must never be observable. The limits are re-checked here because a
+    /// CHECK failure would otherwise reach the caller as an opaque database error.
+    pub async fn replace_plan(&self,session_id:String,items:Vec<(String,String)>)->Result<Value>{
+        if items.len()>MAX_PLAN_ITEMS {bail!("a plan holds at most {MAX_PLAN_ITEMS} items");}
+        if items.iter().any(|(text,_)|text.trim().is_empty()||text.trim().chars().count()>MAX_PLAN_TEXT) {bail!("every plan item needs 1..{MAX_PLAN_TEXT} characters of text");}
+        if items.iter().any(|(_,status)|!PLAN_STATUSES.contains(&status.as_str())) {bail!("unknown plan item status");}
+        if items.iter().filter(|(_,status)|status=="in_progress").count()>1 {bail!("only one plan item may be in_progress");}
+        self.run(move|c|{
+            let tx=c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            tx.execute(crate::agentic_sql::PLAN_CLEAR,[&session_id])?;
+            let stamp=now();
+            for (i,(text,status)) in items.iter().enumerate(){
+                tx.execute(crate::agentic_sql::PLAN_INSERT,params![uid(),session_id,i as i64+1,text.trim(),status,stamp])?;
+            }
+            let stored=plan_rows(&tx,&session_id)?;
+            tx.commit()?;Ok(stored)
+        }).await
+    }
+    /// The stored plan, for the `plan_updated` event and the UI's plan panel.
+    pub async fn plan(&self,session_id:String)->Result<Value>{
+        self.run(move|c|plan_rows(c,&session_id)).await
+    }
 }
 
 #[cfg(test)]
@@ -188,5 +357,71 @@ mod tests {
         assert_eq!(db.resolve(id.clone(),"global".into(),true).await.unwrap(),"approved");
         assert_eq!(db.resolve(id,"global".into(),false).await.unwrap(),"already_resolved");
         assert_eq!(db.recall("global".into(),"Rust:".into()).await.unwrap().len(),1);
+    }
+
+    fn scope_dir() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("harness-scope-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+    #[tokio::test] async fn scopes_merge_partial_updates_and_gate_tools() {
+        let db = DbStore::init(":memory:").unwrap();
+        assert!(db.scope_config("global".into()).await.unwrap().is_none(), "an unconfigured scope must read as absent, not as defaults");
+        let dir = scope_dir();
+        let canonical = std::fs::canonicalize(&dir).unwrap();
+        let patch = ScopePatch { root_path: Some(Some(dir.to_string_lossy().into())), permission_mode: Some("auto_edit".into()), diagnostics_cmd: Some(Some("  cargo check -q  ".into())), max_steps: Some(Some(12)), ..Default::default() }.validate().unwrap();
+        let saved = db.upsert_scope("global".into(), patch).await.unwrap();
+        assert_eq!(saved.root_path.as_deref(), canonical.to_str(), "root_path is stored canonicalized");
+        assert_eq!(saved.diagnostics_cmd.as_deref(), Some("cargo check -q"));
+        assert_eq!(saved.mode(), crate::tools::PermissionMode::AutoEdit);
+        assert_eq!(saved.budgets(), (12, DEFAULT_MAX_TOOL_BYTES, DEFAULT_MAX_WALL_SECONDS));
+        assert!(saved.tool_ctx("request", "step").is_some());
+        let touched = db.upsert_scope("global".into(), ScopePatch { permission_mode: Some("ask".into()), ..Default::default() }.validate().unwrap()).await.unwrap();
+        assert_eq!((touched.root_path, touched.diagnostics_cmd, touched.max_steps, touched.created_at), (saved.root_path, saved.diagnostics_cmd, saved.max_steps, saved.created_at));
+        let cleared = db.upsert_scope("global".into(), ScopePatch { root_path: Some(None), diagnostics_cmd: Some(None), ..Default::default() }.validate().unwrap()).await.unwrap();
+        assert!(cleared.root_path.is_none() && cleared.diagnostics_cmd.is_none(), "an explicit null clears the column");
+        assert!(cleared.tool_ctx("request", "step").is_none(), "a scope without root_path must not hand a working directory to any tool");
+        std::fs::remove_dir_all(dir).ok();
+    }
+    #[test] fn scopes_reject_unusable_configuration() {
+        let dir = scope_dir();
+        let file = dir.join("Cargo.toml");
+        std::fs::write(&file, "x").unwrap();
+        let rejected = [
+            ScopePatch { root_path: Some(Some("relative/dir".into())), ..Default::default() },
+            ScopePatch { root_path: Some(Some(dir.join("missing").to_string_lossy().into())), ..Default::default() },
+            ScopePatch { root_path: Some(Some(file.to_string_lossy().into())), ..Default::default() },
+            ScopePatch { permission_mode: Some("root".into()), ..Default::default() },
+            ScopePatch { diagnostics_cmd: Some(Some("x".repeat(513))), ..Default::default() },
+            ScopePatch { diagnostics_cmd: Some(Some("cargo check; rm -rf /".into())), ..Default::default() },
+            ScopePatch { max_steps: Some(Some(0)), ..Default::default() },
+            ScopePatch { max_tool_bytes: Some(Some(64)), ..Default::default() },
+            ScopePatch { max_wall_seconds: Some(Some(5)), ..Default::default() },
+        ];
+        for bad in rejected {
+            assert!(bad.clone().validate().is_err(), "expected a rejection for {bad:?}");
+        }
+        assert!(canonical_root("/").is_err(), "the filesystem root is never a project root");
+        std::fs::remove_dir_all(dir).ok();
+    }
+    #[tokio::test] async fn plans_are_replaced_whole_or_not_at_all() {
+        let db = DbStore::init(":memory:").unwrap();
+        db.run(|c| { c.execute("INSERT INTO sessions VALUES('s','global','now')", [])?; Ok(()) }).await.unwrap();
+        assert!(db.plan("s".into()).await.unwrap()["items"].as_array().unwrap().is_empty(), "a session starts without a plan");
+        let first = db.replace_plan("s".into(), vec![("  read the failing test  ".into(), "done".into()), ("fix the anchor".into(), "in_progress".into())]).await.unwrap();
+        assert_eq!(first["items"][0]["text"], "read the failing test");
+        assert_eq!((&first["items"][1]["seq"], &first["items"][1]["status"]), (&json!(2), &json!("in_progress")));
+        let second = db.replace_plan("s".into(), vec![("ship it".into(), "pending".into())]).await.unwrap();
+        assert_eq!(second["items"].as_array().unwrap().len(), 1, "a replacement plan must not merge with the previous one");
+        for bad in [
+            vec![("a".into(), "in_progress".into()), ("b".into(), "in_progress".into())],
+            vec![("  ".into(), "pending".into())],
+            vec![("x".repeat(MAX_PLAN_TEXT + 1), "pending".into())],
+            vec![("x".into(), "blocked".into())],
+            (0..=MAX_PLAN_ITEMS).map(|i| (format!("step {i}"), "pending".to_string())).collect::<Vec<_>>(),
+        ] {
+            assert!(db.replace_plan("s".into(), bad).await.is_err());
+        }
+        assert_eq!(db.plan("s".into()).await.unwrap()["items"], second["items"], "a refused plan leaves the stored one untouched");
     }
 }
