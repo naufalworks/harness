@@ -83,7 +83,13 @@ Context receipt: `GET /chat/requests/{id}/context`. History: `GET /sessions`,
 already resolved the other way, 410 once the waiting turn gave up).
 Turn record: `GET /chat/requests/{id}/steps` (previews ≤ 2 KB),
 `GET /sessions/{id}/plan`, `GET /activity?session_id=…&after_seq=N` (≤ 200 events,
-poll with the returned `next_after_seq`), `GET /changes?request_id=…`.
+poll with the returned `next_after_seq`), `GET /changes?request_id=…` (each row
+carries `revertable`, and a `revert_note` saying why when it is false).
+Undo one recorded change: `POST /changes/{id}/revert`. It restores the content the
+edit replaced only behind two proofs — the file must still hash to `after_hash`, and
+the text rebuilt by reverse-applying the recorded diff must hash to `before_hash`.
+Otherwise it answers 409 with the reason (already reverted, file changed since, no
+project root) and writes nothing. Reverting a file the turn created deletes it again.
 Live feed: `GET /activity/stream?session_id=…&after_seq=N` (`text/event-stream`,
 `id: <seq>` per frame, `: heartbeat` every 15 s). Use `fetch` with the
 `Authorization` header, not `EventSource`, and reconnect with the last `id` you

@@ -72,10 +72,112 @@ fn render(path: &str, a: &[&str], b: &[&str], ops: &[Op]) -> Diff {
     Diff { text: out, plus, minus }
 }
 
+// ---- reversing (P2-T03) ----------------------------------------------------------------
+
+struct Hunk { b0: usize, blen: usize, ops: Vec<(char, String)> }
+
+/// Rebuild the pre-change content by reverse-applying a diff this module rendered.
+///
+/// `after` must be exactly the content the diff produced: every hunk's after-side is compared
+/// against it line by line, so a file that drifted yields `None` instead of a plausible-looking
+/// wrong file. A truncated diff is refused for the same reason — the caller then has to say
+/// "no undo" rather than write a partial restore over someone's later work.
+pub fn reverse(after: &str, diff: &str) -> Option<String> {
+    if diff.contains("[diff truncated]") { return None; }
+    let hunks = parse(diff)?;
+    let lines: Vec<&str> = after.split_inclusive('\n').collect();
+    let (mut out, mut cursor) = (String::new(), 0usize);
+    for h in &hunks {
+        // `render` writes a 1-based line, or a bare 0 when that side of the hunk is empty.
+        let start = if h.blen == 0 { h.b0 } else { h.b0.checked_sub(1)? };
+        if start < cursor || start > lines.len() { return None; }
+        for line in &lines[cursor..start] { out.push_str(line); }
+        let mut seen = 0usize;
+        for (tag, text) in &h.ops {
+            match *tag {
+                ' ' => { if *lines.get(start + seen)? != text.as_str() { return None; } seen += 1; out.push_str(text); }
+                '+' => { if *lines.get(start + seen)? != text.as_str() { return None; } seen += 1; }
+                '-' => out.push_str(text),
+                _ => return None,
+            }
+        }
+        if seen != h.blen { return None; }
+        cursor = start + seen;
+    }
+    for line in &lines[cursor..] { out.push_str(line); }
+    Some(out)
+}
+
+/// Split a rendered diff into hunks, folding every `\ No newline at end of file` marker back
+/// into the line it describes: `render` adds the newline that the marker then takes away.
+fn parse(diff: &str) -> Option<Vec<Hunk>> {
+    let mut hunks: Vec<Hunk> = Vec::new();
+    for line in diff.split_inclusive('\n') {
+        if line.starts_with("--- ") || line.starts_with("+++ ") { continue; }
+        if let Some(rest) = line.strip_prefix("@@ ") {
+            let mut parts = rest.split_whitespace();
+            parts.next()?;
+            let (b0, blen) = parts.next()?.strip_prefix('+')?.split_once(',')?;
+            hunks.push(Hunk { b0: b0.parse().ok()?, blen: blen.parse().ok()?, ops: Vec::new() });
+            continue;
+        }
+        let hunk = hunks.last_mut()?;
+        let mut chars = line.chars();
+        let tag = chars.next()?;
+        if tag == '\\' {
+            let last = hunk.ops.last_mut()?;
+            if last.1.ends_with('\n') { last.1.pop(); }
+            continue;
+        }
+        if !matches!(tag, ' ' | '+' | '-') { return None; }
+        hunk.ops.push((tag, chars.as_str().to_string()));
+    }
+    Some(hunks)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test] fn counts() { let d = unified("f", "a\nb\nc\n", "a\nB\nc\nd\n"); assert_eq!((d.plus, d.minus), (2, 1)); assert!(d.text.contains("-b\n") && d.text.contains("+B\n") && d.text.contains("+d\n")); }
     #[test] fn identical() { let d = unified("f", "a\n", "a\n"); assert_eq!((d.plus, d.minus), (0, 0)); assert!(!d.text.contains("@@")); }
     #[test] fn new_file() { let d = unified("f", "", "x\ny\n"); assert_eq!((d.plus, d.minus), (2, 0)); }
+
+    /// The undo behind a diff card: what `reverse` returns has to be the original, byte for byte.
+    #[test] fn reverse_rebuilds_the_original_from_recorded_changes() {
+        for (before, after) in [
+            ("a\nb\nc\n", "a\nB\nc\n"),
+            ("one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\n", "one\ntwo\nTHREE\nfour\nfive\nsix\nseven\nEIGHT\nnine\n"),
+            ("keep\ndrop\nkeep2\n", "keep\nkeep2\n"),
+            ("a\n", "a\nb\nc\n"),
+            ("trailing", "trailing\nmore\n"),
+            ("ends without newline", "ends without newline too"),
+        ] {
+            let d = unified("f", before, after);
+            assert_eq!(reverse(after, &d.text).as_deref(), Some(before), "before={before:?} after={after:?} diff={}", d.text);
+        }
+    }
+    /// An empty side is the whole point of create and delete cards.
+    #[test] fn reverse_handles_created_and_emptied_files_in_recorded_changes() {
+        let created = unified("f", "", "x\ny\n");
+        assert_eq!(reverse("x\ny\n", &created.text).as_deref(), Some(""));
+        let emptied = unified("f", "x\ny", "");
+        assert_eq!(reverse("", &emptied.text).as_deref(), Some("x\ny"));
+    }
+    /// The guard that matters: a file whose recorded lines moved on must not be "restored" from a
+    /// stale diff. Drift *outside* every hunk is invisible here by construction — a diff carries no
+    /// claim about lines it never touched — so the caller proves the whole file by hash on both
+    /// sides before and after rebuilding. `restore_change` in src/main.rs does exactly that.
+    #[test] fn reverse_refuses_content_the_recorded_changes_did_not_produce() {
+        let d = unified("f", "a\nb\nc\n", "a\nB\nc\n");
+        assert_eq!(reverse("a\nEDITED\nc\n", &d.text), None, "the lines the diff claims to have written have to still be there");
+        assert_eq!(reverse("a\nB\n", &d.text), None, "a file that lost the recorded lines is not restorable");
+        assert_eq!(reverse("totally different\n", &d.text), None);
+        assert_eq!(reverse("a\nB\nc\n", "--- a/f\n+++ b/f\n@@ -1,3 +1,3 @@\n a\n-b\n+B\n c\n\n\u{2026}[diff truncated]\n"), None);
+        // A foreign line appended after the hunk rebuilds and is carried along, because nothing in
+        // the diff describes it. The rebuilt text is therefore not the recorded original, which is
+        // exactly what the caller's `before_hash` check catches before anything is written.
+        let drifted = reverse("a\nB\nc\nsomeone else edited this\n", &d.text);
+        assert_eq!(drifted.as_deref(), Some("a\nb\nc\nsomeone else edited this\n"));
+        assert_ne!(drifted.as_deref(), Some("a\nb\nc\n"), "a drifted file must never rebuild to the recorded original");
+    }
 }

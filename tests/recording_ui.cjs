@@ -31,6 +31,9 @@ const root=path.resolve(__dirname,'..'), out=path.join(root,'docs/qa');fs.mkdirS
     return route.fulfill({status:202,json:receipt(records.get(body.request_id))});
    }
    if(p.startsWith('/chat/requests/')){polls++;const id=p.split('/')[3];if(!records.has(id))return route.fulfill({status:404,json:{error:'Recording receipt not found'}});return route.fulfill({json:receipt(records.get(id))});}
+   // P2-T03: the rail asks every turn for its recorded changes. This suite covers the receipt
+   // flow, so an empty list keeps it honest; the diff cards themselves are gated in ui_smoke.cjs.
+   if(p==='/changes')return route.fulfill({json:{changes:[]}});
    // P2-T01: a short SSE body. The client must read frames, keep the cursor and survive the end
    // of a stream without throwing; a finite mock is the cheapest way to hold it to that.
    if(p==='/activity/stream'){streams++;return route.fulfill({contentType:'text/event-stream',body:'id: 1\nevent: model_call_started\ndata: {"seq":1,"kind":"model_call_started","request_id":"live","payload":{}}\n\n: heartbeat\n\n'});}

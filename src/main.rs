@@ -186,8 +186,84 @@ async fn request_steps(State(h):State<Harness>,Path(id):Path<String>)->ApiResult
 struct RequestQuery{request_id:String}
 async fn request_changes(State(h):State<Harness>,Query(q):Query<RequestQuery>)->ApiResult<Json<Value>>{
     Uuid::parse_str(&q.request_id).map_err(|_|invalid("Invalid request identifier"))?;
-    h.store.recording_receipt(q.request_id.clone()).await.map_err(db_error)?.ok_or(ApiError(StatusCode::NOT_FOUND,"Recording receipt not found"))?;
-    Ok(Json(h.store.turn_changes(q.request_id).await.map_err(db_error)?))
+    let receipt=h.store.recording_receipt(q.request_id.clone()).await.map_err(db_error)?.ok_or(ApiError(StatusCode::NOT_FOUND,"Recording receipt not found"))?;
+    let mut changes=h.store.turn_changes(q.request_id).await.map_err(db_error)?;
+    // P2-T03: whether a card's Revert can work is a fact about the file right now, so it is read
+    // here rather than guessed in the browser. An offer that cannot work is worse than none.
+    let scope=receipt["scope"].as_str().unwrap_or_default().to_string();
+    let root=h.store.scope_config(scope).await.map_err(db_error)?.and_then(|c|c.root_path);
+    if let Some(rows)=changes["changes"].as_array_mut(){
+        let listed=rows.clone();
+        let states=tokio::task::spawn_blocking(move||listed.iter().map(|row|revert_state(root.as_deref(),row)).collect::<Vec<_>>())
+            .await.map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"The recorded changes could not be inspected"))?;
+        for (row,(revertable,note)) in rows.iter_mut().zip(states){
+            row["revertable"]=json!(revertable);
+            row["revert_note"]=if note.is_empty(){Value::Null}else{json!(note)};
+        }
+    }
+    Ok(Json(changes))
+}
+/// Can this recorded change still be undone? The only honest answer comes from the file itself:
+/// the bytes on disk have to be the bytes the edit produced. Returns the reason when they are
+/// not, in the words the card shows.
+fn revert_state(root:Option<&str>,change:&Value)->(bool,&'static str){
+    if change["reverted_at"].as_str().is_some(){return (false,"Already reverted");}
+    if change["applied"]!=json!(true){return (false,"Never applied, so there is nothing to undo");}
+    let Some(root)=root else{return (false,"This scope has no project root, so nothing can be restored")};
+    let Some(path)=change["path"].as_str() else{return (false,"This change has no recorded path")};
+    let Ok(resolved)=tools::paths::resolve(std::path::Path::new(root),path) else{return (false,"That path is outside the project root")};
+    let after=change["after_hash"].as_str().unwrap_or_default();
+    match std::fs::read_to_string(&resolved){
+        Ok(text) if tools::content_hash(&text)==after=>(true,""),
+        Ok(_)=>(false,"File changed since; revert unavailable"),
+        // A delete card is the one case where the file being gone is the recorded state.
+        Err(_) if change["action"]==json!("delete")=>(true,""),
+        Err(_)=>(false,"File is no longer there; revert unavailable"),
+    }
+}
+/// Put the recorded previous content back, or explain why not. Two proofs are required: the file
+/// still has to hash to `after_hash`, and the content rebuilt by reverse-applying the recorded
+/// diff has to hash to `before_hash`. `file_changes` stores hashes rather than the old bytes, so
+/// without both proofs this refuses and writes nothing — a revert that guessed would silently
+/// destroy whatever the user did after the edit.
+fn restore_change(root:&std::path::Path,change:&Value)->std::result::Result<&'static str,&'static str>{
+    let (revertable,why)=revert_state(Some(&root.to_string_lossy()),change);
+    if !revertable {return Err(if why.is_empty(){"This change cannot be reverted"}else{why});}
+    let path=change["path"].as_str().ok_or("This change has no recorded path")?;
+    let resolved=tools::paths::resolve(root,path).map_err(|_|"That path is outside the project root")?;
+    let after=std::fs::read_to_string(&resolved).unwrap_or_default();
+    let Some(before_hash)=change["before_hash"].as_str() else{
+        // Nothing existed before: undoing a file this turn created means removing it again.
+        if change["action"]!=json!("create"){return Err("This change has no recorded previous content; revert unavailable");}
+        std::fs::remove_file(&resolved).map_err(|_|"The file could not be removed; nothing was changed")?;
+        return Ok("deleted");
+    };
+    let before=tools::textdiff::reverse(&after,change["diff"].as_str().unwrap_or_default())
+        .ok_or("The recorded diff cannot rebuild the previous content; revert unavailable")?;
+    if tools::content_hash(&before)!=before_hash {return Err("The rebuilt content does not match the recorded hash; nothing was written");}
+    if let Some(parent)=resolved.parent(){std::fs::create_dir_all(parent).map_err(|_|"The parent directory could not be created; nothing was written")?;}
+    tools::edit_tools::atomic_write(&resolved,change["id"].as_str().unwrap_or("revert"),&before)
+        .map_err(|_|"The file could not be written; nothing was changed")?;
+    Ok("restored")
+}
+/// P2-T03: undo one recorded change. The scope, and so the project root, comes from the change's
+/// own turn: a caller cannot aim a revert at another project.
+async fn revert_change(State(h):State<Harness>,Path(id):Path<String>)->ApiResult<Json<Value>>{
+    Uuid::parse_str(&id).map_err(|_|invalid("Invalid change identifier"))?;
+    let change=h.store.file_change(id.clone()).await.map_err(db_error)?.ok_or(ApiError(StatusCode::NOT_FOUND,"Change not found"))?;
+    if change["reverted_at"].as_str().is_some(){return Err(ApiError(StatusCode::CONFLICT,"This change was already reverted; nothing was written"));}
+    let scope=change["scope"].as_str().unwrap_or_default().to_string();
+    let root=h.store.scope_config(scope).await.map_err(db_error)?.and_then(|c|c.root_path)
+        .ok_or(ApiError(StatusCode::CONFLICT,"This scope has no project root, so nothing can be restored"))?;
+    let subject=change.clone();
+    let outcome=tokio::task::spawn_blocking(move||restore_change(std::path::Path::new(&root),&subject)).await
+        .map_err(|_|ApiError(StatusCode::INTERNAL_SERVER_ERROR,"The revert did not run; nothing was written"))?;
+    let status=outcome.map_err(|why|ApiError(StatusCode::CONFLICT,why))?;
+    // The file is already back; record the undo and announce it on the feed the edit used.
+    let recorded=h.store.record_revert(id,change["request_id"].as_str().unwrap_or_default().to_string(),
+        change["session_id"].as_str().unwrap_or_default().to_string(),change["step_id"].as_str().unwrap_or_default().to_string(),
+        change["path"].as_str().unwrap_or_default().to_string()).await.map_err(db_error)?;
+    Ok(Json(json!({"status":status,"path":change["path"],"recorded":recorded})))
 }
 async fn session_plan(State(h):State<Harness>,Path(session):Path<String>)->ApiResult<Json<Value>>{
     Uuid::parse_str(&session).map_err(|_|invalid("Invalid session identifier"))?;
@@ -296,7 +372,8 @@ fn router(state:Harness)->Router{
         .route("/scopes",get(list_scopes)).route("/scopes/{scope}",get(get_scope).post(set_scope))
         .route("/permissions",get(permissions)).route("/permissions/{id}",post(decide_permission))
         .route("/chat/requests/{id}/steps",get(request_steps)).route("/sessions/{id}/plan",get(session_plan))
-        .route("/activity",get(activity)).route("/activity/stream",get(activity_stream)).route("/changes",get(request_changes))
+        .route("/activity",get(activity)).route("/activity/stream",get(activity_stream))
+        .route("/changes",get(request_changes)).route("/changes/{id}/revert",post(revert_change))
         .route_layer(middleware::from_fn_with_state(state.clone(),authenticate));
     Router::new().route("/",get(index)).route("/app.js",get(js)).route("/style.css",get(css)).merge(api)
         .layer(DefaultBodyLimit::max(2*1024*1024)).layer(middleware::from_fn(headers)).with_state(state)
@@ -511,6 +588,82 @@ mod tests{
         }
         let unknown=body_json(app.oneshot(authorized("GET",&format!("/sessions/{}/plan",storage::uid())).body(Body::empty()).unwrap()).await.unwrap()).await;
         assert_eq!(unknown,json!({"items":[]}),"a session without a plan reads as empty, like its message history");
+    }
+
+    /// P2-T03: the diff card's footer and the undo behind it. A revert is offered only while the
+    /// file still hashes to `after_hash`, and what it writes back is proved against `before_hash`.
+    #[tokio::test]async fn reverting_recorded_changes_restores_the_file_and_refuses_once_it_moved_on(){
+        let store=DbStore::init(":memory:").unwrap();
+        let app=app_with(store.clone());
+        let dir=std::env::temp_dir().join(format!("harness-revert-{}",storage::uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let root=std::fs::canonicalize(&dir).unwrap();
+        app.clone().oneshot(authorized("POST","/scopes/global").header("content-type","application/json")
+            .body(Body::from(json!({"root_path":root.to_string_lossy()}).to_string())).unwrap()).await.unwrap();
+
+        let (request,session)=(storage::uid(),storage::uid());
+        store.capture_chat(recording::CaptureInput{request:request.clone(),session:session.clone(),scope:"global".into(),
+            prompt:"uppercase beta".into(),model:"m".into(),signature:storage::uid(),redacted:false}).await.unwrap();
+        let step=store.begin_step(agent_loop::NewStep{request:request.clone(),session:session.clone(),kind:"tool_call",
+            tool_name:Some("edit".into()),tool_call_id:Some("call-1".into()),input:json!({"path":"notes.md"}),
+            event:"tool_started",payload:json!({"tool":"edit"})}).await.unwrap();
+
+        // Two files edited in one turn. One is left alone; the other is edited again afterwards.
+        let mut artifacts=vec![];
+        for (name,before,after) in [("notes.md","alpha\nbeta\ngamma\n","alpha\nBETA\ngamma\n"),("keep.md","one\ntwo\n","one\nTWO\n")]{
+            std::fs::write(root.join(name),after).unwrap();
+            let diff=tools::textdiff::unified(name,before,after);
+            artifacts.push(tools::Artifact::FileChange{path:name.into(),action:"modify",
+                before_hash:Some(tools::content_hash(before)),after_hash:Some(tools::content_hash(after)),
+                diff:diff.text.clone(),plus:diff.plus,minus:diff.minus});
+        }
+        store.finish_step(agent_loop::StepOutcome{step,request:request.clone(),session:session.clone(),status:"complete",
+            output:json!({"content":"edited"}),bytes:12,truncated:false,tokens_in:None,tokens_out:None,error_code:None,
+            event:"tool_finished",payload:json!({"tool":"edit","status":"complete"}),artifacts}).await.unwrap();
+        std::fs::write(root.join("keep.md"),"one\ntwo\nthree\n").unwrap();
+
+        let listed=body_json(app.clone().oneshot(authorized("GET",&format!("/changes?request_id={request}")).body(Body::empty()).unwrap()).await.unwrap()).await;
+        let rows=listed["changes"].as_array().unwrap().clone();
+        assert_eq!(rows.len(),2);
+        let card=rows.iter().find(|row|row["path"]==json!("notes.md")).unwrap().clone();
+        let stale=rows.iter().find(|row|row["path"]==json!("keep.md")).unwrap().clone();
+        assert_eq!((&card["revertable"],&card["revert_note"]),(&json!(true),&Value::Null));
+        assert_eq!((&stale["revertable"],&stale["revert_note"]),(&json!(false),&json!("File changed since; revert unavailable")),
+            "the card says why on its own, without the user pressing anything");
+
+        let id=card["id"].as_str().unwrap().to_string();
+        let done=app.clone().oneshot(authorized("POST",&format!("/changes/{id}/revert")).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(done.status(),StatusCode::OK);
+        assert_eq!(body_json(done).await,json!({"status":"restored","path":"notes.md","recorded":true}));
+        assert_eq!(std::fs::read_to_string(root.join("notes.md")).unwrap(),"alpha\nbeta\ngamma\n","the file is byte for byte what it was");
+
+        let again=app.clone().oneshot(authorized("POST",&format!("/changes/{id}/revert")).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(again.status(),StatusCode::CONFLICT,"a double-clicked Revert writes nothing");
+        let feed=body_json(app.clone().oneshot(authorized("GET",&format!("/activity?session_id={session}")).body(Body::empty()).unwrap()).await.unwrap()).await;
+        let reverts:Vec<&Value>=feed["events"].as_array().unwrap().iter().filter(|e|e["kind"]==json!("file_reverted")).collect();
+        assert_eq!(reverts.len(),1,"the undo is announced once, on the feed the edit used: {feed:#?}");
+        assert_eq!(reverts[0]["payload"]["path"],json!("notes.md"));
+
+        let relisted=body_json(app.clone().oneshot(authorized("GET",&format!("/changes?request_id={request}")).body(Body::empty()).unwrap()).await.unwrap()).await;
+        let reverted=relisted["changes"].as_array().unwrap().iter().find(|row|row["path"]==json!("notes.md")).unwrap().clone();
+        assert!(reverted["reverted_at"].is_string());
+        assert_eq!((&reverted["revertable"],&reverted["revert_note"]),(&json!(false),&json!("Already reverted")));
+
+        let stale_id=stale["id"].as_str().unwrap().to_string();
+        let refused=app.clone().oneshot(authorized("POST",&format!("/changes/{stale_id}/revert")).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(refused.status(),StatusCode::CONFLICT);
+        assert_eq!(std::fs::read_to_string(root.join("keep.md")).unwrap(),"one\ntwo\nthree\n","a refused revert leaves the later edit alone");
+
+        for (uri,expected) in [
+            (format!("/changes/{}/revert",storage::uid()),StatusCode::NOT_FOUND),
+            ("/changes/not-a-uuid/revert".to_string(),StatusCode::BAD_REQUEST),
+        ]{
+            let response=app.clone().oneshot(authorized("POST",&uri).body(Body::empty()).unwrap()).await.unwrap();
+            assert_eq!(response.status(),expected,"{uri}");
+        }
+        let unauthenticated=app.clone().oneshot(axum::http::Request::builder().method("POST").uri(format!("/changes/{id}/revert")).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(unauthenticated.status(),StatusCode::UNAUTHORIZED);
+        std::fs::remove_dir_all(dir).ok();
     }
 
     /// Read the stream until `until` frames carry an `id`, or the deadline passes. A stream never

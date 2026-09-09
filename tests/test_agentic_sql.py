@@ -32,7 +32,8 @@ class AgenticSql(unittest.TestCase):
     def test_all_constants_present(self):
         for name in ["SCOPE_GET", "SCOPE_UPSERT", "SCOPES_LIST", "STEP_BEGIN", "STEP_FINISH", "STEP_NEXT_SEQ", "STEPS_LIST", "EVENT", "EVENTS_AFTER",
                      "PERMISSION_CREATE", "PERMISSION_GET", "PERMISSION_RESOLVE", "PERMISSION_STATUS", "PERMISSIONS_PENDING", "PERMISSION_EXPIRE",
-                     "FILE_CHANGE", "FILE_CHANGES_LIST", "PLAN_CLEAR", "PLAN_INSERT", "PLAN_LIST", "SESSION_OF_REQUEST",
+                     "FILE_CHANGE", "FILE_CHANGES_LIST", "FILE_CHANGE_GET", "FILE_CHANGE_REVERTED",
+                     "PLAN_CLEAR", "PLAN_INSERT", "PLAN_LIST", "SESSION_OF_REQUEST",
                      "RECOVER_STEPS", "RECOVER_PERMISSIONS", "RECOVER_ACTIVITY"]:
             self.assertIn(name, SQL)
 
@@ -107,6 +108,22 @@ class AgenticSql(unittest.TestCase):
         self.assertEqual([p[2] for p in plan], ["done", "in_progress", "pending"])
         c.execute("BEGIN IMMEDIATE"); c.execute(SQL["PLAN_CLEAR"], ("s1",)); c.execute("COMMIT")
         self.assertEqual(c.execute(SQL["PLAN_LIST"], ("s1",)).fetchall(), [])
+
+    # P2-T03: the undo reads one change together with its turn's scope, and can only fire once.
+    def test_revert_marks_a_change_once(self):
+        c = connect(); seed_turn(c)
+        c.execute(SQL["STEP_BEGIN"], ("st1", "r1", 0, "tool_call", "edit", "call_1", "{}", NOW))
+        c.execute(SQL["FILE_CHANGE"], ("fc1", "r1", "st1", "notes.md", "modify", "aaaa", "bbbb", "-x\n+y", 1, NOW))
+        row = c.execute(SQL["FILE_CHANGE_GET"], ("fc1",)).fetchone()
+        self.assertEqual(row[3:9], ("notes.md", "modify", "aaaa", "bbbb", "-x\n+y", 1))
+        # The scope and session ride along from the turn: a revert cannot be aimed at another project.
+        self.assertEqual((row[9], row[10], row[11]), (None, "proj", "s1"))
+        self.assertIsNone(c.execute(SQL["FILE_CHANGE_GET"], ("missing",)).fetchone())
+        self.assertEqual(c.execute(SQL["FILE_CHANGE_REVERTED"], ("fc1", LATER)).rowcount, 1)
+        self.assertEqual(c.execute(SQL["FILE_CHANGE_REVERTED"], ("fc1", LATER)).rowcount, 0, "a second revert must change nothing")
+        self.assertEqual(c.execute(SQL["FILE_CHANGE_GET"], ("fc1",)).fetchone()[9], LATER)
+        c.execute(SQL["EVENT"], ("r1", "s1", "st1", "file_reverted", json.dumps({"change_id": "fc1", "path": "notes.md"}), LATER))
+        self.assertEqual([r[0] for r in c.execute("SELECT kind FROM activity_events WHERE request_id=?", ("r1",))], ["file_reverted"])
 
     def test_recovery(self):
         c = connect(); seed_turn(c)

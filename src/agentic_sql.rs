@@ -23,6 +23,12 @@ pub const PERMISSION_EXPIRE: &str = r#"UPDATE permission_requests SET status='ex
 
 pub const FILE_CHANGE: &str = r#"INSERT INTO file_changes(id,request_id,step_id,path,action,before_hash,after_hash,diff,applied,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)"#;
 pub const FILE_CHANGES_LIST: &str = r#"SELECT id,step_id,path,action,before_hash,after_hash,diff,applied,reverted_at,created_at FROM file_changes WHERE request_id=?1 ORDER BY created_at"#;
+// P2-T03: one change by id, carrying the scope and session of the turn that made it. The project
+// root is resolved from this row and never from the caller, so a revert cannot be aimed at
+// another project. `reverted_at IS NULL` guards the update: a double-clicked Revert updates no
+// rows instead of recording a second undo of the same change.
+pub const FILE_CHANGE_GET: &str = r#"SELECT f.id,f.request_id,f.step_id,f.path,f.action,f.before_hash,f.after_hash,f.diff,f.applied,f.reverted_at,r.scope,r.session_id FROM file_changes f JOIN chat_receipts r ON r.request_id=f.request_id WHERE f.id=?1"#;
+pub const FILE_CHANGE_REVERTED: &str = r#"UPDATE file_changes SET reverted_at=?2 WHERE id=?1 AND reverted_at IS NULL"#;
 
 pub const PLAN_CLEAR: &str = r#"DELETE FROM plan_items WHERE session_id=?1"#;
 pub const PLAN_INSERT: &str = r#"INSERT INTO plan_items(id,session_id,seq,text,status,updated_at) VALUES(?1,?2,?3,?4,?5,?6)"#;

@@ -344,6 +344,28 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere}
   background:var(--code-bg);white-space:pre-wrap;overflow:auto;max-height:200px;font:11.5px/1.5 var(--mono);
 }
 .step-details>p{margin:0;font-size:12px;color:var(--text-3)}
+
+/* ---------- P2-T03 diff cards ---------- */
+.changes-panel{border-top:1px solid var(--border);padding-top:12px}
+#changes-list{display:flex;flex-direction:column;gap:8px}
+.diff-card{border:1px solid var(--border);border-radius:8px;overflow:hidden;background:var(--surface)}
+.diff-head{display:flex;align-items:baseline;gap:8px;padding:7px 10px;border-bottom:1px solid var(--border)}
+.diff-path{min-width:0;font-family:var(--mono);font-size:11.5px;color:var(--text);overflow-wrap:anywhere}
+.diff-stat{font-family:var(--mono);font-size:10.5px;white-space:nowrap}
+.diff-stat .plus{color:var(--green)}
+.diff-stat .minus{color:var(--red)}
+.diff-when{margin-left:auto;font-family:var(--mono);font-size:10.5px;color:var(--text-3);white-space:nowrap}
+.diff-body{
+  margin:0;padding:8px 10px;background:var(--code-bg);
+  white-space:pre-wrap;overflow-wrap:anywhere;overflow:auto;max-height:260px;font:11.5px/1.5 var(--mono);
+}
+.diff-line{display:block;color:var(--text-2)}
+.diff-line.add{color:var(--green)}
+.diff-line.del{color:var(--red)}
+.diff-line.meta{color:var(--text-3)}
+.diff-foot{display:flex;align-items:center;gap:10px;padding:7px 10px;border-top:1px solid var(--border)}
+.diff-foot .muted{min-width:0;font-size:11.5px;overflow-wrap:anywhere}
+.diff-foot button{margin-left:auto;flex:none}
 .rail-empty{display:none;padding:18px 16px}
 #rail:has(#agent-turn[hidden]) .rail-empty{display:block}
 .context-meter{border-top:1px solid var(--border);padding-top:12px}

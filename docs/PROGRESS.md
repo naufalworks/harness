@@ -18,6 +18,23 @@ Suggested first message to an AI continuing this work:
 
 ---
 
+## 2026-09-09 · AI session (Notion AI via Local) · P2-T03 diff cards with undo
+
+**Why.** The rail could say a file changed but not show what changed, and there was no way back. `file_changes` has carried `before_hash`, `after_hash` and the unified diff since P1-T14, so the data for both a card and an undo was already recorded — only the read side and one endpoint were missing.
+
+**Changed.**
+- `src/tools/textdiff.rs` — `reverse(after, diff)` rebuilds pre-edit text by reverse-applying a recorded diff. It refuses a diff carrying the `[diff truncated]` marker and verifies every hunk's after-side against the file it was handed, so a stale diff cannot invent content.
+- `src/agentic_sql.rs`, `src/storage.rs` — `FILE_CHANGE_GET` reads one change joined to its turn's scope and session, so a revert cannot be aimed at another project. `record_revert` sets `reverted_at` only `WHERE reverted_at IS NULL` (single-shot) and appends a `file_reverted` activity event in the same immediate transaction. `activity_events.kind` is open-vocabulary, so no migration was needed.
+- `src/main.rs` — `GET /changes` enriches each row with `revertable` and a `revert_note` by hashing the file on disk in `spawn_blocking`. `POST /changes/{id}/revert` restores the previous content behind two proofs — the file must still hash to `after_hash`, and the rebuilt text must hash to `before_hash` — writing through the existing `edit_tools::atomic_write` (now `pub(crate)`). Refusals are 409 with the reason and touch nothing: already reverted, file changed since, no project root, no recorded previous content. A revert of a file the turn created deletes it again.
+- `static/*` — the rail grew a "File changes" panel below the steps: `path · +A −B · applied HH:MM`, the diff coloured per line by CSS class on spans built from `textContent` (CSP is `style-src 'self'`, and this also keeps a hostile diff inert), then Revert or the server's muted note. A revert refreshes the turn, so the card flips to "Already reverted" from the server's own state rather than a local guess.
+- `tests/*` — ui_smoke renders a card from an XSS-laden diff, asserts the markup stays text, then clicks Revert and waits for the footer to change; the SQL contracts cover the revert roundtrip and its single-shot update.
+
+**Scope call.** The ticket said "accept/reject". A row only exists after `agent_loop::finish_step` wrote it with `applied=1`, so there is nothing left to accept; the card offers Revert alone instead of a button pretending to gate an edit that already landed.
+
+**Verified.** `cargo test --locked` 89 passed (4 new); `node --check static/app.js`; ui_smoke 16/16 including `diff_card_rendered` and `diff_card_revert`; recording_ui 15/15; `tests/test_agentic_sql.py` 8/8; `bash scripts/verify_release.sh` exit 0 (clippy, build, migrations, 51 Python contracts, both HTTP suites). One self-inflicted failure on the way: a first unit test asserted `reverse` would refuse a file with a foreign line appended after the hunk. It cannot — no diff describes lines it never touched — so the test now asserts the honest property and documents that the endpoint's two hash checks are what catch that case.
+
+**Open.** Revert has no keyboard shortcut and cards are not grouped by step. Carried over: the composer still does not auto-grow (CSP blocks the inline style it would need) and assistant messages render as plain text pending a sanitizing markdown renderer.
+
 ## 2026-09-09 · AI session (Notion AI via Local) · P2-T01 SSE endpoint over activity_events
 
 **Why.** The rail was accurate but late. P1-T13's 1 s poll re-fetched the whole turn on a timer, so a step appeared up to a second after it committed and every open tab paid a full `/activity` read per second. P2-T02 deliberately left the transport alone so this task only had to swap it.

@@ -261,7 +261,7 @@ setInterval(() => { if (token && !document.hidden) refreshStatus().catch(() => {
 // P1-T13: the agent activity view reads the recorded rows; the durable receipt remains the
 // source of truth, while these read-only endpoints make the current turn visible between model
 // calls. No model/tool text is inserted as HTML.
-const agentState = { requestId: null, sessionId: null, scope: null, permission: null, busyDecision: false, steps: [] };
+const agentState = { requestId: null, sessionId: null, scope: null, permission: null, busyDecision: false, steps: [], changes: [] };
 
 // P2-T01: the rail's transport is now the SSE feed instead of a 1 s clock. A frame only says
 // that a row was committed — the rail still re-reads the durable endpoints — so the socket can
@@ -419,6 +419,76 @@ function agentStatusLabel(state) {
   return {captured:'Saved · queued', generating:'Thinking…', complete:'Done', failed:'Saved · answer failed', interrupted:'Saved · interrupted'}[state] || 'Saved';
 }
 
+// P2-T03: diff cards. A diff is tool text, so each line becomes a <span> built from textContent
+// and coloured by class — CSP forbids inline styles, and none of this is ever parsed as HTML.
+function diffCounts(diff) {
+  let plus = 0, minus = 0;
+  for (const line of String(diff || '').split('\n')) {
+    if (line.startsWith('+++') || line.startsWith('---')) continue;
+    if (line.startsWith('+')) plus++;
+    else if (line.startsWith('-')) minus++;
+  }
+  return { plus, minus };
+}
+function diffLineClass(line) {
+  if (line.startsWith('@@') || line.startsWith('+++') || line.startsWith('---') || line.startsWith('\\')) return 'meta';
+  if (line.startsWith('+')) return 'add';
+  if (line.startsWith('-')) return 'del';
+  return '';
+}
+// The row's own word: never say "applied" for a change the record does not call applied.
+function changeWhen(change) {
+  const label = change.reverted_at ? 'reverted' : change.applied ? 'applied' : 'recorded';
+  const at = new Date(change.reverted_at || change.created_at);
+  if (Number.isNaN(at.getTime())) return label;
+  return `${label} ${at.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}`;
+}
+function renderAgentChanges(changes) {
+  const panel = $('agent-changes');
+  const list = $('changes-list');
+  list.replaceChildren();
+  if (!changes?.length) { panel.hidden = true; return; }
+  panel.hidden = false;
+  $('changes-count').textContent = `(${changes.length})`;
+  for (const change of changes) {
+    const card = node('div', undefined, 'diff-card');
+    const head = node('div', undefined, 'diff-head');
+    const counts = diffCounts(change.diff);
+    const stat = node('span', undefined, 'diff-stat');
+    stat.append(node('span', `+${counts.plus}`, 'plus'), node('span', ` −${counts.minus}`, 'minus'));
+    head.append(node('span', change.path || 'file', 'diff-path'), stat, node('span', changeWhen(change), 'diff-when'));
+    const body = node('pre', undefined, 'diff-body');
+    const text = String(change.diff || '');
+    if (text) for (const line of text.split('\n')) body.append(node('span', `${line}\n`, `diff-line ${diffLineClass(line)}`));
+    else body.append(node('span', 'No diff was recorded for this change.', 'diff-line meta'));
+    const foot = node('div', undefined, 'diff-foot');
+    if (change.revertable) {
+      const button = node('button', 'Revert');
+      button.type = 'button';
+      button.dataset.changeId = change.id;
+      button.addEventListener('click', () => revertChange(change.id, button));
+      foot.append(node('span', 'Restores the content recorded before this edit.', 'muted'), button);
+    } else {
+      // The server already decided this, by reading the file: say why instead of offering an
+      // undo that would refuse.
+      foot.append(node('span', change.revert_note || 'Revert unavailable', 'muted'));
+    }
+    card.append(head, body, foot);
+    list.append(card);
+  }
+}
+async function revertChange(id, button) {
+  button.disabled = true;
+  try {
+    const result = await api(`/changes/${encodeURIComponent(id)}/revert`, {});
+    notice(result.status === 'deleted' ? 'Reverted. The file this turn created was removed.' : 'Reverted. The file is back to the content recorded before the edit.');
+    await refreshAgentTurn({request_id: agentState.requestId, session_id: agentState.sessionId, scope: agentState.scope});
+  } catch (error) {
+    notice(error.message, true);
+    button.disabled = false;
+  }
+}
+
 async function refreshAgentTurn(receipt) {
   const requestId = receipt?.request_id || pending?.request_id;
   const sessionId = receipt?.session_id || pending?.session_id || session;
@@ -428,6 +498,9 @@ async function refreshAgentTurn(receipt) {
     api(`/chat/requests/${encodeURIComponent(requestId)}/steps`),
     api(`/sessions/${encodeURIComponent(sessionId)}/plan`),
     api(`/permissions?scope=${encodeURIComponent(turnScope)}`),
+    // A turn with no recorded changes is normal, and a server without this route is not a
+    // reason to blank the rest of the rail.
+    api(`/changes?request_id=${encodeURIComponent(requestId)}`).catch(() => ({changes: []})),
   ]);
   if (!token || requestId !== (pending?.request_id || requestId) || sessionId !== session) return;
   agentState.requestId = requestId; agentState.sessionId = sessionId; agentState.scope = turnScope;
@@ -438,12 +511,14 @@ async function refreshAgentTurn(receipt) {
   agentState.steps = data[0].steps || [];
   renderAgentSteps(agentState.steps);
   renderAgentPlan(data[1]);
+  agentState.changes = data[3].changes || [];
+  renderAgentChanges(agentState.changes);
   // P2 context meter placeholder: real tokens-so-far from step receipts; the budget bar lands in P3.
   const tokens = (data[0].steps || []).reduce((sum, s) => sum + (s.tokens_in || 0) + (s.tokens_out || 0), 0);
   $('context-tokens').textContent = tokens ? `${tokens.toLocaleString()} tokens so far` : 'meter lands in P3';
   const match = (data[2].permissions || []).find(item => item.request_id === requestId);
   renderAgentPermission(match || null);
-  if (!match && !(data[0].steps || []).length && !(data[1].items || []).length) { $('agent-turn').hidden = true; $('rail').hidden = true; }
+  if (!match && !agentState.steps.length && !(data[1].items || []).length && !agentState.changes.length) { $('agent-turn').hidden = true; $('rail').hidden = true; }
 }
 
 async function decideAgentPermission(decision) {

@@ -127,7 +127,9 @@ fn plan_write(ctx: &ToolCtx, args: &Value) -> Result<PendingChange, ToolResult> 
 
 /// Temp file in the destination directory, then `rename`: a reader sees either the old file
 /// or the new one, never a half-written one. Existing permissions are preserved.
-fn atomic_write(path: &Path, step: &str, content: &str) -> std::io::Result<()> {
+/// `pub(crate)` since P2-T03: reverting a diff card puts the recorded previous content back and
+/// must land the same way an edit did, never as a half-written file.
+pub(crate) fn atomic_write(path: &Path, step: &str, content: &str) -> std::io::Result<()> {
     let parent = path.parent().unwrap_or(Path::new("."));
     let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "file".into());
     let tag: String = step.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').take(40).collect();

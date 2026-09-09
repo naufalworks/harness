@@ -425,6 +425,34 @@ impl DbStore {
             Ok(json!({"changes":rows}))
         }).await
     }
+
+    /// One recorded change by id, with the scope and session of the turn that made it. P2-T03's
+    /// revert resolves the project root from this row and never from the caller, so a revert
+    /// cannot be pointed at another project's files.
+    pub async fn file_change(&self,id:String)->Result<Option<Value>>{
+        self.run(move|c|{
+            Ok(c.query_row(crate::agentic_sql::FILE_CHANGE_GET,[id],|r|Ok(json!({
+                "id":r.get::<_,String>(0)?,"request_id":r.get::<_,String>(1)?,"step_id":r.get::<_,String>(2)?,
+                "path":r.get::<_,String>(3)?,"action":r.get::<_,String>(4)?,"before_hash":r.get::<_,Option<String>>(5)?,
+                "after_hash":r.get::<_,Option<String>>(6)?,"diff":r.get::<_,Option<String>>(7)?,
+                "applied":r.get::<_,i64>(8)?==1,"reverted_at":r.get::<_,Option<String>>(9)?,
+                "scope":r.get::<_,String>(10)?,"session_id":r.get::<_,String>(11)?,
+            }))).optional()?)
+        }).await
+    }
+    /// Record an undo that already happened on disk, together with the activity event that
+    /// announces it, in one transaction. `false` means the row was already reverted and nothing
+    /// was written twice — which is what a double-clicked Revert has to look like.
+    pub async fn record_revert(&self,id:String,request:String,session:String,step:String,path:String)->Result<bool>{
+        self.run(move|c|{
+            let tx=c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let stamp=now();
+            if tx.execute(crate::agentic_sql::FILE_CHANGE_REVERTED,params![id,stamp])?!=1 {return Ok(false);}
+            tx.execute(crate::agentic_sql::EVENT,params![request,session,step,"file_reverted",
+                json!({"change_id":id,"path":path}).to_string(),stamp])?;
+            tx.commit()?;Ok(true)
+        }).await
+    }
 }
 
 #[cfg(test)]
