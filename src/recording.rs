@@ -211,6 +211,7 @@ impl DbStore {
         if ![
             "context_failed",
             "provider_failed",
+            "generation_stream_save_failed",
             "answer_save_failed",
             "worker_failed",
         ]
@@ -409,6 +410,38 @@ pub(crate) async fn generate(
             return store.fail_recording(turn.request, "provider_failed").await
         }
     };
+    // Persist the generation payload before the completed receipt becomes visible. The stream
+    // transport replays these durable rows instead of depending on an in-memory provider socket.
+    if store
+        .append_generation(
+            turn.request.clone(),
+            turn.session.clone(),
+            "chunk".into(),
+            answer.clone(),
+            None,
+        )
+        .await
+        .is_err()
+    {
+        return store
+            .fail_recording(turn.request, "generation_stream_save_failed")
+            .await;
+    }
+    if store
+        .append_generation(
+            turn.request.clone(),
+            turn.session.clone(),
+            "completed".into(),
+            "".into(),
+            None,
+        )
+        .await
+        .is_err()
+    {
+        return store
+            .fail_recording(turn.request, "generation_stream_save_failed")
+            .await;
+    }
     if store
         .complete_recording(turn.request.clone(), answer)
         .await

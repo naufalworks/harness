@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Offline migration-chain check. No Rust toolchain needed.
 
-Applies migrations/001 -> 002 -> 003 -> 004 to an in-memory SQLite DB the same way
+Applies migrations/001 -> 002 -> 003 -> 004 -> 005 to an in-memory SQLite DB the same way
 `DbStore::init` does (execute_batch in order), then asserts the expected tables,
 user_version and CHECK constraints. Also verifies a populated v3 database upgrades to v4.
 """
@@ -12,13 +12,14 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MIG = ROOT / "migrations"
-CHAIN = ["001_core.sql", "002_recording.sql", "003_agentic.sql", "004_memory_kinds.sql"]
+CHAIN = ["001_core.sql", "002_recording.sql", "003_agentic.sql", "004_memory_kinds.sql", "005_generation_stream.sql"]
 
 EXPECTED_TABLES = {
     1: {"sessions", "messages", "sources", "jobs", "candidates", "memories", "memory_revisions", "settings"},
     2: {"chat_receipts", "recording_events", "recording_outbox"},
     3: {"scopes", "turn_steps", "activity_events", "permission_requests", "file_changes", "plan_items"},
     4: {"memory_embeddings"},
+    5: {"generation_events"},
 }
 
 
@@ -45,7 +46,7 @@ def check_fts5():
 def test_full_chain():
     c = fresh()
     apply(c, len(CHAIN))
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 4
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 5
     have = tables(c)
     for v, names in EXPECTED_TABLES.items():
         missing = names - have
