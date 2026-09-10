@@ -332,7 +332,7 @@ Each task has: `status`, `depends`, `design` (doc section), `files` (touched),
 - note (started 2026-09-10): Existing `/activity/stream` provides durable agent activity replay. P7-T01 extends this pattern to generation output events persisted before client delivery.
 
 ### P7-T02 · Stream recovery and boundary safety
-- status: todo
+- status: done
 - depends: P7-T01
 - design: docs/ROADMAP.md#p4
 - files: src/streaming.rs, tests/*stream*
