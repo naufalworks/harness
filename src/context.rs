@@ -35,7 +35,9 @@ impl Default for Budgets {
     fn default() -> Self {
         Self {
             system_rules: 8_192,
-            tool_definitions: 12_288,
+            // P6-T03 adds a CDP browser definition. Keep the registry bounded, but leave
+            // enough room for the complete operator-approved tool set.
+            tool_definitions: 16_384,
             skills_index: 4_096,
             repo_map: 8_192,
             recalled_memories: 6_144,

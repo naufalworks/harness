@@ -12,6 +12,7 @@ pub mod textdiff;
 pub mod edit_tools;
 pub mod ast_edit_tool;
 pub mod lsp_tool;
+pub mod browser_tool;
 pub mod bash_tool;
 pub mod meta_tools;
 pub mod skill_tool;
@@ -159,6 +160,7 @@ impl Registry {
             Box::new(fs_tools::Read), Box::new(fs_tools::Grep), Box::new(fs_tools::Glob),
             Box::new(edit_tools::Edit), Box::new(edit_tools::Write), Box::new(ast_edit_tool::AstEdit),
             Box::new(lsp_tool::Lsp),
+            Box::new(browser_tool::Browser::default()),
             Box::new(bash_tool::Bash),
             Box::new(meta_tools::Think), Box::new(meta_tools::TodoWrite),
             Box::new(skill_tool::Skill),

@@ -15,7 +15,7 @@ pub trait Tool { fn name(&self)->&'static str; fn schema(&self)->&'static Value;
 
 `ToolResult::finish()` applies `safety::redact`, caps content to 32 KB (24 KB head + `…[N bytes omitted]…` + 8 KB tail), sets `bytes`/`truncated`. Every tool returns through it. Errors are results too: `{ "error": "<code>", "detail": "<human text>" }` with `status=Failed`, so the model can recover.
 
-Error codes: `invalid_arguments`, `path_denied`, `not_found`, `is_directory`, `binary_file`, `too_large`, `stale_anchor`, `ambiguous_match`, `no_match`, `exists`, `timeout`, `denied`, `budget`, `lsp_unavailable`, `lsp_protocol`, `unsupported_edit`.
+Error codes: `invalid_arguments`, `path_denied`, `not_found`, `is_directory`, `binary_file`, `too_large`, `stale_anchor`, `ambiguous_match`, `no_match`, `exists`, `timeout`, `denied`, `budget`, `lsp_unavailable`, `lsp_protocol`, `unsupported_edit`, `browser_unavailable`, `browser_protocol`, `browser_closed`, `navigation_failed`.
 
 ## Path rules
 
@@ -95,6 +95,17 @@ Args: `{ operation: "diagnostics"|"references"|"rename", path: string, line?: in
 - A rename permission contains file counts, total +/− counts, before/after hashes and one combined diff capped at 64 KiB while disk and `/changes` stay untouched. After approval the server is queried again and expected hashes are rechecked. All output files are validated before the first write, each lands through the existing atomic helper, and an intermediate failure rolls back prior writes. Success returns one ordinary `Artifact::FileChange` per file and runs `diagnostics_cmd` once.
 - `Tool::side_effecting_for(args)` defaults to `side_effecting()`; the registry uses it for approval routing. `lsp` reports that it is capable of side effects, but returns true per call only for `operation=rename`. In `ask` mode rename asks, while `auto_edit` and `auto_all` treat it like an edit.
 
+## browser
+
+Args: `{ operation: "open"|"snapshot"|"click"|"type"|"press"|"close", url?: string, snapshot_id?: string, ref?: string, text?: string, key?: string, submit?: bool, wait_ms?: int (default 500, max 5000), max_nodes?: int (default 200, max 400), timeout_seconds?: int (default 15, max 30) }`.
+
+- One `Browser` instance belongs to one `Registry`, and the agent loop owns that registry for one turn. A mutex serializes calls and keeps one page-target CDP WebSocket alive across that turn; dropping the registry closes the socket, kills an owned browser process group and removes its isolated temporary profile. State never crosses turns and `close` ends it early.
+- `open` accepts only credential-free HTTP(S) URLs. The model cannot choose an executable or endpoint. If the operator supplied `HARNESS_CDP_URL`, it must be a credential-free loopback `ws://` page target. Otherwise the tool discovers `HARNESS_BROWSER_PATH` or a fixed Chrome/Chromium installation, launches headless with an isolated profile and loopback ephemeral debugging port, then selects the page target from `/json/list`. A missing binary/endpoint is `browser_unavailable`.
+- The client enables only `Page`, `Runtime`, `DOM`, and `Accessibility`, and issues fixed protocol methods; there is no model-facing JavaScript or CSS selector. WebSocket messages are capped at 2 MiB, one call at 30 seconds, waits at 5 seconds, page inputs at 8 KiB, accessibility input at 5000 nodes, and rendered snapshots at 400 semantic nodes. Malformed, oversized, closed, or error responses fail as `browser_protocol`, `browser_closed`, `navigation_failed`, or `timeout`.
+- A snapshot contains the current URL/title and a bounded accessibility tree. Semantic nodes with a backend DOM id receive refs such as `b42`; text and attributes are normalized and capped, and every result starts with an explicit untrusted-page-content warning. `snapshot_id` is the first eight SHA-256 hex characters of the URL, title, bounded tree, and omission count.
+- `click`, `type`, and `press` require the exact latest `snapshot_id`; click/type also require a returned ref. Immediately before dispatch, the tool captures the page again and refuses `stale_anchor` unless its hash and the referenced role/name/value/state still match. Click scrolls the node into view and dispatches one left click. Type invokes one fixed value-setter function on a textbox-like node, emits input/change events, and optionally presses Enter. Press accepts only Enter, Tab, Escape, Backspace, arrows, PageUp/PageDown, Home/End, or Space. Each action waits boundedly and returns a fresh snapshot.
+- `Tool::side_effecting_for(args)` is true only for click/type/press. In `ask` mode their permission card names the current URL, snapshot, ref and accessible target (plus the bounded text/key); approval never replays `open`. `open`, `snapshot`, and `close` never enter the gate. `auto_edit`/`auto_all` may interact automatically.
+
 ## bash
 
 Args: `{ command: string, timeout_seconds?: int (default 120, max 600), background?: bool, description: string (≤ 80 chars, shown to the user) }`
@@ -138,4 +149,4 @@ Args: `{ description?: string (≤ 80 chars), prompt: string (≤ 2000 chars) }`
 
 ## Later tools (contracts to be written when scheduled)
 
-`web_fetch` (P5, opt-in per scope). `browser` (P6).
+`web_fetch` (P5, opt-in per scope).
