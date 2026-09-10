@@ -82,6 +82,14 @@ pub struct ModelTurn {
     pub assistant_message: Value,
 }
 
+/// Consumer for future provider streaming adapters. The default completion path remains
+/// unchanged until a provider exposes a validated delta stream.
+pub trait GenerationSink: Send {
+    fn delta(&mut self, text: &str);
+    fn complete(&mut self, usage: &ModelUsage);
+    fn fail(&mut self, error_code: &str);
+}
+
 #[derive(Deserialize)]
 struct Completion {
     choices: Vec<Choice>,
