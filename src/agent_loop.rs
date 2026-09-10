@@ -9,7 +9,7 @@
 //!    drift apart.
 use crate::{
     agentic_sql as sql,
-    memory_agents::{self, MemoryAgents, ToolCall},
+    memory_agents::{self, GenerationEventWriter, MemoryAgents, ModelTurn, PersistingGenerationSink, ToolCall},
     safety,
     storage::{now, uid, DbStore, ScopeConfig},
     subagent,
@@ -23,6 +23,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
+use tokio::sync::mpsc;
 
 /// How often the loop looks for a human decision on a pending approval.
 const PERMISSION_POLL: Duration = Duration::from_millis(500);
@@ -746,10 +747,32 @@ pub async fn run(turn: Turn<'_>) -> Result<Outcome> {
             event: "model_call_started", payload: json!({"attempt":steps+1,"messages":messages.len(),"tool_count":tools.len()}),
         }).await?;
 
-        let replied = ctx
-            .agents
-            .complete_with_tools(&ctx.model, messages.clone(), tools.clone())
-            .await;
+        let replied = if tools.is_empty() {
+            let (sender, mut receiver) = mpsc::unbounded_channel();
+            let mut sink = PersistingGenerationSink::new(sender);
+            let writer = GenerationEventWriter::new(ctx.store.clone(), ctx.request.clone(), ctx.session.clone());
+            let writer_task = tokio::spawn(async move {
+                while let Some(chunk) = receiver.recv().await {
+                    writer.append_chunk(chunk).await?;
+                }
+                Ok::<(), anyhow::Error>(())
+            });
+            let stream_result = ctx.agents.stream_turn(&ctx.model, messages.clone(), &mut sink).await;
+            let buffered = std::mem::take(&mut sink.buffered);
+            drop(sink);
+            let _ = writer_task.await;
+            match stream_result {
+                Ok(()) => {
+                    Ok(ModelTurn { text: Some(buffered.text), tool_calls: Vec::new(), usage: buffered.usage.unwrap_or_default(), assistant_message: json!({"role":"assistant"}) })
+                }
+                Err(error) => Err(error),
+            }
+        } else {
+            ctx
+                .agents
+                .complete_with_tools(&ctx.model, messages.clone(), tools.clone())
+                .await
+        };
         steps += 1;
         let reply = match replied {
             Ok(reply) => reply,

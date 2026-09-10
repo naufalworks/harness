@@ -1,5 +1,12 @@
 # PROGRESS — journal
 
+## 2026-09-11 · AI session · P7-T02 runtime streaming integration
+
+- Added text-only provider streaming path through `stream_turn` and a persistence forwarding sink.
+- Tool-call turns continue using the existing completion loop.
+- Verified: cargo test suite passes after runtime integration.
+- Open: final release verification and commit.
+
 ## 2026-09-10 · AI session · P7-T02 stream boundary foundation
 
 - **Delivered**: added provider SSE boundary parsing primitives for durable generation streaming.
@@ -8,6 +15,20 @@
 - **Open**: wire the streaming HTTP response into `GenerationSink`, then persist incremental generation deltas.
 
 Append-only. Newest entry first. Each entry: date, who (human / AI session), what changed,
+## 2026-09-11 · AI session · P7-T02 provider stream response consumer
+
+- Added the persistence bridge foundation for incremental generation streams.
+- `GenerationEventWriter` now provides an async path from streaming code into `generation_events` using the existing `DbStore::append_generation` API.
+- Next: wire stream deltas into this writer and add replay ordering tests.
+
+## 2026-09-11 · AI session · P7-T02 async sink bridge
+
+- Added a channel-based sink adapter between synchronous provider callbacks and async persistence code.
+- Next: connect the channel consumer to ordered `generation_events` writes and terminal state handling.
+
+- **Delivered**: Added the provider streaming response consumer boundary. `reqwest::Response` chunks are incrementally buffered, SSE events are extracted, provider deltas are decoded, and validated content is forwarded into `GenerationSink`.
+- **Safety**: Invalid stream frames now fail through the sink instead of silently corrupting generation state.
+- **Next**: Wire the streaming consumer into the generation persistence transaction so each provider delta becomes a durable `generation_events` record.
 what was verified and how, what is open. Keep entries short; details go in TASKS.md status
 and the design docs.
 

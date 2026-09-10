@@ -8,6 +8,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{collections::HashSet, time::Duration};
+use tokio::sync::mpsc;
 
 const MAX_PROVIDER_BODY: usize = 1_048_576;
 const MAX_PROVIDER_TEXT: usize = 131_072;
@@ -82,8 +83,7 @@ pub struct ModelTurn {
     pub assistant_message: Value,
 }
 
-/// Consumer for future provider streaming adapters. The default completion path remains
-/// unchanged until a provider exposes a validated delta stream.
+/// Consumer for provider streaming adapters. Implementations receive validated content deltas.
 pub trait GenerationSink: Send {
     fn delta(&mut self, text: &str);
     fn complete(&mut self, usage: &ModelUsage);
@@ -108,6 +108,88 @@ impl GenerationSink for BufferedGeneration {
 
     fn fail(&mut self, error_code: &str) {
         self.failed = Some(error_code.to_string());
+    }
+}
+
+/// Async bridge used by streaming callers that need durable generation events.
+pub struct GenerationEventWriter {
+    store: DbStore,
+    request_id: String,
+    session_id: String,
+}
+
+// Streaming persistence is layered above the provider callback boundary.
+
+/// Bridge between synchronous provider callbacks and async generation persistence.
+pub struct ChannelGenerationSink {
+    sender: mpsc::UnboundedSender<String>,
+    failed: Option<String>,
+}
+
+impl ChannelGenerationSink {
+    pub fn new(sender: mpsc::UnboundedSender<String>) -> Self {
+        Self { sender, failed: None }
+    }
+
+    pub fn failed(&self) -> Option<&str> {
+        self.failed.as_deref()
+    }
+}
+
+impl GenerationSink for ChannelGenerationSink {
+    fn delta(&mut self, text: &str) {
+        let _ = self.sender.send(text.to_string());
+    }
+
+    fn complete(&mut self, _usage: &ModelUsage) {}
+
+    fn fail(&mut self, error_code: &str) {
+        self.failed = Some(error_code.to_string());
+    }
+}
+
+/// Sink that keeps the final answer while forwarding chunks to durable persistence.
+pub struct PersistingGenerationSink {
+    pub buffered: BufferedGeneration,
+    sender: mpsc::UnboundedSender<String>,
+}
+
+impl PersistingGenerationSink {
+    pub fn new(sender: mpsc::UnboundedSender<String>) -> Self {
+        Self { buffered: BufferedGeneration::default(), sender }
+    }
+}
+
+impl GenerationSink for PersistingGenerationSink {
+    fn delta(&mut self, text: &str) {
+        self.buffered.delta(text);
+        let _ = self.sender.send(text.to_string());
+    }
+
+    fn complete(&mut self, usage: &ModelUsage) {
+        self.buffered.complete(usage);
+    }
+
+    fn fail(&mut self, error_code: &str) {
+        self.buffered.fail(error_code);
+    }
+}
+
+impl GenerationEventWriter {
+    pub fn new(store: DbStore, request_id: String, session_id: String) -> Self {
+        Self { store, request_id, session_id }
+    }
+
+    pub async fn append_chunk(&self, content: String) -> Result<i64> {
+        self.store
+            .append_generation(self.request_id.clone(), self.session_id.clone(), "chunk".into(), content, None)
+            .await
+    }
+
+    pub async fn complete(&self) -> Result<i64> {
+        self.store
+            .append_generation(self.request_id.clone(), self.session_id.clone(), "completed".into(), String::new(), None)
+            .await
     }
 }
 
@@ -191,6 +273,31 @@ impl MemoryAgents {
             .map(str::to_string)
     }
 
+    pub(crate) async fn consume_stream_response<S: GenerationSink>(
+        &self,
+        mut response: reqwest::Response,
+        sink: &mut S,
+    ) -> Result<()> {
+        let mut buffer = String::new();
+        while let Some(chunk) = response.chunk().await? {
+            buffer.push_str(&String::from_utf8_lossy(&chunk));
+            while let Some(event) = Self::parse_sse_event(&mut buffer) {
+                if event == "[DONE]" {
+                    return Ok(());
+                }
+                match Self::parse_stream_frame(&event) {
+                    Ok(Some(delta)) => sink.delta(&delta),
+                    Ok(None) => return Ok(()),
+                    Err(error) => {
+                        sink.fail("invalid_stream_frame");
+                        return Err(error);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub async fn list_models(&self) -> Result<Value> {
         let response = self
             .http
@@ -241,6 +348,39 @@ impl MemoryAgents {
             .next()
             .context("provider returned no choices")?;
         decode_model_turn(choice.message, body.usage)
+    }
+
+    pub async fn stream_turn<S: GenerationSink>(
+        &self,
+        model: &str,
+        messages: Vec<Value>,
+        sink: &mut S,
+    ) -> Result<()> {
+        let request = completion_stream_request(model, messages);
+        let response = self
+            .http
+            .post(format!("{}/chat/completions", self.base_url))
+            .bearer_auth(&self.api_key)
+            .timeout(Duration::from_secs(90))
+            .json(&request)
+            .send()
+            .await?;
+        if !response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.contains("text/event-stream"))
+        {
+            let body: Completion = serde_json::from_value(self.response_json(response).await?)
+                .context("invalid completion shape")?;
+            let choice = body.choices.into_iter().next().context("provider returned no choices")?;
+            let turn = decode_model_turn(choice.message, body.usage)?;
+            if let Some(text) = turn.text {
+                sink.delta(&text);
+            }
+            return Ok(());
+        }
+        self.consume_stream_response(response, sink).await
     }
     pub async fn complete_with_tools(
         &self,
@@ -576,6 +716,7 @@ mod provider_tests {
         buffer.push_str("\ndata: two\n\n");
         assert!(buffer.contains("data: two"));
         assert_eq!(MemoryAgents::parse_sse_event(&mut buffer), Some("one".into()));
+        assert_eq!(MemoryAgents::parse_sse_event(&mut buffer), Some("two".into()));
     }
 
     #[test]
