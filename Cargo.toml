@@ -20,6 +20,14 @@ futures-core = "0.3"
 
 ring = "0.17"
 
+# P6-T01: `ast_edit` matches and rewrites Rust by syntax, not by text. `ast-grep-core` is the
+# matcher/rewriter and `ast-grep-language` carries the tree-sitter grammars. Its default
+# `builtin-parser` feature would compile 27 grammars for a tool that accepts one language, so
+# defaults are off and only Rust is enabled; adding a language is one feature flag. The `sg`
+# binary is deliberately not used: it is not installed here and would make the tool host-dependent.
+ast-grep-core = "0.45"
+ast-grep-language = { version = "0.45", default-features = false, features = ["tree-sitter-rust"] }
+
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 # P2-T01: `start_paused` asserts the 15 s stream heartbeat in virtual time instead of waiting

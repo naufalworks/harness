@@ -102,6 +102,16 @@ TOOLS = {
             "prompt": S("Self-contained instructions: what to look for and what to report back.", maxLength=2000),
         }, ["description", "prompt"]),
     ),
+    "ast_edit": (
+        "Structural find-and-replace in one Rust file. The pattern is parsed as code, not text, so `$NAME` matches a whole expression, statement or item and formatting, line breaks and comments never matter. Prefer this over `edit` when the same shape repeats and text matching would be brittle; use `edit` for one-off edits and for files that are not Rust. Every match in the file is rewritten together, and the call is refused without writing anything if the pattern matches nothing or matches more often than max_matches.",
+        obj({
+            "path": S("Path to a .rs file, relative to the project root."),
+            "content_hash": S("8-hex content hash from the latest read of this file. The rewrite is refused if the file changed before approval.", pattern="^[0-9a-f]{8}$"),
+            "pattern": S("Pattern written as Rust code, e.g. `$X.unwrap_or($A)`. `$NAME` captures one node; repeating the same name requires the same code in both places."),
+            "rewrite": S("Replacement written as Rust code. Reuse captures by name, e.g. `$X.unwrap_or_else(|| $A)`."),
+            "max_matches": I("Refuse instead of rewriting if the pattern matches more times than this. Default 20, max 200.", minimum=1, maximum=200),
+        }, ["path", "content_hash", "pattern", "rewrite"]),
+    ),
 }
 
 

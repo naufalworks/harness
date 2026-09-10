@@ -156,6 +156,6 @@ mod tests {
         let registry = Registry::standard();
         let schemas = registry.schemas().expect("every schema file parses");
         let names: Vec<String> = schemas.iter().map(|s| s["function"]["name"].as_str().unwrap_or_default().to_string()).collect();
-        assert_eq!(names, ["read", "grep", "glob", "edit", "write", "bash", "think", "todo_write", "skill", "task"]);
+        assert_eq!(names, ["read", "grep", "glob", "edit", "write", "ast_edit", "bash", "think", "todo_write", "skill", "task"]);
     }
 }

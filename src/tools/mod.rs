@@ -10,6 +10,7 @@ pub mod paths;
 pub mod fs_tools;
 pub mod textdiff;
 pub mod edit_tools;
+pub mod ast_edit_tool;
 pub mod bash_tool;
 pub mod meta_tools;
 pub mod skill_tool;
@@ -51,8 +52,8 @@ pub enum Artifact {
 }
 
 /// A file change computed from the current on-disk content but **not yet written**.
-/// `Tool::plan` returns it so the loop can record `file_changes(applied=0)` and render a diff
-/// for approval; `Tool::run` re-plans, applies atomically, and the row then flips to 1.
+/// Permission payloads render it for approval; `Tool::run` re-plans, applies atomically, and
+/// returns its artifact for the loop to record as `file_changes(applied=1)`.
 #[derive(Clone, Debug)]
 pub struct PendingChange {
     pub path: PathBuf,
@@ -139,10 +140,9 @@ pub trait Tool: Send + Sync {
     fn summary(&self, args: &Value) -> String;
     /// Extra permission payload for the UI (diff preview, command). Default: the args.
     fn permission_payload(&self, ctx: &ToolCtx, args: &Value) -> Value { let _ = ctx; args.clone() }
-    /// File-mutating tools describe their change here, without touching disk, so the loop can
-    /// record `file_changes(applied=0)` and show a diff before approval. `None` for the rest.
-    /// Unused so far: P1-T10 records changes as `applied=1` because the tool has already written
-    /// the file. P2-T03 (accept/reject a diff card) is what needs the plan-then-apply split.
+    /// File-mutating tools may describe their change here without touching disk. The current
+    /// loop gets its pre-write diff from `permission_payload`; this hook remains available to
+    /// consumers that need a typed pending change. `None` for non-file tools.
     fn plan(&self, ctx: &ToolCtx, args: &Value) -> Option<std::result::Result<PendingChange, ToolResult>> { let _ = (ctx, args); None }
     fn run(&self, ctx: &ToolCtx, args: Value) -> ToolResult;
 }
@@ -153,7 +153,7 @@ impl Registry {
     pub fn standard() -> Self {
         Self { tools: vec![
             Box::new(fs_tools::Read), Box::new(fs_tools::Grep), Box::new(fs_tools::Glob),
-            Box::new(edit_tools::Edit), Box::new(edit_tools::Write),
+            Box::new(edit_tools::Edit), Box::new(edit_tools::Write), Box::new(ast_edit_tool::AstEdit),
             Box::new(bash_tool::Bash),
             Box::new(meta_tools::Think), Box::new(meta_tools::TodoWrite),
             Box::new(skill_tool::Skill),

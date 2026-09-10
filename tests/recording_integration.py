@@ -36,6 +36,8 @@ def main() -> None:
 
     beta_hash = __import__("hashlib").sha256(b"beta").hexdigest()[:4]
     stale_hash = __import__("hashlib").sha256(b"not-the-current-line").hexdigest()[:4]
+    structural_source = "fn main() {\n    let a = first().unwrap_or(fallback());\n    let b = second()\n        .unwrap_or(other());\n}\n"
+    structural_hash = __import__("hashlib").sha256(structural_source.encode()).hexdigest()[:8]
     # P5-T03: a sub-agent's own context is `Exploration: <description>\n\n<prompt>`, so its calls
     # select their own scenario here and can never consume the parent's scripted replies.
     explore_ask = "find gamma"
@@ -54,6 +56,11 @@ def main() -> None:
             tool_calls(("read-stale", "read", {"path": "stale.md"})),
             tool_calls(("edit-stale", "edit", {"path": "stale.md", "anchors": [{"line": 2, "hash": stale_hash}], "end_line": 2, "new_string": "changed"})),
             text("The edit was refused because the anchor was stale."),
+        ],
+        "structural rewrite": [
+            tool_calls(("ast-read", "read", {"path": "src/lib.rs", "offset": 1, "limit": 20})),
+            tool_calls(("ast-edit", "ast_edit", {"path": "src/lib.rs", "content_hash": structural_hash, "pattern": "$X.unwrap_or($A)", "rewrite": "$X.unwrap_or_else(|| $A)"})),
+            text("Structurally rewrote both unwrap_or calls after approval."),
         ],
         "path escape": [
             tool_calls(("escape-1", "read", {"path": "../../etc/passwd"})),
@@ -94,6 +101,8 @@ def main() -> None:
         (root / "notes.md").write_text("alpha\nbeta\n")
         (root / "stale.md").write_text("alpha\nbeta\n")
         (root / "deny.md").write_text("keep this file\n")
+        (root / "src").mkdir()
+        (root / "src" / "lib.rs").write_text(structural_source)
         # P5-T02: one real skill, so the receipt proves discovery is wired into a recorded turn.
         (root / "skills" / "review").mkdir(parents=True)
         (root / "skills" / "review" / "SKILL.md").write_text(
@@ -355,8 +364,39 @@ def main() -> None:
             escape_steps = call("/chat/requests/" + escape["request_id"] + "/steps")[1]["steps"]
             assert any(s["tool_name"] == "read" and s["error_code"] in ("path_denied", "invalid_arguments") for s in escape_steps)
 
-            # Permission deny: the pending row is the only thing that can unblock the write.
+            # P6-T01: the structural planner supplies the exact diff before approval and touches
+            # neither disk nor `file_changes`; approval then re-checks the read hash, writes once,
+            # and records the ordinary applied/revertable file-change artifact.
             configure(permission_mode="ask")
+            structural = submit("structural rewrite")
+            deadline = time.time() + 10
+            permission = None
+            while time.time() < deadline:
+                listed = call("/permissions?scope=global")[1]["permissions"]
+                permission = next((item for item in listed if item["request_id"] == structural["request_id"]), None)
+                if permission:
+                    break
+                time.sleep(0.05)
+            assert permission is not None and permission["tool"] == "ast_edit", permission
+            assert (root / "src" / "lib.rs").read_text() == structural_source, "planning the approval must not write"
+            assert call("/changes?request_id=" + structural["request_id"])[1] == {"changes": []}
+            planned = permission["args"]
+            assert planned["path"] == "src/lib.rs" and planned["action"] == "modify", planned
+            assert planned["before_hash"] == structural_hash and planned["after_hash"] != structural_hash, planned
+            assert "unwrap_or_else" in planned["diff"] and planned["plus"] > 0 and planned["minus"] > 0, planned
+            code, decision = call("/permissions/" + permission["id"], {"decision": "approve", "scope": "global"})
+            assert code == 200 and decision["status"] == "approved"
+            structural_done = wait_receipt(structural["request_id"], "complete")
+            assert structural_done["response"] == "Structurally rewrote both unwrap_or calls after approval."
+            rewritten = (root / "src" / "lib.rs").read_text()
+            assert rewritten.count("unwrap_or_else") == 2 and "unwrap_or(" not in rewritten, rewritten
+            structural_steps = call("/chat/requests/" + structural["request_id"] + "/steps")[1]["steps"]
+            assert any(s["tool_name"] == "ast_edit" and s["status"] == "complete" for s in structural_steps), structural_steps
+            structural_changes = call("/changes?request_id=" + structural["request_id"])[1]["changes"]
+            assert len(structural_changes) == 1 and structural_changes[0]["applied"] is True, structural_changes
+            assert structural_changes[0]["path"] == "src/lib.rs" and "unwrap_or_else" in structural_changes[0]["diff"], structural_changes
+
+            # Permission deny: the pending row is the only thing that can unblock the write.
             denied = submit("deny write")
             deadline = time.time() + 10
             permission = None
@@ -408,7 +448,7 @@ def main() -> None:
             with sqlite3.connect(db) as connection:
                 assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
                 assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
-            print("PASS: P1-T14 tool calls, read/edit/bash/answer, stale anchors, path escape, permission deny, budget exhaustion, interrupted tool recovery, no re-execution, and provider failure")
+            print("PASS: tool calls including approved ast_edit, durable diffs, stale anchors, sandboxing, permission deny, budgets, interrupted recovery, and provider failure")
         finally:
             if app and app.poll() is None:
                 app.terminate()

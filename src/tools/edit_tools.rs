@@ -1,9 +1,9 @@
 //! edit / write. Contract: docs/design/tools.md#edit, #write.
 //!
 //! Tools never touch the database. A change is *planned* from the current on-disk content
-//! (no writes), which lets the loop record `file_changes(applied=0)` and show a diff for
-//! approval; `run` then re-plans against disk and applies atomically, and the loop flips the
-//! row to `applied=1`. Re-planning inside `run` is deliberate: the file may have changed
+//! (no writes), which lets the loop show a bounded diff for approval; `run` then re-plans
+//! against disk and applies atomically, and the loop records the returned artifact as
+//! `file_changes(applied=1)`. Re-planning inside `run` is deliberate: the file may have changed
 //! while a permission request was pending, and the anchors must still hold at write time.
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -31,7 +31,7 @@ fn truncate_utf8(text: &mut String, cap: usize, note: &str) {
 }
 
 /// Build the change record, including the unified diff stored in `file_changes.diff`.
-fn describe(root: &Path, path: PathBuf, action: &'static str, before: Option<String>, after: String) -> PendingChange {
+pub(crate) fn describe(root: &Path, path: PathBuf, action: &'static str, before: Option<String>, after: String) -> PendingChange {
     let display = paths::display(root, &path);
     let diff = textdiff::unified(&display, before.as_deref().unwrap_or(""), &after);
     let mut text = diff.text;
@@ -160,7 +160,7 @@ fn changed_span(before: &str, after: &str) -> (usize, usize) {
     (first, b.len().saturating_sub(tail).max(first))
 }
 
-fn apply(ctx: &ToolCtx, verb: &str, change: PendingChange) -> ToolResult {
+pub(crate) fn apply(ctx: &ToolCtx, verb: &str, change: PendingChange) -> ToolResult {
     if change.is_noop() {
         return ToolResult::ok(format!("{} already had this content", change.display), format!("{} is already exactly this content; nothing was written.", change.display));
     }
@@ -264,7 +264,7 @@ fn kill_group(_pid: u32) {}
 
 // ---- tools ---------------------------------------------------------------------------
 
-fn payload(planned: Result<PendingChange, ToolResult>, args: &Value) -> Value {
+pub(crate) fn payload(planned: Result<PendingChange, ToolResult>, args: &Value) -> Value {
     match planned {
         Ok(c) => json!({ "path": c.display, "action": c.action, "plus": c.plus, "minus": c.minus, "before_hash": c.before_hash, "after_hash": c.after_hash, "diff": c.diff }),
         Err(r) => json!({ "path": arg_str(args, "path"), "error": r.error_code }),

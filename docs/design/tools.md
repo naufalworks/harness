@@ -75,6 +75,15 @@ Summary (also the permission prompt): `edit src/main.rs (+A −B)`; `args_json` 
 
 Args: `{ path, content, overwrite?: bool }`. Fails `exists` unless `overwrite`. Creates parent dirs inside root. Same `file_changes`/diagnostics/atomic-write behavior as `edit` (action `create` or `modify`). Content > 512 KB → `too_large`.
 
+## ast_edit
+
+Args: `{ path: string, content_hash: string, pattern: string, rewrite: string, max_matches?: int (default 20, max 200) }`.
+
+- P6-T01 accepts one existing `.rs` file of at most 512 KiB. `paths::resolve` remains the only disk-access gate. The required 8-hex `content_hash` comes from the latest `read`; a mismatch fails `stale_anchor`, so neither a stale model call nor a file changed while approval was pending can apply a different diff.
+- Matching and rewriting run in-process with `ast-grep-core` and the Rust-only `ast-grep-language` feature. `$NAME` captures one syntax node and may be reused in `rewrite`. An unparseable or empty pattern is `invalid_arguments`; zero matches is `no_match`; more than `max_matches` is `ambiguous_match`. Every refusal leaves the file untouched.
+- Every non-overlapping match in the file is rewritten together. The resulting text joins `edit`'s existing `describe`/`apply` path: one unified diff, before/after hashes and +/− counts in the permission payload while the file is still unchanged; after approval `run` checks the hash again, writes atomically, runs `diagnostics_cmd`, and returns the same `Artifact::FileChange` that becomes an applied, revertable `file_changes` row.
+- Output summary: `rewrote <path> (+A −B)`, followed by fresh line hashes for the changed span and diagnostics when configured. `auto_edit` and `auto_all` treat it like `edit`; `ask` requires approval.
+
 ## bash
 
 Args: `{ command: string, timeout_seconds?: int (default 120, max 600), background?: bool, description: string (≤ 80 chars, shown to the user) }`
@@ -118,4 +127,4 @@ Args: `{ description?: string (≤ 80 chars), prompt: string (≤ 2000 chars) }`
 
 ## Later tools (contracts to be written when scheduled)
 
-`web_fetch` (P5, opt-in per scope). `ast_edit`, `lsp`, `browser` (P6).
+`web_fetch` (P5, opt-in per scope). `lsp`, `browser` (P6).

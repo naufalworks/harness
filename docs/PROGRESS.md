@@ -18,6 +18,15 @@ Suggested first message to an AI continuing this work:
 
 ---
 
+## 2026-09-10 · AI session (Notion AI via Local) · P6-T01 ast_edit via ast-grep
+
+- **Delivered**: `ast_edit` is the eleventh registered tool. It structurally rewrites every matching site in one existing Rust file with in-process ast-grep, then uses the same diff, atomic-write, diagnostics and durable change-artifact path as `edit`.
+- **Approval-safe**: calls require the eight-hex `content_hash` from the latest `read`. Planning puts a bounded unified diff, before/after hashes and +/− counts in the pending permission while disk and the changes feed stay untouched; the approved run checks the hash again before writing, preventing approval-time diff drift.
+- **Bounded refusals**: Rust only, 512 KiB per file, 20 matches by default and 200 maximum. Stale content, zero matches, over-broad patterns, unsupported files and invalid patterns all fail without writing.
+- **Integration and guidance**: schema generation, the registry-order assertion, tool contract and main-agent prompt now include `ast_edit`. The HTTP fixture proves `read → pending approval → approved structural rewrite → applied/revertable file_changes` across two differently formatted matches.
+- **Verification**: focused `ast_edit` suite 6/6, schema validation, Python compilation, direct HTTP integration and `git diff --check` passed. Final release gate exited 0: 136 Rust tests, Clippy/build, migrations 001→004, 11 tool schemas, 53 Python contracts and both mock-provider HTTP suites. Browser suites were not run because no UI changed.
+- **Open**: nothing blocking. Next is P6-T02 (`lsp` diagnostics, references and rename).
+
 ## 2026-09-10 · AI session (Notion AI via Local) · P5-T03 task tool (read-only explore sub-agent)
 
 - **Delivered**: The model can delegate exploration. `task` is registered like any other tool (tenth in the array), but the loop intercepts the call before `Registry::invoke`, because a sub-agent needs the provider while `Tool::run` is synchronous and filesystem-bound.
