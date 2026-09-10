@@ -29,6 +29,76 @@ def port() -> int:
         return int(sock.getsockname()[1])
 
 
+def install_fake_lsp(bin_dir: Path) -> None:
+    """Install a deterministic fixed-name stdio server; no machine LSP is required."""
+    bin_dir.mkdir(parents=True)
+    server = bin_dir / "rust-analyzer"
+    server.write_text(r'''#!/usr/bin/env python3
+import json
+import sys
+from pathlib import Path
+from urllib.parse import unquote, urlparse
+
+def receive():
+    headers = {}
+    while True:
+        line = sys.stdin.buffer.readline()
+        if not line:
+            return None
+        if line in (b"\r\n", b"\n"):
+            break
+        name, value = line.decode().split(":", 1)
+        headers[name.lower()] = value.strip()
+    return json.loads(sys.stdin.buffer.read(int(headers["content-length"])))
+
+def send(message):
+    body = json.dumps(message, separators=(",", ":")).encode()
+    sys.stdout.buffer.write(f"Content-Length: {len(body)}\r\n\r\n".encode() + body)
+    sys.stdout.buffer.flush()
+
+root = None
+while True:
+    message = receive()
+    if message is None:
+        break
+    method = message.get("method")
+    request_id = message.get("id")
+    if method == "initialize":
+        root = Path(unquote(urlparse(message["params"]["rootUri"]).path))
+        send({"jsonrpc": "2.0", "id": request_id, "result": {"capabilities": {
+            "referencesProvider": True, "renameProvider": True
+        }}})
+    elif method == "textDocument/didOpen":
+        target = message["params"]["textDocument"]["uri"]
+        send({"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics", "params": {
+            "uri": target, "diagnostics": [{
+                "range": {"start": {"line": 0, "character": 7}, "end": {"line": 0, "character": 15}},
+                "severity": 2, "code": "fixture", "message": "synthetic rename candidate"
+            }]
+        }})
+    elif method in ("textDocument/references", "textDocument/rename"):
+        first = (root / "src/lsp_a.rs").resolve().as_uri()
+        second = (root / "src/lsp_b.rs").resolve().as_uri()
+        ranges = {
+            first: {"start": {"line": 0, "character": 7}, "end": {"line": 0, "character": 15}},
+            second: {"start": {"line": 0, "character": 12}, "end": {"line": 0, "character": 20}},
+        }
+        if method == "textDocument/references":
+            result = [{"uri": uri, "range": span} for uri, span in ranges.items()]
+        else:
+            new_name = message["params"]["newName"]
+            result = {"changes": {uri: [{"range": span, "newText": new_name}] for uri, span in ranges.items()}}
+        send({"jsonrpc": "2.0", "id": request_id, "result": result})
+    elif method == "shutdown":
+        send({"jsonrpc": "2.0", "id": request_id, "result": None})
+    elif method == "exit":
+        break
+    elif request_id is not None:
+        send({"jsonrpc": "2.0", "id": request_id, "error": {"code": -32601, "message": "not implemented"}})
+''')
+    server.chmod(0o755)
+
+
 def main() -> None:
     binary = ROOT / "target/debug/harness"
     if not binary.is_file():
@@ -38,6 +108,10 @@ def main() -> None:
     stale_hash = __import__("hashlib").sha256(b"not-the-current-line").hexdigest()[:4]
     structural_source = "fn main() {\n    let a = first().unwrap_or(fallback());\n    let b = second()\n        .unwrap_or(other());\n}\n"
     structural_hash = __import__("hashlib").sha256(structural_source.encode()).hexdigest()[:8]
+    lsp_a_source = "pub fn old_name() {}\n"
+    lsp_b_source = "fn call() { old_name(); }\n"
+    lsp_a_hash = __import__("hashlib").sha256(lsp_a_source.encode()).hexdigest()[:8]
+    lsp_b_hash = __import__("hashlib").sha256(lsp_b_source.encode()).hexdigest()[:8]
     # P5-T03: a sub-agent's own context is `Exploration: <description>\n\n<prompt>`, so its calls
     # select their own scenario here and can never consume the parent's scripted replies.
     explore_ask = "find gamma"
@@ -61,6 +135,22 @@ def main() -> None:
             tool_calls(("ast-read", "read", {"path": "src/lib.rs", "offset": 1, "limit": 20})),
             tool_calls(("ast-edit", "ast_edit", {"path": "src/lib.rs", "content_hash": structural_hash, "pattern": "$X.unwrap_or($A)", "rewrite": "$X.unwrap_or_else(|| $A)"})),
             text("Structurally rewrote both unwrap_or calls after approval."),
+        ],
+        "lsp inspect": [
+            tool_calls(("lsp-diagnostics", "lsp", {"operation": "diagnostics", "path": "src/lsp_a.rs", "timeout_seconds": 5})),
+            tool_calls(("lsp-references", "lsp", {"operation": "references", "path": "src/lsp_a.rs", "line": 1, "column": 8, "timeout_seconds": 5})),
+            text("LSP diagnostics and references were inspected without approval."),
+        ],
+        "lsp workspace rename": [
+            tool_calls(("lsp-rename", "lsp", {
+                "operation": "rename", "path": "src/lsp_a.rs", "line": 1, "column": 8,
+                "new_name": "fresh_name", "timeout_seconds": 5,
+                "expected_files": [
+                    {"path": "src/lsp_a.rs", "content_hash": lsp_a_hash},
+                    {"path": "src/lsp_b.rs", "content_hash": lsp_b_hash},
+                ],
+            })),
+            text("Renamed old_name to fresh_name in both files after approval."),
         ],
         "path escape": [
             tool_calls(("escape-1", "read", {"path": "../../etc/passwd"})),
@@ -103,12 +193,16 @@ def main() -> None:
         (root / "deny.md").write_text("keep this file\n")
         (root / "src").mkdir()
         (root / "src" / "lib.rs").write_text(structural_source)
+        (root / "src" / "lsp_a.rs").write_text(lsp_a_source)
+        (root / "src" / "lsp_b.rs").write_text(lsp_b_source)
         # P5-T02: one real skill, so the receipt proves discovery is wired into a recorded turn.
         (root / "skills" / "review").mkdir(parents=True)
         (root / "skills" / "review" / "SKILL.md").write_text(
             "---\ndescription: How this repo reviews a diff\n---\nRe-anchor before every edit.\n"
         )
         db = tmp_path / "fixture.db"
+        fake_bin = tmp_path / "fake-bin"
+        install_fake_lsp(fake_bin)
         server_port = port()
         token = "synthetic-" + "x" * 40
         env = {
@@ -119,6 +213,7 @@ def main() -> None:
             "HARNESS_BASE_URL": f"http://127.0.0.1:{provider.port}",
             "HARNESS_ADDR": f"127.0.0.1:{server_port}",
             "HARNESS_MODEL": "synthetic-model",
+            "PATH": str(fake_bin) + os.pathsep + os.environ.get("PATH", ""),
         }
         app: subprocess.Popen[bytes] | None = None
 
@@ -396,6 +491,60 @@ def main() -> None:
             assert len(structural_changes) == 1 and structural_changes[0]["applied"] is True, structural_changes
             assert structural_changes[0]["path"] == "src/lib.rs" and "unwrap_or_else" in structural_changes[0]["diff"], structural_changes
 
+            # P6-T02 read-only operations use a deterministic stdio fixture and must complete in
+            # ask mode without creating a permission. References expose fresh whole-file hashes.
+            inspected = submit("lsp inspect")
+            inspected_done = wait_receipt(inspected["request_id"], "complete")
+            assert inspected_done["response"] == "LSP diagnostics and references were inspected without approval."
+            inspected_steps = call("/chat/requests/" + inspected["request_id"] + "/steps")[1]["steps"]
+            assert len([s for s in inspected_steps if s["tool_name"] == "lsp" and s["status"] == "complete"]) == 2, inspected_steps
+            inspected_permissions = call("/permissions?scope=global")[1]["permissions"]
+            assert not any(item["request_id"] == inspected["request_id"] for item in inspected_permissions)
+            inspected_requests = [item["body"] for item in provider.requests if item["scenario"] == "lsp inspect"]
+            inspected_tool_text = "\n".join(
+                str(message.get("content", ""))
+                for body in inspected_requests
+                for message in body["messages"]
+                if message.get("role") == "tool"
+            )
+            assert "warning [fixture] synthetic rename candidate" in inspected_tool_text, inspected_tool_text
+            assert f"src/lsp_a.rs  content_hash: {lsp_a_hash}" in inspected_tool_text, inspected_tool_text
+            assert f"src/lsp_b.rs  content_hash: {lsp_b_hash}" in inspected_tool_text, inspected_tool_text
+
+            # Rename plans both files before approval, leaves disk and the changes feed untouched,
+            # then repeats the query, checks every expected hash, and records two durable artifacts.
+            renamed = submit("lsp workspace rename")
+            deadline = time.time() + 10
+            permission = None
+            while time.time() < deadline:
+                listed = call("/permissions?scope=global")[1]["permissions"]
+                permission = next((item for item in listed if item["request_id"] == renamed["request_id"]), None)
+                if permission:
+                    break
+                time.sleep(0.05)
+            assert permission is not None and permission["tool"] == "lsp", permission
+            assert (root / "src" / "lsp_a.rs").read_text() == lsp_a_source
+            assert (root / "src" / "lsp_b.rs").read_text() == lsp_b_source
+            assert call("/changes?request_id=" + renamed["request_id"])[1] == {"changes": []}
+            planned = permission["args"]
+            assert planned["action"] == "rename" and planned["file_count"] == 2, planned
+            assert {item["path"] for item in planned["files"]} == {"src/lsp_a.rs", "src/lsp_b.rs"}, planned
+            assert {item["before_hash"] for item in planned["files"]} == {lsp_a_hash, lsp_b_hash}, planned
+            assert "fresh_name" in planned["diff"] and planned["plus"] > 0 and planned["minus"] > 0, planned
+            code, decision = call("/permissions/" + permission["id"], {"decision": "approve", "scope": "global"})
+            assert code == 200 and decision["status"] == "approved"
+            renamed_done = wait_receipt(renamed["request_id"], "complete")
+            assert renamed_done["response"] == "Renamed old_name to fresh_name in both files after approval."
+            assert (root / "src" / "lsp_a.rs").read_text() == "pub fn fresh_name() {}\n"
+            assert (root / "src" / "lsp_b.rs").read_text() == "fn call() { fresh_name(); }\n"
+            renamed_steps = call("/chat/requests/" + renamed["request_id"] + "/steps")[1]["steps"]
+            assert any(s["tool_name"] == "lsp" and s["status"] == "complete" for s in renamed_steps), renamed_steps
+            renamed_changes = call("/changes?request_id=" + renamed["request_id"])[1]["changes"]
+            assert {change["path"] for change in renamed_changes} == {"src/lsp_a.rs", "src/lsp_b.rs"}, renamed_changes
+            assert all(change["applied"] is True and change["revertable"] is True for change in renamed_changes), renamed_changes
+            renamed_feed = call("/activity?session_id=" + renamed["session_id"])[1]["events"]
+            assert len([event for event in renamed_feed if event["kind"] == "file_changed"]) == 2, renamed_feed
+
             # Permission deny: the pending row is the only thing that can unblock the write.
             denied = submit("deny write")
             deadline = time.time() + 10
@@ -448,7 +597,7 @@ def main() -> None:
             with sqlite3.connect(db) as connection:
                 assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
                 assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
-            print("PASS: tool calls including approved ast_edit, durable diffs, stale anchors, sandboxing, permission deny, budgets, interrupted recovery, and provider failure")
+            print("PASS: tool calls including approved ast_edit and multi-file lsp rename, read-only LSP queries, durable diffs, stale anchors, sandboxing, permission deny, budgets, interrupted recovery, and provider failure")
         finally:
             if app and app.poll() is None:
                 app.terminate()

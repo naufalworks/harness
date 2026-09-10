@@ -1,0 +1,80 @@
+{
+  "type": "function",
+  "function": {
+    "name": "lsp",
+    "description": "Ask a local language server for diagnostics or symbol references, or perform an approval-gated workspace rename. Paths stay inside the project. Diagnostics and references are read-only. Before rename, collect references/read every affected file and pass their current content hashes in expected_files; an unlisted or stale file makes the whole rename fail without writing.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "operation": {
+          "type": "string",
+          "enum": [
+            "diagnostics",
+            "references",
+            "rename"
+          ],
+          "description": "Operation to perform."
+        },
+        "path": {
+          "type": "string",
+          "description": "Rust or C/C++ file relative to the project root."
+        },
+        "line": {
+          "type": "integer",
+          "description": "1-based line containing the symbol. Required for references and rename.",
+          "minimum": 1
+        },
+        "column": {
+          "type": "integer",
+          "description": "1-based Unicode-character column at the symbol. Required for references and rename.",
+          "minimum": 1
+        },
+        "new_name": {
+          "type": "string",
+          "description": "New symbol name. Required for rename; max 128 characters with no whitespace.",
+          "maxLength": 128
+        },
+        "expected_files": {
+          "type": "array",
+          "description": "For rename, every file the server may edit with its latest 8-hex content_hash from read/references.",
+          "minItems": 1,
+          "maxItems": 20,
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "Project-relative file path."
+              },
+              "content_hash": {
+                "type": "string",
+                "description": "Current 8-hex whole-file hash.",
+                "pattern": "^[0-9a-f]{8}$"
+              }
+            },
+            "required": [
+              "path",
+              "content_hash"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "include_declaration": {
+          "type": "boolean",
+          "description": "Include the declaration in references. Default true."
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "description": "Whole-call language-server deadline. Default 20, max 60.",
+          "minimum": 1,
+          "maximum": 60
+        }
+      },
+      "required": [
+        "operation",
+        "path"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

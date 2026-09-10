@@ -112,6 +112,28 @@ TOOLS = {
             "max_matches": I("Refuse instead of rewriting if the pattern matches more times than this. Default 20, max 200.", minimum=1, maximum=200),
         }, ["path", "content_hash", "pattern", "rewrite"]),
     ),
+    "lsp": (
+        "Ask a local language server for diagnostics or symbol references, or perform an approval-gated workspace rename. Paths stay inside the project. Diagnostics and references are read-only. Before rename, collect references/read every affected file and pass their current content hashes in expected_files; an unlisted or stale file makes the whole rename fail without writing.",
+        obj({
+            "operation": {"type": "string", "enum": ["diagnostics", "references", "rename"], "description": "Operation to perform."},
+            "path": S("Rust or C/C++ file relative to the project root."),
+            "line": I("1-based line containing the symbol. Required for references and rename.", minimum=1),
+            "column": I("1-based Unicode-character column at the symbol. Required for references and rename.", minimum=1),
+            "new_name": S("New symbol name. Required for rename; max 128 characters with no whitespace.", maxLength=128),
+            "expected_files": {
+                "type": "array",
+                "description": "For rename, every file the server may edit with its latest 8-hex content_hash from read/references.",
+                "minItems": 1,
+                "maxItems": 20,
+                "items": obj({
+                    "path": S("Project-relative file path."),
+                    "content_hash": S("Current 8-hex whole-file hash.", pattern="^[0-9a-f]{8}$"),
+                }, ["path", "content_hash"]),
+            },
+            "include_declaration": B("Include the declaration in references. Default true."),
+            "timeout_seconds": I("Whole-call language-server deadline. Default 20, max 60.", minimum=1, maximum=60),
+        }, ["operation", "path"]),
+    ),
 }
 
 

@@ -18,6 +18,15 @@ Suggested first message to an AI continuing this work:
 
 ---
 
+## 2026-09-10 · AI session (Notion AI via Local) · P6-T02 LSP diagnostics, references and rename
+
+- **Delivered**: `lsp` is the twelfth registered tool. It selects `rust-analyzer` or `clangd` from the target extension, runs one fresh bounded stdio JSON-RPC session, converts 1-based Unicode positions to LSP UTF-16 positions, and returns capped diagnostics or reference locations with current whole-file hashes.
+- **Approval-safe rename**: only `operation=rename` is side-effecting per call. The model supplies current hashes for every possible file; planning emits a capped combined multi-file diff while disk and `/changes` stay untouched, and the approved call starts a new server and rechecks all hashes before any write.
+- **Bounded and recoverable**: 4 MiB frames, 2 MiB files, 20 files, 200 edits, 100 diagnostics/references, a 20-second default / 60-second maximum deadline, no model-controlled process command, no outside-root/non-file/new/resource paths, no overlapping edits, and rollback of earlier atomic writes if a later write fails. Each successful file becomes its own ordinary durable artifact.
+- **Integration and guidance**: the schema generator, registry/order assertion, main-agent prompt and tool contract now include `lsp`. A deterministic fake stdio server drives the real HTTP fixture: read-only diagnostics/references bypass approval, and a reviewed two-file rename produces two applied/revertable change rows and two activity events.
+- **Verification**: focused LSP suite 7/7, schema validation, Python compilation, direct HTTP integration, Clippy/build and `git diff --check` passed. Final release gate exited 0: 143 Rust tests, migrations 001→004, 12 tool schemas, 53 Python contracts and both mock-provider HTTP suites. Browser suites were not run because no UI changed.
+- **Open**: the active Rust toolchain has only a `rust-analyzer` shim and reports the component missing, so live Rust calls currently return actionable `lsp_unavailable`; deterministic coverage requires no machine server and `/usr/bin/clangd` is available. Next is P6-T03 (`browser` via CDP).
+
 ## 2026-09-10 · AI session (Notion AI via Local) · P6-T01 ast_edit via ast-grep
 
 - **Delivered**: `ast_edit` is the eleventh registered tool. It structurally rewrites every matching site in one existing Rust file with in-process ast-grep, then uses the same diff, atomic-write, diagnostics and durable change-artifact path as `edit`.

@@ -11,6 +11,7 @@ pub mod fs_tools;
 pub mod textdiff;
 pub mod edit_tools;
 pub mod ast_edit_tool;
+pub mod lsp_tool;
 pub mod bash_tool;
 pub mod meta_tools;
 pub mod skill_tool;
@@ -136,6 +137,9 @@ pub trait Tool: Send + Sync {
     fn name(&self) -> &'static str;
     fn schema(&self) -> &'static str;
     fn side_effecting(&self) -> bool;
+    /// Mixed tools keep their capability-level classification above, then override this for
+    /// per-call approval routing. Existing tools inherit the old all-or-nothing behavior.
+    fn side_effecting_for(&self, args: &Value) -> bool { let _ = args; self.side_effecting() }
     /// Human summary of a call; also used as the permission prompt. Never model text.
     fn summary(&self, args: &Value) -> String;
     /// Extra permission payload for the UI (diff preview, command). Default: the args.
@@ -154,6 +158,7 @@ impl Registry {
         Self { tools: vec![
             Box::new(fs_tools::Read), Box::new(fs_tools::Grep), Box::new(fs_tools::Glob),
             Box::new(edit_tools::Edit), Box::new(edit_tools::Write), Box::new(ast_edit_tool::AstEdit),
+            Box::new(lsp_tool::Lsp),
             Box::new(bash_tool::Bash),
             Box::new(meta_tools::Think), Box::new(meta_tools::TodoWrite),
             Box::new(skill_tool::Skill),
@@ -180,7 +185,7 @@ impl Registry {
     }
     /// Decide whether a call needs a human approval given the scope mode.
     pub fn requires_permission(&self, tool: &dyn Tool, args: &Value, mode: PermissionMode) -> bool {
-        if !tool.side_effecting() { return false; }
+        if !tool.side_effecting_for(args) { return false; }
         match (tool.name(), mode) {
             (_, PermissionMode::Ask) => true,
             ("bash", PermissionMode::AutoEdit) => true,

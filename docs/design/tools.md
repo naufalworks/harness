@@ -10,12 +10,12 @@ OpenClaude (read/grep/glob/edit/bash core set).
 ```rust
 pub struct ToolCtx { root: PathBuf, scope: String, request_id: String, step_id: String, store: DbStore, diagnostics_cmd: Option<String> }
 pub struct ToolResult { content: String, bytes: usize, truncated: bool, status: ToolStatus /* Complete|Failed */, summary: String, artifacts: Vec<Artifact> }
-pub trait Tool { fn name(&self)->&'static str; fn schema(&self)->&'static Value; fn side_effecting(&self)->bool; fn summary(&self, args:&Value)->String; fn run(&self, ctx:&ToolCtx, args:Value)->Result<ToolResult>; }
+pub trait Tool { fn name(&self)->&'static str; fn schema(&self)->&'static Value; fn side_effecting(&self)->bool; fn side_effecting_for(&self, args:&Value)->bool; fn summary(&self, args:&Value)->String; fn run(&self, ctx:&ToolCtx, args:Value)->Result<ToolResult>; }
 ```
 
 `ToolResult::finish()` applies `safety::redact`, caps content to 32 KB (24 KB head + `…[N bytes omitted]…` + 8 KB tail), sets `bytes`/`truncated`. Every tool returns through it. Errors are results too: `{ "error": "<code>", "detail": "<human text>" }` with `status=Failed`, so the model can recover.
 
-Error codes: `invalid_arguments`, `path_denied`, `not_found`, `is_directory`, `binary_file`, `too_large`, `stale_anchor`, `ambiguous_match`, `no_match`, `exists`, `timeout`, `denied`, `budget`.
+Error codes: `invalid_arguments`, `path_denied`, `not_found`, `is_directory`, `binary_file`, `too_large`, `stale_anchor`, `ambiguous_match`, `no_match`, `exists`, `timeout`, `denied`, `budget`, `lsp_unavailable`, `lsp_protocol`, `unsupported_edit`.
 
 ## Path rules
 
@@ -84,6 +84,17 @@ Args: `{ path: string, content_hash: string, pattern: string, rewrite: string, m
 - Every non-overlapping match in the file is rewritten together. The resulting text joins `edit`'s existing `describe`/`apply` path: one unified diff, before/after hashes and +/− counts in the permission payload while the file is still unchanged; after approval `run` checks the hash again, writes atomically, runs `diagnostics_cmd`, and returns the same `Artifact::FileChange` that becomes an applied, revertable `file_changes` row.
 - Output summary: `rewrote <path> (+A −B)`, followed by fresh line hashes for the changed span and diagnostics when configured. `auto_edit` and `auto_all` treat it like `edit`; `ask` requires approval.
 
+## lsp
+
+Args: `{ operation: "diagnostics"|"references"|"rename", path: string, line?: int, column?: int, new_name?: string, expected_files?: [{path, content_hash}], include_declaration?: bool, timeout_seconds?: int (default 20, max 60) }`.
+
+- `path` selects a fixed server from its extension: `.rs` uses `rust-analyzer`; C/C++ sources and headers use `clangd`. The model cannot supply a command. Every call starts a fresh stdio server in the project root, speaks bounded JSON-RPC/LSP, clears its environment to `PATH HOME LANG LC_ALL TERM` plus `CARGO_NET_OFFLINE=true`, and shuts it down. A missing or crashed server is `lsp_unavailable`; malformed or oversized protocol data is `lsp_protocol`.
+- Input `line` and `column` are 1-based Unicode-character positions. The tool validates them against the current file and converts to LSP's zero-based UTF-16 positions. `references` and `rename` require both; diagnostics needs only `path`.
+- `diagnostics` returns at most 100 sorted diagnostics as `path:line:column severity [code] message`. `references` returns at most 100 in-root locations grouped by file with the current 8-hex `content_hash` for every listed file. Outside-root or denied locations are omitted and counted. Neither operation enters the permission gate.
+- `rename` also requires `new_name` and `expected_files` (at most 20 path/hash pairs, including the target) copied from current `read`/`references` results. The workspace edit may touch at most 20 existing in-root text files and 200 non-overlapping edits. Resource create/rename/delete operations, non-file URIs, new files, denied paths, oversized files, unlisted edited files and hash mismatches are refused before writing.
+- A rename permission contains file counts, total +/− counts, before/after hashes and one combined diff capped at 64 KiB while disk and `/changes` stay untouched. After approval the server is queried again and expected hashes are rechecked. All output files are validated before the first write, each lands through the existing atomic helper, and an intermediate failure rolls back prior writes. Success returns one ordinary `Artifact::FileChange` per file and runs `diagnostics_cmd` once.
+- `Tool::side_effecting_for(args)` defaults to `side_effecting()`; the registry uses it for approval routing. `lsp` reports that it is capable of side effects, but returns true per call only for `operation=rename`. In `ask` mode rename asks, while `auto_edit` and `auto_all` treat it like an edit.
+
 ## bash
 
 Args: `{ command: string, timeout_seconds?: int (default 120, max 600), background?: bool, description: string (≤ 80 chars, shown to the user) }`
@@ -127,4 +138,4 @@ Args: `{ description?: string (≤ 80 chars), prompt: string (≤ 2000 chars) }`
 
 ## Later tools (contracts to be written when scheduled)
 
-`web_fetch` (P5, opt-in per scope). `lsp`, `browser` (P6).
+`web_fetch` (P5, opt-in per scope). `browser` (P6).
