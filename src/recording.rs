@@ -50,6 +50,10 @@ pub fn recover(c: &mut Connection) -> Result<()> {
     tx.execute(agentic::RECOVER_PERMISSIONS, [&stamp])?;
     tx.execute(agentic::RECOVER_ACTIVITY, [&stamp])?;
     tx.execute(sql::RECOVER, [&stamp])?;
+    tx.execute(
+        "INSERT INTO generation_events(request_id,session_id,state,content,error_code,created_at) SELECT request_id,session_id,'interrupted','', 'process_restarted', ?1 FROM chat_receipts WHERE state='interrupted' AND error_code='process_restarted'",
+        [&stamp],
+    )?;
     tx.execute(sql::RECOVER_MESSAGES, [])?;
     tx.execute(
         "UPDATE jobs SET status='pending' WHERE status='running'",
@@ -225,6 +229,10 @@ impl DbStore {
             if tx.execute(sql::FAIL, params![request, code, stamp])? == 1 {
                 tx.execute(sql::FAIL_MESSAGE, [&request])?;
                 tx.execute(sql::EVENT, params![request, "generation_failed", stamp])?;
+                tx.execute(
+                    "INSERT INTO generation_events(request_id,session_id,state,content,error_code,created_at) SELECT request_id,session_id,'failed','',?2,?3 FROM chat_receipts WHERE request_id=?1",
+                    params![request, code, stamp],
+                )?;
                 // Every failure path, including the worker's panic guard, lands in the feed.
                 let session: Option<String> = tx
                     .query_row(agentic::SESSION_OF_REQUEST, [&request], |r| r.get(0))
