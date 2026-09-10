@@ -8,7 +8,6 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{collections::HashSet, time::Duration};
-use tokio::sync::mpsc;
 
 const MAX_PROVIDER_BODY: usize = 1_048_576;
 const MAX_PROVIDER_TEXT: usize = 131_072;
@@ -111,87 +110,6 @@ impl GenerationSink for BufferedGeneration {
     }
 }
 
-/// Async bridge used by streaming callers that need durable generation events.
-pub struct GenerationEventWriter {
-    store: DbStore,
-    request_id: String,
-    session_id: String,
-}
-
-// Streaming persistence is layered above the provider callback boundary.
-
-/// Bridge between synchronous provider callbacks and async generation persistence.
-pub struct ChannelGenerationSink {
-    sender: mpsc::UnboundedSender<String>,
-    failed: Option<String>,
-}
-
-impl ChannelGenerationSink {
-    pub fn new(sender: mpsc::UnboundedSender<String>) -> Self {
-        Self { sender, failed: None }
-    }
-
-    pub fn failed(&self) -> Option<&str> {
-        self.failed.as_deref()
-    }
-}
-
-impl GenerationSink for ChannelGenerationSink {
-    fn delta(&mut self, text: &str) {
-        let _ = self.sender.send(text.to_string());
-    }
-
-    fn complete(&mut self, _usage: &ModelUsage) {}
-
-    fn fail(&mut self, error_code: &str) {
-        self.failed = Some(error_code.to_string());
-    }
-}
-
-/// Sink that keeps the final answer while forwarding chunks to durable persistence.
-pub struct PersistingGenerationSink {
-    pub buffered: BufferedGeneration,
-    sender: mpsc::UnboundedSender<String>,
-}
-
-impl PersistingGenerationSink {
-    pub fn new(sender: mpsc::UnboundedSender<String>) -> Self {
-        Self { buffered: BufferedGeneration::default(), sender }
-    }
-}
-
-impl GenerationSink for PersistingGenerationSink {
-    fn delta(&mut self, text: &str) {
-        self.buffered.delta(text);
-        let _ = self.sender.send(text.to_string());
-    }
-
-    fn complete(&mut self, usage: &ModelUsage) {
-        self.buffered.complete(usage);
-    }
-
-    fn fail(&mut self, error_code: &str) {
-        self.buffered.fail(error_code);
-    }
-}
-
-impl GenerationEventWriter {
-    pub fn new(store: DbStore, request_id: String, session_id: String) -> Self {
-        Self { store, request_id, session_id }
-    }
-
-    pub async fn append_chunk(&self, content: String) -> Result<i64> {
-        self.store
-            .append_generation(self.request_id.clone(), self.session_id.clone(), "chunk".into(), content, None)
-            .await
-    }
-
-    pub async fn complete(&self) -> Result<i64> {
-        self.store
-            .append_generation(self.request_id.clone(), self.session_id.clone(), "completed".into(), String::new(), None)
-            .await
-    }
-}
 
 #[derive(Deserialize)]
 struct Completion {
@@ -264,13 +182,24 @@ impl MemoryAgents {
         Ok(Self::decode_stream_delta(&frame).map(str::to_string))
     }
 
-    pub(crate) fn parse_sse_event(buffer: &mut String) -> Option<String> {
-        let boundary = buffer.find("\n\n")?;
-        let event = buffer[..boundary].to_string();
-        buffer.drain(..boundary + 2);
-        event.lines()
-            .find_map(|line| line.strip_prefix("data:").map(str::trim))
-            .map(str::to_string)
+    pub(crate) fn parse_sse_event(buffer: &mut Vec<u8>) -> Result<Option<String>> {
+        loop {
+            let lf = buffer.windows(2).position(|w| w == b"\n\n").map(|p| (p, 2));
+            let crlf = buffer.windows(4).position(|w| w == b"\r\n\r\n").map(|p| (p, 4));
+            let Some((end, delimiter)) = lf.into_iter().chain(crlf).min_by_key(|p| p.0) else {
+                return Ok(None);
+            };
+            // Decode complete events, never arbitrary network chunks.
+            let event = std::str::from_utf8(&buffer[..end]).context("invalid stream UTF-8")?;
+            let data = event.lines().filter_map(|line| {
+                line.strip_prefix("data:").map(|v| v.strip_prefix(' ').unwrap_or(v))
+            }).collect::<Vec<_>>();
+            let data = if data.is_empty() { None } else { Some(data.join("\n")) };
+            buffer.drain(..end + delimiter);
+            if data.is_some() {
+                return Ok(data);
+            }
+        }
     }
 
     pub(crate) async fn consume_stream_response<S: GenerationSink>(
@@ -278,24 +207,66 @@ impl MemoryAgents {
         mut response: reqwest::Response,
         sink: &mut S,
     ) -> Result<()> {
-        let mut buffer = String::new();
+        if !response.status().is_success() {
+            sink.fail("provider_http_error");
+            bail!("provider returned HTTP {}", response.status().as_u16());
+        }
+        let mut buffer = Vec::new();
+        let mut text = String::new();
+        let mut usage = ModelUsage::default();
+        let mut received = 0usize;
         while let Some(chunk) = response.chunk().await? {
-            buffer.push_str(&String::from_utf8_lossy(&chunk));
-            while let Some(event) = Self::parse_sse_event(&mut buffer) {
-                if event == "[DONE]" {
+            received = received.saturating_add(chunk.len());
+            if received > MAX_PROVIDER_BODY {
+                bail!("provider response exceeds limit");
+            }
+            buffer.extend_from_slice(&chunk);
+            while let Some(event) = Self::parse_sse_event(&mut buffer)? {
+                if event.trim() == "[DONE]" {
+                    if text.trim().is_empty() {
+                        bail!("provider returned no text");
+                    }
+                    // A later delta can identify an earlier prefix as a sensitive line or
+                    // private-key block. Whole-answer buffering preserves redact's boundary.
+                    sink.delta(&safety::redact(&text));
+                    sink.complete(&usage);
                     return Ok(());
                 }
-                match Self::parse_stream_frame(&event) {
-                    Ok(Some(delta)) => sink.delta(&delta),
-                    Ok(None) => return Ok(()),
-                    Err(error) => {
-                        sink.fail("invalid_stream_frame");
-                        return Err(error);
+                let frame: Value = serde_json::from_str(&event).context("invalid provider stream frame")?;
+                if frame.get("error").is_some() {
+                    bail!("provider stream reported an error");
+                }
+                let choices = frame.get("choices").and_then(Value::as_array).context("invalid stream choices")?;
+                if let Some(choice) = choices.first() {
+                    let delta = choice.get("delta").context("invalid stream delta")?;
+                    if delta.get("tool_calls").is_some() || delta.get("function_call").is_some() {
+                        bail!("tool calls are not supported by this text-only adapter");
                     }
+                    if let Some(content) = delta.get("content") {
+                        if !content.is_null() && !content.is_string() {
+                            bail!("invalid stream content");
+                        }
+                    }
+                    if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
+                        if reason != "stop" {
+                            bail!("provider stream did not complete normally");
+                        }
+                    }
+                }
+                if let Some(value) = frame.get("usage").filter(|v| !v.is_null()) {
+                    let parsed: UsageWire = serde_json::from_value(value.clone()).context("invalid stream usage")?;
+                    usage = ModelUsage { prompt_tokens: parsed.prompt_tokens, completion_tokens: parsed.completion_tokens };
+                }
+                if let Some(delta) = Self::parse_stream_frame(&event)? {
+                    if text.len().saturating_add(delta.len()) > MAX_PROVIDER_TEXT {
+                        bail!("provider text exceeds limit");
+                    }
+                    text.push_str(&delta);
                 }
             }
         }
-        Ok(())
+        sink.fail("incomplete_stream");
+        bail!("provider stream ended before DONE")
     }
 
     pub async fn list_models(&self) -> Result<Value> {
@@ -356,6 +327,9 @@ impl MemoryAgents {
         messages: Vec<Value>,
         sink: &mut S,
     ) -> Result<()> {
+        if model.trim().is_empty() || model.len() > 128 || model.chars().any(char::is_control) {
+            bail!("invalid model identifier");
+        }
         let request = completion_stream_request(model, messages);
         let response = self
             .http
@@ -375,9 +349,12 @@ impl MemoryAgents {
                 .context("invalid completion shape")?;
             let choice = body.choices.into_iter().next().context("provider returned no choices")?;
             let turn = decode_model_turn(choice.message, body.usage)?;
-            if let Some(text) = turn.text {
-                sink.delta(&text);
+            if !turn.tool_calls.is_empty() {
+                bail!("tool calls are not supported by this text-only adapter");
             }
+            let text = turn.text.filter(|v| !v.trim().is_empty()).context("provider returned no text")?;
+            sink.delta(&safety::redact(&text));
+            sink.complete(&turn.usage);
             return Ok(());
         }
         self.consume_stream_response(response, sink).await
@@ -691,6 +668,83 @@ mod provider_tests {
         assert_eq!(MemoryAgents::parse_stream_frame("[DONE]").unwrap(), None);
     }
 
+    #[tokio::test]
+    async fn streaming_role_usage_and_comments_do_not_end_the_answer() {
+        let body = concat!(
+            "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n",
+            ": heartbeat\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n",
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":1}}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let response = axum::http::Response::builder().body(body.to_string()).unwrap().into();
+        let agents = MemoryAgents::new("http://127.0.0.1", "test", "test").unwrap();
+        let mut sink = BufferedGeneration::default();
+        agents.consume_stream_response(response, &mut sink).await.unwrap();
+        assert_eq!(sink.text, "hello");
+        assert_eq!(sink.usage.unwrap().completion_tokens, Some(1));
+    }
+
+    #[tokio::test]
+    async fn streaming_crlf_and_multiline_data_are_supported() {
+        let body = "data: {\"choices\":\r\ndata: [{\"delta\":{\"content\":\"café\"}}]}\r\n\r\ndata: [DONE]\r\n\r\n";
+        let response = axum::http::Response::builder().body(body.to_string()).unwrap().into();
+        let agents = MemoryAgents::new("http://127.0.0.1", "test", "test").unwrap();
+        let mut sink = BufferedGeneration::default();
+        agents.consume_stream_response(response, &mut sink).await.unwrap();
+        assert_eq!(sink.text, "café");
+    }
+
+    #[tokio::test]
+    async fn streaming_incomplete_and_error_responses_never_publish_text() {
+        for (status, body) in [
+            (200, "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n"),
+            (200, "data: {\"error\":{\"message\":\"failed\"}}\n\n"),
+            (500, "data: {\"choices\":[{\"delta\":{\"content\":\"error body\"}}]}\n\ndata: [DONE]\n\n"),
+        ] {
+            let response = axum::http::Response::builder().status(status).body(body.to_string()).unwrap().into();
+            let agents = MemoryAgents::new("http://127.0.0.1", "test", "test").unwrap();
+            let mut sink = BufferedGeneration::default();
+            assert!(agents.consume_stream_response(response, &mut sink).await.is_err());
+            assert!(sink.text.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn streaming_split_secret_is_redacted_before_sink_delivery() {
+        let body = "data: {\"choices\":[{\"delta\":{\"content\":\"pass\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"word=hidden\"}}]}\n\ndata: [DONE]\n\n";
+        let response = axum::http::Response::builder().body(body.to_string()).unwrap().into();
+        let agents = MemoryAgents::new("http://127.0.0.1", "test", "test").unwrap();
+        let mut sink = BufferedGeneration::default();
+        agents.consume_stream_response(response, &mut sink).await.unwrap();
+        assert_eq!(sink.text, safety::redact("password=hidden"));
+    }
+
+    #[test]
+    fn streaming_utf8_survives_every_byte_boundary() {
+        let frame = "data: café 😀\r\n\r\n".as_bytes();
+        for split in 0..frame.len() {
+            let mut buffer = frame[..split].to_vec();
+            assert_eq!(MemoryAgents::parse_sse_event(&mut buffer).unwrap(), None);
+            buffer.extend_from_slice(&frame[split..]);
+            assert_eq!(MemoryAgents::parse_sse_event(&mut buffer).unwrap(), Some("café 😀".into()));
+            assert!(buffer.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn streaming_limits_and_invalid_utf8_fail_without_delivery() {
+        let oversized = format!("data: {}\n\ndata: [DONE]\n\n", json!({"choices":[{"delta":{"content":"a".repeat(MAX_PROVIDER_TEXT + 1)}}]}));
+        for bytes in [oversized.into_bytes(), vec![b'a'; MAX_PROVIDER_BODY + 1], b"data: \xff\n\n".to_vec()] {
+            let response = axum::http::Response::builder().body(bytes).unwrap().into();
+            let agents = MemoryAgents::new("http://127.0.0.1", "test", "test").unwrap();
+            let mut sink = BufferedGeneration::default();
+            assert!(agents.consume_stream_response(response, &mut sink).await.is_err());
+            assert!(sink.text.is_empty());
+        }
+    }
+
+    #[test]
     fn completion_request_includes_tools_and_auto_choice() {
         let tools = vec![json!({"type":"function","function":{"name":"read"}})];
         let request = completion_request(
@@ -711,12 +765,11 @@ mod provider_tests {
 
     #[test]
     fn provider_sse_events_wait_for_complete_frames() {
-        let mut buffer = "data: one\n".to_string();
-        assert_eq!(MemoryAgents::parse_sse_event(&mut buffer), None);
-        buffer.push_str("\ndata: two\n\n");
-        assert!(buffer.contains("data: two"));
-        assert_eq!(MemoryAgents::parse_sse_event(&mut buffer), Some("one".into()));
-        assert_eq!(MemoryAgents::parse_sse_event(&mut buffer), Some("two".into()));
+        let mut buffer = b"data: one\n".to_vec();
+        assert_eq!(MemoryAgents::parse_sse_event(&mut buffer).unwrap(), None);
+        buffer.extend_from_slice(b"\ndata: two\n\n");
+        assert_eq!(MemoryAgents::parse_sse_event(&mut buffer).unwrap(), Some("one".into()));
+        assert_eq!(MemoryAgents::parse_sse_event(&mut buffer).unwrap(), Some("two".into()));
     }
 
     #[test]

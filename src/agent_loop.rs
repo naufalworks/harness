@@ -9,7 +9,7 @@
 //!    drift apart.
 use crate::{
     agentic_sql as sql,
-    memory_agents::{self, GenerationEventWriter, MemoryAgents, ModelTurn, PersistingGenerationSink, ToolCall},
+    memory_agents::{self, MemoryAgents, ModelTurn, ToolCall},
     safety,
     storage::{now, uid, DbStore, ScopeConfig},
     subagent,
@@ -23,7 +23,6 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use tokio::sync::mpsc;
 
 /// How often the loop looks for a human decision on a pending approval.
 const PERMISSION_POLL: Duration = Duration::from_millis(500);
@@ -748,22 +747,16 @@ pub async fn run(turn: Turn<'_>) -> Result<Outcome> {
         }).await?;
 
         let replied = if tools.is_empty() {
-            let (sender, mut receiver) = mpsc::unbounded_channel();
-            let mut sink = PersistingGenerationSink::new(sender);
-            let writer = GenerationEventWriter::new(ctx.store.clone(), ctx.request.clone(), ctx.session.clone());
-            let writer_task = tokio::spawn(async move {
-                while let Some(chunk) = receiver.recv().await {
-                    writer.append_chunk(chunk).await?;
-                }
-                Ok::<(), anyhow::Error>(())
-            });
-            let stream_result = ctx.agents.stream_turn(&ctx.model, messages.clone(), &mut sink).await;
-            let buffered = std::mem::take(&mut sink.buffered);
-            drop(sink);
-            let _ = writer_task.await;
-            match stream_result {
+            let mut sink = memory_agents::BufferedGeneration::default();
+            match ctx.agents.stream_turn(&ctx.model, messages.clone(), &mut sink).await {
                 Ok(()) => {
-                    Ok(ModelTurn { text: Some(buffered.text), tool_calls: Vec::new(), usage: buffered.usage.unwrap_or_default(), assistant_message: json!({"role":"assistant"}) })
+                    let text = sink.text;
+                    Ok(ModelTurn {
+                        assistant_message: json!({"role":"assistant","content":text}),
+                        text: Some(text),
+                        tool_calls: Vec::new(),
+                        usage: sink.usage.unwrap_or_default(),
+                    })
                 }
                 Err(error) => Err(error),
             }
@@ -2496,6 +2489,13 @@ mod tests {
             requests[0]["tools"].is_array() && requests[1]["tools"].is_null(),
             "the retry must drop the tools it was rejected for"
         );
+        let request_for_events = request.clone();
+        let chunks: Vec<String> = db.run(move |c| {
+            let mut stmt = c.prepare("SELECT content FROM generation_events WHERE request_id=?1 AND state='chunk' ORDER BY seq")?;
+            let rows = stmt.query_map([request_for_events], |r| r.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        }).await.unwrap();
+        assert_eq!(chunks, vec!["Answered from text alone."]);
         std::fs::remove_dir_all(root).ok();
     }
 

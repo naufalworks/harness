@@ -326,18 +326,38 @@ Each task has: `status`, `depends`, `design` (doc section), `files` (touched),
 - status: doing
 - depends: P6-T03
 - design: docs/ROADMAP.md#p4
-- files: src/streaming.rs, src/storage.rs, src/main.rs, static/app.js, migrations/*
+- files: src/memory_agents.rs, src/storage.rs, src/main.rs, static/app.js, migrations/*
 - done-when: Generation output can stream through an authenticated transport where every emitted event is persisted before becoming visible to the client. Events have stable ordering, resumable cursors, and explicit completed/interrupted/failed states.
-- verify: cargo test --locked streaming && python3 tests/test_streaming_contracts.py && bash scripts/verify_release.sh
+- verify: cargo test --locked streaming && bash scripts/verify_release.sh
 - note (started 2026-09-10): Existing `/activity/stream` provides durable agent activity replay. P7-T01 extends this pattern to generation output events persisted before client delivery.
 
 ### P7-T02 · Stream recovery and boundary safety
-- status: done
+- status: doing
 - depends: P7-T01
 - design: docs/ROADMAP.md#p4
-- files: src/streaming.rs, tests/*stream*
+- files: src/memory_agents.rs, tests/*stream*
 - done-when: Reconnects resume from the last durable cursor without duplicate generation. Split UTF-8 frames, provider failures, disconnects, and interrupted generations are handled without leaking unredacted partial secrets.
-- verify: cargo test --locked streaming && python3 tests/test_streaming_contracts.py
+- verify: cargo test --locked streaming
+
+- note (2026-09-10): Reopened after inspection. The inherited streaming module/test paths do not exist; verification now names executable Rust tests. Full P7 still needs incremental safe publication, transport/reconnect coverage, request identification in the session feed, and restart-event deduplication.
+
+### P7-T02a · Repair provider boundary and atomic publication
+- status: done
+- Goal: Restore trustworthy provider-stream ingestion and durable answer publication.
+- Objective: Preserve Unicode, reject incomplete/error responses, redact before publication, and publish one answer atomically.
+- Reason: New provider, transaction and duplicate-event regressions reproduced inherited failures.
+- Expected Result: One bounded redacted answer and completion event commit with the receipt, or none commit.
+- Success Criteria: Streaming regressions, fallback duplicate assertion, and release gate pass.
+- Priority: correctness/security, before frontend streaming.
+- Task ID: P7-T02a
+- Task Description: Repair provider parsing and remove duplicate asynchronous publication.
+- Expected Outcome: No split-secret delivery, corrupt UTF-8, early role-frame completion, duplicate answer, or premature completed event.
+- Research Needed: Inspect provider, redaction, generation writer, and recording transaction contracts.
+- Implementation Plan: Reproduce failures; use bounded byte framing and whole-answer redaction; publish inside complete_recording; verify and journal.
+- Validation Method: cargo test --locked streaming; cargo test --locked a_provider_without_tool_support; bash scripts/verify_release.sh; git diff --check.
+- Result: Eight focused streaming tests and the fallback duplicate assertion pass. Full release gate exits 0: 160 Rust tests, Clippy/build, 53 Python tests, both HTTP suites, and frontend syntax. git diff --check passes. Browser UI suites were not run; no UI changed.
+- Status: done
+- Decision: Buffer the bounded answer until DONE and redact as a whole. Safe incremental display remains pending.
 
 ### P7-T03 · Frontend durable stream integration
 - status: todo

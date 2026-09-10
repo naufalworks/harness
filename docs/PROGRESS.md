@@ -1,5 +1,15 @@
 # PROGRESS — journal
 
+## 2026-09-10 · Codex via @local · P7-T02a provider boundary repair
+
+- **Located/resumed**: `/root/development/harness`; clean inherited `main` at `227bd7e`; work is on `autonomous-development-streaming`.
+- **Root causes reproduced**: role-only deltas stopped consumption; CRLF/multiline data disappeared; arbitrary network chunks used lossy UTF-8; incomplete/error streams succeeded; split secrets reached the sink; the text fallback wrote its answer twice; completion events were outside the receipt transaction.
+- **Changes**: bounded byte-level SSE framing, strict UTF-8, content/body limits, role/comment/usage handling, explicit DONE and HTTP/error checks. Answers are buffered and redacted as a whole before sink delivery. Removed the unbounded asynchronous writer; one answer chunk and completed event now commit with the answer receipt. Restored the missing test attribute on the provider tool-choice contract.
+- **Decision**: whole-answer buffering is the smallest reversible safety repair. This does not deliver incremental display. P7-T01/P7-T02 remain open rather than inheriting an unsupported completion claim.
+- **Verification**: eight focused streaming tests and the fallback duplicate assertion pass. Final release gate exits 0: 160 Rust tests, Clippy/build, 53 Python tests, both HTTP integration suites, and frontend syntax. `git diff --check` passes. Existing warnings remain; browser suites were not run because no UI changed.
+- **Environment failures resolved**: Cargo was installed outside PATH. Installed missing Clippy/rustfmt and Node.js to run the existing release gate; no live application or database was started or modified by this task.
+- **Next**: generation transport/reconnect tests, request IDs in session generation rows, and restart-event deduplication; then safe incremental publication and P7-T03 frontend integration. Existing Python migration coverage stops at 004, while runtime migration 005 is exercised by the native DbStore tests.
+
 ## 2026-09-11 · AI session · P7-T02 runtime streaming integration
 
 - Added text-only provider streaming path through `stream_turn` and a persistence forwarding sink.

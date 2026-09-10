@@ -205,6 +205,12 @@ impl DbStore {
                     stamp
                 ],
             )?;
+            // Publish the single redacted answer and terminal event in the receipt transaction.
+            // A failed write rolls everything back; clients cannot observe premature completion.
+            tx.execute(
+                "INSERT INTO generation_events(request_id,session_id,state,content,error_code,created_at) VALUES(?1,?2,'chunk',?3,NULL,?4),(?1,?2,'completed','',NULL,?4)",
+                params![request, session, safety::redact(&answer), stamp],
+            )?;
             // No job insert here. A full/failed extraction queue cannot undo this answer.
             tx.commit()?;
             Ok(())
@@ -418,38 +424,6 @@ pub(crate) async fn generate(
             return store.fail_recording(turn.request, "provider_failed").await
         }
     };
-    // Persist the generation payload before the completed receipt becomes visible. The stream
-    // transport replays these durable rows instead of depending on an in-memory provider socket.
-    if store
-        .append_generation(
-            turn.request.clone(),
-            turn.session.clone(),
-            "chunk".into(),
-            answer.clone(),
-            None,
-        )
-        .await
-        .is_err()
-    {
-        return store
-            .fail_recording(turn.request, "generation_stream_save_failed")
-            .await;
-    }
-    if store
-        .append_generation(
-            turn.request.clone(),
-            turn.session.clone(),
-            "completed".into(),
-            "".into(),
-            None,
-        )
-        .await
-        .is_err()
-    {
-        return store
-            .fail_recording(turn.request, "generation_stream_save_failed")
-            .await;
-    }
     if store
         .complete_recording(turn.request.clone(), answer)
         .await

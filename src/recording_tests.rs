@@ -90,6 +90,30 @@ async fn full_memory_queue_does_not_rollback_answer() {
     assert_eq!(db.flush_recording_outbox().await.unwrap(), 0);
 }
 #[tokio::test]
+async fn streaming_completion_and_receipt_commit_together() {
+    let db = DbStore::init(":memory:").unwrap();
+    start(&db, "r", "s").await;
+    db.complete_recording("r".into(), "answer".into()).await.unwrap();
+    let events = db.generation_since("s".into(), 0).await.unwrap();
+    assert_eq!(events["events"][0]["content"], "answer");
+    assert_eq!(events["events"][1]["state"], "completed");
+    assert_eq!(events["events"].as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn streaming_event_failure_rolls_back_answer_and_receipt() {
+    let db = DbStore::init(":memory:").unwrap();
+    start(&db, "r", "s").await;
+    db.run(|c| {
+        c.execute_batch("CREATE TRIGGER reject_generation BEFORE INSERT ON generation_events BEGIN SELECT RAISE(ABORT, 'injected failure'); END;")?;
+        Ok(())
+    }).await.unwrap();
+    assert!(db.complete_recording("r".into(), "answer".into()).await.is_err());
+    assert_eq!(db.recording_receipt("r".into()).await.unwrap().unwrap()["state"], "generating");
+    assert_eq!(db.history("s".into(), None).await.unwrap()["messages"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn context_failure_never_completes_answer() {
     let db = DbStore::init(":memory:").unwrap();
     db.capture_chat(input("r", "s")).await.unwrap();
