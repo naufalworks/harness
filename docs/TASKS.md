@@ -320,6 +320,34 @@ Each task has: `status`, `depends`, `design` (doc section), `files` (touched),
 
 ---
 
+## P7 · Durable streaming continuation
+
+### P7-T01 · Persisted generation stream foundation
+- status: todo
+- depends: P6-T03
+- design: docs/ROADMAP.md#p4
+- files: src/streaming.rs, src/storage.rs, src/main.rs, static/app.js, migrations/*
+- done-when: Generation output can stream through an authenticated transport where every emitted event is persisted before becoming visible to the client. Events have stable ordering, resumable cursors, and explicit completed/interrupted/failed states.
+- verify: cargo test --locked streaming && python3 tests/test_streaming_contracts.py && bash scripts/verify_release.sh
+
+### P7-T02 · Stream recovery and boundary safety
+- status: todo
+- depends: P7-T01
+- design: docs/ROADMAP.md#p4
+- files: src/streaming.rs, tests/*stream*
+- done-when: Reconnects resume from the last durable cursor without duplicate generation. Split UTF-8 frames, provider failures, disconnects, and interrupted generations are handled without leaking unredacted partial secrets.
+- verify: cargo test --locked streaming && python3 tests/test_streaming_contracts.py
+
+### P7-T03 · Frontend durable stream integration
+- status: todo
+- depends: P7-T01
+- design: docs/ROADMAP.md#p4
+- files: static/app.js, static/*.css, src/main.rs
+- done-when: Chat UI consumes durable stream events instead of fake typing animation, preserves ordering after reconnect, and clearly distinguishes completed, interrupted, and failed responses.
+- verify: node --check static/app.js && bash scripts/verify_release.sh
+
+---
+
 ## Ideas parking lot (not scheduled)
 - Memory branches per project; memory rehearsal (retrieval diff before approval) — from ROADMAP P6.
 - Portable continuation packet export.
