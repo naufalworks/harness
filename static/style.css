@@ -95,6 +95,12 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere}
   background:var(--surface);border:1px solid var(--border);
   color:var(--text-2);font-size:12px;white-space:nowrap;
 }
+/* P5-T01: the verification badge is advisory. Colour only signals the recorded status; the
+   badge never grows past the rail, so long claim text stays in the title tooltip. */
+.verification-badge{max-width:100%;overflow:hidden;text-overflow:ellipsis}
+.verification-badge.verified{color:var(--green);border-color:var(--green);background:var(--green-soft)}
+.verification-badge.unverified{color:var(--orange);border-color:var(--orange);background:var(--orange-soft)}
+.verification-badge.skipped,.verification-badge.unavailable{color:var(--text-3)}
 #connection::before{content:'';width:7px;height:7px;border-radius:50%;background:var(--green);flex-shrink:0}
 .mark{
   width:40px;height:40px;border-radius:11px;
@@ -313,7 +319,7 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere}
 .agent-panel-head{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
 .agent-panel-head h2{font-size:15px;font-weight:650;margin-top:2px}
 .eyebrow{font-size:10.5px;letter-spacing:.8px;text-transform:uppercase;color:var(--text-3);margin:0}
-.head-actions{display:flex;align-items:center;gap:6px}
+.head-actions{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:6px;min-width:0}
 .subhead{display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-bottom:8px}
 .subhead strong{font-size:11.5px;text-transform:uppercase;letter-spacing:.6px;color:var(--text-3)}
 .plan-strip,.steps-panel{border-top:1px solid var(--border);padding-top:12px}

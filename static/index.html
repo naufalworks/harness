@@ -146,12 +146,14 @@
       <section id="view-settings" class="view pageview" hidden>
         <div class="pagecol">
           <h2>Project &amp; models</h2>
-          <p class="muted">The main model answers. The extraction model proposes memories. Recall combines local FTS5 and deterministic offline vectors—no network or extra recall model call.</p>
+          <p class="muted">The main model answers. The extraction model proposes memories. The verification model checks file and symbol claims against recorded tool evidence. Recall combines local FTS5 and deterministic offline vectors—no network or extra recall model call.</p>
           <form id="settingsform" class="panel">
             <label for="mainmodel">Main model</label>
             <input id="mainmodel" maxlength="128" placeholder="Use server default">
             <label for="extractmodel">Extraction model</label>
             <input id="extractmodel" maxlength="128" placeholder="Use server default">
+            <label for="verificationmodel">Verification model</label>
+            <input id="verificationmodel" maxlength="128" placeholder="Use main model">
             <button type="submit">Save models</button>
           </form>
           <form id="projectform" class="panel">
@@ -188,6 +190,7 @@
             <h2>Agent activity</h2>
           </div>
           <div class="head-actions">
+            <span id="verification-badge" class="badge verification-badge" hidden></span>
             <span id="agent-turn-status" class="badge">Saved</span>
             <button id="railclose" class="iconbtn" type="button" title="Close panel" aria-label="Close activity panel"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 3l10 10M13 3L3 13"/></svg></button>
           </div>

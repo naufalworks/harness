@@ -220,14 +220,27 @@ def main() -> None:
             happy_done = wait_receipt(happy["request_id"], "complete")
             assert "changed beta to gamma" in happy_done["response"]
             assert (root / "notes.md").read_text() == "alpha\ngamma\n"
-            happy_steps = call("/chat/requests/" + happy["request_id"] + "/steps")[1]["steps"]
+            happy_detail = call("/chat/requests/" + happy["request_id"] + "/steps")[1]
+            happy_steps = happy_detail["steps"]
             assert [(s["kind"], s["status"], s["tool_name"]) for s in happy_steps] == [
                 ("model_call", "complete", None), ("tool_call", "complete", "read"),
                 ("model_call", "complete", None), ("tool_call", "complete", "edit"),
                 ("model_call", "complete", None), ("tool_call", "complete", "bash"),
-                ("model_call", "complete", None),
+                ("model_call", "complete", None), ("verification", "complete", None),
             ], happy_steps
+            # P5-T01: the answered turn also carries an advisory verification projection. It cites
+            # step ids from this turn only, and the verifier itself is a separate text-only call.
+            happy_verification = happy_detail["verification"]
+            assert happy_verification["status"] == "verified", happy_verification
+            assert happy_verification["unverified_claims"] == 0, happy_verification
+            assert happy_verification.get("error_code") is None, happy_verification
+            assert happy_verification["claims"][0]["evidence_step_ids"][0] in {s["id"] for s in happy_steps}
+            verifier_bodies = [item["body"] for item in provider.requests if item["scenario"] == "__verification__"]
+            assert verifier_bodies, "an answered turn must be audited"
+            assert all("tools" not in body for body in verifier_bodies), "the verifier gets no tools"
             happy_feed = call("/activity?session_id=" + happy["session_id"])[1]["events"]
+            happy_kinds = [event["kind"] for event in happy_feed]
+            assert happy_kinds.index("verification_started") < happy_kinds.index("verified") < happy_kinds.index("answer_saved"), happy_kinds
             assert any(event["kind"] == "file_changed" for event in happy_feed)
             assert any(event["kind"] == "tool_finished" and event["payload"].get("exit_code") == 0 for event in happy_feed)
             changes = call("/changes?request_id=" + happy["request_id"])[1]["changes"]

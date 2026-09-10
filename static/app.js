@@ -192,7 +192,7 @@ $('lock').addEventListener('click', () => {
   token = ''; epoch++; setBusy(false); pendingPrompt = null;
   $('workspace').hidden = true; $('auth').hidden = false; $('connection').textContent = 'Locked';
   for (const id of ['log','candidates','jobs','recalled','sessionlist']) $(id).replaceChildren();
-  $('modelnames').textContent = ''; $('stats').textContent = ''; $('mainmodel').value = ''; $('extractmodel').value = ''; $('prompt').value = ''; $('file').value = ''; $('consent').checked = false;
+  $('modelnames').textContent = ''; $('stats').textContent = ''; $('mainmodel').value = ''; $('extractmodel').value = ''; $('verificationmodel').value = ''; $('prompt').value = ''; $('file').value = ''; $('consent').checked = false;
   $('setup-banner').hidden = true; $('scopelist').replaceChildren();
   notice('Locked. Unsaved draft text was cleared; recorded work stays on the server.');
 });
@@ -274,20 +274,20 @@ $('importform').addEventListener('submit', async event => {
   try { const request = { name: file.name, content: await file.text(), scope }; if ($('format').value) request.format = $('format').value; const result = await api('/memory/ingest', request); notice(result.duplicate ? 'This source was already imported. No duplicate jobs were created.' : `Queued ${result.chunks_queued} chunks. ${result.warnings.join(' ')}`); await loadJobs(); await refreshStatus(); }
   catch (error) { notice(error.message, true); } finally { $('importbutton').disabled = false; }
 });
-$('settingsform').addEventListener('submit', async event => { event.preventDefault(); try { await api('/config', { main: $('mainmodel').value.trim(), extraction: $('extractmodel').value.trim() }); notice('Model settings saved.'); } catch (error) { notice(error.message, true); } });
+$('settingsform').addEventListener('submit', async event => { event.preventDefault(); try { await api('/config', { main: $('mainmodel').value.trim(), extraction: $('extractmodel').value.trim(), verification: $('verificationmodel').value.trim() }); notice('Model settings saved.'); } catch (error) { notice(error.message, true); } });
 $('loadmodels').addEventListener('click', async () => { try { const data = await api('/models'); $('modelnames').textContent = data.data.map(m => String(m.id)).join('\n'); } catch (error) { notice(error.message, true); } });
 $('refreshmemory').addEventListener('click', () => loadCandidates().catch(e => notice(e.message, true)));
 $('refreshjobs').addEventListener('click', () => loadJobs().catch(e => notice(e.message, true)));
 for (const tab of document.querySelectorAll('[data-view]')) tab.addEventListener('click', async () => {
   for (const t of document.querySelectorAll('[data-view]')) { const active = t === tab; t.classList.toggle('active', active); t.setAttribute('aria-pressed', String(active)); $(`view-${t.dataset.view}`).hidden = !active; }
-  try { if (tab.dataset.view === 'memory') await loadCandidates(); if (tab.dataset.view === 'imports') await loadJobs(); if (tab.dataset.view === 'settings') { const data = await api('/config'); $('mainmodel').value = data.main || ''; $('extractmodel').value = data.extraction || ''; } } catch (error) { notice(error.message, true); }
+  try { if (tab.dataset.view === 'memory') await loadCandidates(); if (tab.dataset.view === 'imports') await loadJobs(); if (tab.dataset.view === 'settings') { const data = await api('/config'); $('mainmodel').value = data.main || ''; $('extractmodel').value = data.extraction || ''; $('verificationmodel').value = data.verification || ''; } } catch (error) { notice(error.message, true); }
 });
 setInterval(() => { if (token && !document.hidden) { refreshStatus().catch(() => {}); refreshInlineSuggestions().catch(() => {}); } }, 5000);
 
 // P1-T13: the agent activity view reads the recorded rows; the durable receipt remains the
 // source of truth, while these read-only endpoints make the current turn visible between model
 // calls. No model/tool text is inserted as HTML.
-const agentState = { requestId: null, sessionId: null, scope: null, permission: null, busyDecision: false, steps: [], changes: [] };
+const agentState = { requestId: null, sessionId: null, scope: null, permission: null, busyDecision: false, steps: [], changes: [], verification: null };
 
 // P2-T01: the rail's transport is now the SSE feed instead of a 1 s clock. A frame only says
 // that a row was committed — the rail still re-reads the durable endpoints — so the socket can
@@ -375,6 +375,29 @@ function agentMeta(step) {
     if (!Number.isNaN(date.getTime())) return date.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
   }
   return step.status || '';
+}
+
+// P5-T01: the verifier is advisory, so the badge only ever reports what the persisted
+// verification step says. Claim and reason text comes from a model reading tool output, so it
+// is placed with textContent (via `node`) and a title attribute — never parsed as markup.
+function renderVerification(verification) {
+  const badge = $('verification-badge');
+  badge.replaceChildren();
+  badge.className = 'badge verification-badge';
+  badge.removeAttribute('title');
+  badge.hidden = true;
+  if (!verification || typeof verification !== 'object') return;
+  const status = ['verified', 'unverified', 'skipped', 'unavailable'].includes(verification.status) ? verification.status : 'unavailable';
+  const count = Number.isFinite(Number(verification.unverified_claims)) ? Number(verification.unverified_claims) : 0;
+  const labels = {verified:'Verified', unverified:`${count} unverified`, skipped:'Verification skipped', unavailable:'Verification unavailable'};
+  badge.classList.add(status);
+  badge.append(node('span', labels[status]));
+  const details = (Array.isArray(verification.claims) ? verification.claims : [])
+    .filter(claim => claim && claim.status === 'unverified')
+    .map(claim => `${String(claim.claim ?? 'Claim')} — ${String(claim.reason ?? 'no supporting evidence in this turn')}`);
+  if (Array.isArray(verification.skipped_diagnostics)) details.push(...verification.skipped_diagnostics.map(item => String(item)));
+  if (details.length) badge.title = details.join('\n');
+  badge.hidden = false;
 }
 
 function renderAgentSteps(steps) {
@@ -534,6 +557,8 @@ async function refreshAgentTurn(receipt) {
   // P2-T02: the turn record lives in the right rail; auto-open it on wide screens only.
   if (!window.matchMedia('(max-width: 1100px)').matches) $('rail').hidden = false;
   $('agent-turn-status').textContent = agentStatusLabel(receipt?.state);
+  agentState.verification = data[0].verification || null;
+  renderVerification(agentState.verification);
   agentState.steps = data[0].steps || [];
   renderAgentSteps(agentState.steps);
   renderAgentPlan(data[1]);
@@ -544,7 +569,7 @@ async function refreshAgentTurn(receipt) {
   $('context-tokens').textContent = tokens ? `${tokens.toLocaleString()} tokens so far` : 'meter lands in P3';
   const match = (data[2].permissions || []).find(item => item.request_id === requestId);
   renderAgentPermission(match || null);
-  if (!match && !agentState.steps.length && !(data[1].items || []).length && !agentState.changes.length) { $('agent-turn').hidden = true; $('rail').hidden = true; }
+  if (!match && !agentState.steps.length && !(data[1].items || []).length && !agentState.changes.length && !agentState.verification) { $('agent-turn').hidden = true; $('rail').hidden = true; }
 }
 
 async function decideAgentPermission(decision) {

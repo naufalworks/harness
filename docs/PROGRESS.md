@@ -18,6 +18,15 @@ Suggested first message to an AI continuing this work:
 
 ---
 
+## 2026-09-10 · AI session (Notion AI via Local) · P5-T01 verifier step
+
+- **Delivered**: Every text answer is now audited by a separate `verification` step that runs after the main model call and before `answer_saved`. The verifier sees the redacted answer and an evidence manifest of this request's durable tool steps only, and returns claims marked verified / unverified / skipped with the step ids they rest on.
+- **Advisory by construction**: the answer is written first and never rewritten. Strict JSON parsing rejects unknown fields, oversized reports and any "verified" claim citing a step outside the turn; a provider or parse failure records `verification_failed` / `unavailable` on the verification step alone. Input and projection are bounded (24 steps, 12,000 answer chars, 20 claims, 8 evidence ids, 10 diagnostics, 500 chars per projected field).
+- **UI**: a header badge derived only from the persisted step shows Verified, "N unverified", skipped or unavailable, with claim reasons in its tooltip; claim text is inserted as text, never markup. Settings gained a `verification` model role that falls back to the turn model and is cleared by lock.
+- **Fixture correction**: `tests/mock_provider.py` and `tests/integration_smoke.py` assumed the last provider call of a turn was the answer, which the audit call broke. Both now route marker-carrying calls to a verification reply; the release gate caught this, not the browser suites.
+- **Verification**: release gate passed (exit 0): 113 Rust tests, Clippy/build, migrations 001→004, 8 tool schemas, 52 Python contracts, and both mock-provider HTTP suites including new verification step, projection and event-order assertions. Browser suites run separately with a local Playwright and Chrome: 24 ambient-UI checks (3 new) and 15 recording checks. `git diff --check` clean.
+- **Open**: nothing blocking; next is P5-T02 (skills with progressive disclosure). Note that `scripts/verify_release.sh` still does not run the browser suites, so they must be run by hand.
+
 ## 2026-09-10 · AI session (Notion AI via Local) · P3-T02–P4-T04 context and ambient memory
 
 - **Delivered**: Tool-result compaction with a stable three-call boundary, unchanged-read references with full durable audit output, 70%-token turn compaction with exact receipts and review-only episodic candidates, and deterministic per-scope repository maps capped at 8 KiB.

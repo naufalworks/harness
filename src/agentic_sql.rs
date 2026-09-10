@@ -10,6 +10,7 @@ pub const STEP_BEGIN: &str = r#"INSERT INTO turn_steps(id,request_id,parent_step
 pub const STEP_FINISH: &str = r#"UPDATE turn_steps SET status=?2,output_json=?3,output_bytes=?4,truncated=?5,tokens_in=?6,tokens_out=?7,error_code=?8,finished_at=?9 WHERE id=?1 AND status='running'"#;
 pub const STEP_NEXT_SEQ: &str = r#"SELECT COALESCE(MAX(seq),-1)+1 FROM turn_steps WHERE request_id=?1"#;
 pub const STEPS_LIST: &str = r#"SELECT id,seq,kind,status,tool_name,tool_call_id,substr(input_json,1,2048),substr(output_json,1,2048),output_bytes,truncated,tokens_in,tokens_out,error_code,started_at,finished_at FROM turn_steps WHERE request_id=?1 ORDER BY seq"#;
+pub const VERIFICATION_LATEST: &str = r#"SELECT id,status,substr(output_json,1,32768),error_code,finished_at,length(COALESCE(output_json,''))>32768 FROM turn_steps WHERE request_id=?1 AND kind='verification' ORDER BY seq DESC LIMIT 1"#;
 
 pub const EVENT: &str = r#"INSERT INTO activity_events(request_id,session_id,step_id,kind,payload_json,created_at) VALUES(?1,?2,?3,?4,?5,?6)"#;
 pub const EVENTS_AFTER: &str = r#"SELECT seq,request_id,step_id,kind,payload_json,created_at FROM activity_events WHERE session_id=?1 AND seq>?2 ORDER BY seq LIMIT 200"#;

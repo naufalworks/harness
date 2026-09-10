@@ -6,7 +6,7 @@ const root=path.resolve(__dirname,'..');const out=process.env.QA_DIR || path.joi
  const browser=await chromium.launch({headless:true,executablePath:process.env.CHROMIUM_PATH||'/usr/local/bin/chromium',args:['--no-sandbox']});
  try{
   const page=await browser.newPage({viewport:{width:1120,height:900},colorScheme:'light'});const errors=[];page.on('pageerror',e=>errors.push(String(e)));
-  let importCandidate=true,inlineCandidate=true,inlineData=null,failConfirm=false,chatHistory=[],receipt=null,importCalls=0,retryCalls=0,reverts=0,editCalls=0;
+  let importCandidate=true,inlineCandidate=true,inlineData=null,failConfirm=false,chatHistory=[],receipt=null,importCalls=0,retryCalls=0,reverts=0,editCalls=0,savedConfig=null;
   const malicious='<img src=x onerror="window.INJECTED=1">';
   // P2-T03 fixtures: a hostile modify diff proves inert rendering; a create proves its distinct
   // undo result and user-facing copy rather than assuming it behaves like a modification.
@@ -14,6 +14,15 @@ const root=path.resolve(__dirname,'..');const out=process.env.QA_DIR || path.joi
    {id:'synthetic-change',step_id:'synthetic-step',path:'notes.md',action:'modify',applied:true,reverted_at:null,revertable:true,revert_note:null,created_at:'2026-09-09T05:41:00Z',diff:'--- a/notes.md\n+++ b/notes.md\n@@ -1,3 +1,3 @@\n keep\n-beta '+malicious+'\n+BETA\n'},
    {id:'synthetic-create',step_id:'synthetic-step',path:'draft.md',action:'create',applied:true,reverted_at:null,revertable:true,revert_note:null,created_at:'2026-09-09T05:41:01Z',diff:'--- a/draft.md\n+++ b/draft.md\n@@ -1,0 +1,1 @@\n+first draft\n'}
   ];
+  // P5-T01 fixtures: the verdict is advisory, and its claim text is written by a model that read
+  // tool output, so hostile text must stay inert in the badge and in its tooltip.
+  const agentSteps=[
+   {id:'synthetic-step',seq:0,kind:'model_call',status:'complete',tool_name:null,tool_call_id:null,summary:null,input_preview:null,output_preview:null,previews_capped:false,output_bytes:0,truncated:false,tokens_in:11,tokens_out:7,error_code:null,started_at:'2026-09-09T05:41:00Z',finished_at:'2026-09-09T05:41:01Z'},
+   {id:'synthetic-verify',seq:1,kind:'verification',status:'complete',tool_name:null,tool_call_id:null,summary:null,input_preview:null,output_preview:null,previews_capped:false,output_bytes:0,truncated:false,tokens_in:null,tokens_out:null,error_code:null,started_at:'2026-09-09T05:41:02Z',finished_at:'2026-09-09T05:41:03Z'}
+  ];
+  const verification={status:'unverified',unverified_claims:1,step_id:'synthetic-verify',step_status:'complete',model:'synthetic-verifier',error_code:null,projection_capped:false,
+   claims:[{claim:'The suite passes. '+malicious,status:'unverified',evidence_step_ids:[],reason:'No recorded step ran the suite. '+malicious}],
+   skipped_diagnostics:['no test command ran in this turn '+malicious]};
   const data={id:'synthetic-proposal',scope:'global',key:'preferred_language',value:'Rust for local tools. '+malicious,old_value:'Python for prototypes.',category:'preference',expected_revision:1,request_id:null,priority:'normal',evidence:{quote:'I prefer Rust for local tools.'}};
   await page.route('http://127.0.0.1:8080/**',async route=>{
    const req=route.request();const u=new URL(req.url());const p=u.pathname;
@@ -25,6 +34,7 @@ const root=path.resolve(__dirname,'..');const out=process.env.QA_DIR || path.joi
    else if(p==='/scopes')result={scopes:[{scope:'global',root_path:null,permission_mode:'ask'}]};
    else if(p==='/sessions')result={sessions:[]};
    else if(p.startsWith('/sessions/'))result={scope:'global',messages:chatHistory,has_more:false};
+   else if(p.startsWith('/chat/requests/')&&p.endsWith('/steps'))result={steps:agentSteps,verification};
    else if(p.startsWith('/chat/requests/'))result=receipt;
    else if(p==='/memory/candidates'){
     const imports=u.searchParams.get('imports_only')==='true',chat=u.searchParams.get('chat_only')==='true';
@@ -40,7 +50,10 @@ const root=path.resolve(__dirname,'..');const out=process.env.QA_DIR || path.joi
    }else if(p==='/jobs')result={jobs:[{id:'failed-job',status:retryCalls?'pending':'failed',scope:'global',attempts:3,error:'Extraction failed; check provider configuration.'}]};
    else if(p==='/jobs/failed-job/retry'){retryCalls++;result={status:'queued'};}
    else if(p==='/memory/ingest'){importCalls++;result={duplicate:false,chunks_queued:2,warnings:[]};}
-   else if(p==='/config')result=req.method()==='GET'?{main:'synthetic-main',extraction:'synthetic-small'}:{status:'saved'};
+   else if(p==='/config'){
+    if(req.method()==='GET')result={main:'synthetic-main',extraction:'synthetic-small',verification:'synthetic-verifier'};
+    else {savedConfig=JSON.parse(req.postData());result={status:'saved'};}
+   }
    else if(p==='/models')result={data:[{id:malicious},{id:'synthetic-main'}]};
    else if(p==='/permissions')result={permissions:[]};
    else if(p==='/changes')result={changes};
@@ -69,6 +82,16 @@ const root=path.resolve(__dirname,'..');const out=process.env.QA_DIR || path.joi
   assert.strictEqual(await page.locator('#changes-list img').count(),0);assert.strictEqual(await page.evaluate(()=>window.INJECTED),undefined);
   const modifyCard=page.locator('#changes-list .diff-card').first();
   assert.deepStrictEqual([await modifyCard.locator('.diff-line.add').count(),await modifyCard.locator('.diff-line.del').count(),await modifyCard.locator('.diff-line.meta').count()],[1,1,3]);
+  // P5-T01: the advisory verdict reaches the turn header, and its hostile claim text is quoted as
+  // inert text in the tooltip rather than parsed as markup.
+  await page.waitForFunction(()=>document.getElementById('verification-badge')?.hidden===false);
+  const badge=page.locator('#verification-badge');
+  assert.strictEqual((await badge.innerText()).trim(),'1 unverified');
+  assert(await badge.evaluate(el=>el.classList.contains('unverified')),'the badge carries its status class');
+  const tip=await badge.getAttribute('title');
+  assert(tip.includes('No recorded step ran the suite. '+malicious)&&tip.includes('no test command ran in this turn'),'the tooltip quotes claim, reason and diagnostics: '+tip);
+  assert.strictEqual(await page.locator('#verification-badge img').count(),0);assert.strictEqual(await page.evaluate(()=>window.INJECTED),undefined);
+  assert((await page.locator('#steps-list').innerText()).includes('verification'),'the verification step is listed with the others');
   await shot('conversation-desktop');
   await modifyCard.locator('.diff-foot button').click();
   await page.waitForFunction(()=>document.getElementById('notice').textContent.startsWith('Reverted'));
@@ -93,11 +116,17 @@ const root=path.resolve(__dirname,'..');const out=process.env.QA_DIR || path.joi
   await page.locator('#jobs button').click();assert.strictEqual(retryCalls,1);
   await page.setInputFiles('#file',{name:'sample.jsonl',mimeType:'application/json',buffer:Buffer.from('{"type":"message","message":{"role":"user","content":"I prefer Rust"}}')});
   await page.check('#consent');await page.click('#importbutton');await page.waitForFunction(()=>document.getElementById('notice').textContent.includes('Queued 2'));assert.strictEqual(importCalls,1);
-  await page.click('[data-view="settings"]');await page.waitForFunction(()=>document.getElementById('mainmodel').value==='synthetic-main');await page.click('#loadmodels');await page.waitForFunction(()=>document.getElementById('modelnames').textContent.includes('onerror'));
+  await page.click('[data-view="settings"]');await page.waitForFunction(()=>document.getElementById('mainmodel').value==='synthetic-main');
+  assert.strictEqual(await page.locator('#verificationmodel').inputValue(),'synthetic-verifier');
+  await page.fill('#verificationmodel','synthetic-verifier-2');await page.click('#settingsform button[type="submit"]');
+  await page.waitForFunction(()=>document.getElementById('notice').textContent.includes('Model settings saved'));
+  assert.strictEqual(savedConfig.verification,'synthetic-verifier-2');
+  await page.click('#loadmodels');await page.waitForFunction(()=>document.getElementById('modelnames').textContent.includes('onerror'));
   assert.strictEqual(await page.locator('#modelnames img').count(),0);await shot('settings-desktop');
   await page.click('#lock');assert(await page.locator('#workspace').isHidden());assert.strictEqual(await page.locator('#candidates').innerText(),'');
+  assert.strictEqual(await page.locator('#verificationmodel').inputValue(),'');
   assert.deepStrictEqual(errors,[]);
-  const result={status:'passed',scope:'Mocked API browser checks; Rust server not executed',checks:['connect','token_not_persisted','conversation','inline_suggestion_tray','suggestion_edit','suggestion_dismiss','diff_card_rendered','diff_card_revert','diff_card_create_revert','import_inbox_only','memory_evidence','html_injection_rendered_as_text','failed_approval_recoverable','suggestion_save','import','job_retry','model_settings','mobile_overflow','dark_mode','lock','no_javascript_exceptions']};
+  const result={status:'passed',scope:'Mocked API browser checks; Rust server not executed',checks:['connect','token_not_persisted','conversation','inline_suggestion_tray','suggestion_edit','suggestion_dismiss','diff_card_rendered','diff_card_revert','diff_card_create_revert','verification_badge','verification_claim_text_inert','verification_model_setting','import_inbox_only','memory_evidence','html_injection_rendered_as_text','failed_approval_recoverable','suggestion_save','import','job_retry','model_settings','mobile_overflow','dark_mode','lock','no_javascript_exceptions']};
   fs.writeFileSync(path.join(out,'ui-results.json'),JSON.stringify(result,null,2));console.log(JSON.stringify(result));
  }finally{await browser.close();}
 })().then(()=>process.exit(0)).catch(e=>{console.error(e);process.exit(1)});

@@ -30,7 +30,7 @@ def seed_turn(c, request="r1", session="s1", scope="proj"):
 
 class AgenticSql(unittest.TestCase):
     def test_all_constants_present(self):
-        for name in ["SCOPE_GET", "SCOPE_UPSERT", "SCOPES_LIST", "STEP_BEGIN", "STEP_FINISH", "STEP_NEXT_SEQ", "STEPS_LIST", "EVENT", "EVENTS_AFTER",
+        for name in ["SCOPE_GET", "SCOPE_UPSERT", "SCOPES_LIST", "STEP_BEGIN", "STEP_FINISH", "STEP_NEXT_SEQ", "STEPS_LIST", "VERIFICATION_LATEST", "EVENT", "EVENTS_AFTER",
                      "PERMISSION_CREATE", "PERMISSION_GET", "PERMISSION_RESOLVE", "PERMISSION_STATUS", "PERMISSIONS_PENDING", "PERMISSION_EXPIRE",
                      "FILE_CHANGE", "FILE_CHANGES_LIST", "FILE_CHANGE_GET", "FILE_CHANGE_REVERTED",
                      "PLAN_CLEAR", "PLAN_INSERT", "PLAN_LIST", "SESSION_OF_REQUEST",
@@ -75,6 +75,22 @@ class AgenticSql(unittest.TestCase):
         rows = c.execute(SQL["EVENTS_AFTER"], ("s1", 1)).fetchall()
         self.assertEqual([r[3] for r in rows], ["model_call_started", "answer_saved"])
         self.assertEqual(c.execute(SQL["SESSION_OF_REQUEST"], ("r1",)).fetchone()[0], "s1")
+
+    def test_latest_verification_is_bounded_and_request_scoped(self):
+        c = connect(); seed_turn(c)
+        c.execute(SQL["STEP_BEGIN"], ("v1", "r1", 0, "verification", None, None, "{}", NOW))
+        report = json.dumps({"status": "verified", "claims": [], "skipped_diagnostics": []})
+        c.execute(SQL["STEP_FINISH"], ("v1", "complete", report, len(report), 0, 10, 2, None, LATER))
+        row = c.execute(SQL["VERIFICATION_LATEST"], ("r1",)).fetchone()
+        self.assertEqual((row[0], row[1], json.loads(row[2])["status"], row[5]),
+                         ("v1", "complete", "verified", 0))
+        self.assertIsNone(c.execute(SQL["VERIFICATION_LATEST"], ("other",)).fetchone())
+        c.execute(SQL["STEP_BEGIN"], ("v2", "r1", 1, "verification", None, None, "{}", NOW))
+        oversized = "x" * 40000
+        c.execute(SQL["STEP_FINISH"], ("v2", "failed", oversized, len(oversized), 1, None, None, "verification_failed", LATER))
+        latest = c.execute(SQL["VERIFICATION_LATEST"], ("r1",)).fetchone()
+        self.assertEqual((latest[0], latest[1], len(latest[2]), latest[3], latest[5]),
+                         ("v2", "failed", 32768, "verification_failed", 1))
 
     def test_permission_flow(self):
         c = connect(); seed_turn(c)

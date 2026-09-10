@@ -34,6 +34,9 @@ pub const PLAN_STATUSES: [&str; 4] = ["pending", "in_progress", "done", "failed"
 /// Preview cap for the step API (P1-T12), matching the `substr(...,1,2048)` in `STEPS_LIST`.
 /// Kept next to that constant's only reader so the two cannot drift.
 pub const PREVIEW_BYTES: usize = 2048;
+const MAX_VERIFICATION_PROJECTION_CLAIMS: usize = 20;
+const MAX_VERIFICATION_PROJECTION_EVIDENCE_IDS: usize = 8;
+const MAX_VERIFICATION_PROJECTION_DIAGNOSTICS: usize = 10;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ScopeConfig {
@@ -83,6 +86,38 @@ fn plan_rows(c: &Connection, session_id: &str) -> Result<Value> {
         "status": r.get::<_, String>(2)?, "updated_at": r.get::<_, String>(3)?,
     })))?;
     Ok(json!({ "items": rows.collect::<rusqlite::Result<Vec<_>>>()? }))
+}
+
+fn bounded_projection_text(value:Option<&str>,max:usize)->String {
+    value.unwrap_or_default().chars().take(max).collect()
+}
+
+fn verification_projection(id:String,step_status:String,output:Option<String>,error_code:Option<String>,
+    finished_at:Option<String>,projection_capped:bool)->Value {
+    let parsed=output.as_deref().and_then(|text|serde_json::from_str::<Value>(text).ok()).unwrap_or(Value::Null);
+    let reported_status=parsed.get("status").and_then(Value::as_str)
+        .filter(|status|matches!(*status,"verified"|"unverified"|"skipped"|"unavailable"));
+    let status=if projection_capped {"unavailable"} else {reported_status.unwrap_or("unavailable")};
+    let claims=if projection_capped {Vec::new()} else {parsed.get("claims").and_then(Value::as_array).into_iter().flatten()
+        .take(MAX_VERIFICATION_PROJECTION_CLAIMS).filter_map(|claim|{
+            let claim_text=claim.get("claim")?.as_str()?;
+            let claim_status=claim.get("status")?.as_str()?;
+            if !matches!(claim_status,"verified"|"unverified") {return None;}
+            let evidence_step_ids=claim.get("evidence_step_ids").and_then(Value::as_array).into_iter().flatten()
+                .filter_map(Value::as_str).take(MAX_VERIFICATION_PROJECTION_EVIDENCE_IDS)
+                .map(|id|bounded_projection_text(Some(id),128)).collect::<Vec<_>>();
+            Some(json!({"claim":bounded_projection_text(Some(claim_text),500),"status":claim_status,
+                "evidence_step_ids":evidence_step_ids,
+                "reason":bounded_projection_text(claim.get("reason").and_then(Value::as_str),500)}))
+        }).collect::<Vec<_>>()};
+    let skipped_diagnostics=if projection_capped {Vec::new()} else {parsed.get("skipped_diagnostics").and_then(Value::as_array)
+        .into_iter().flatten().filter_map(Value::as_str).take(MAX_VERIFICATION_PROJECTION_DIAGNOSTICS)
+        .map(|item|bounded_projection_text(Some(item),240)).collect::<Vec<_>>()};
+    let unverified_claims=claims.iter().filter(|claim|claim["status"]=="unverified").count();
+    json!({"step_id":id,"status":status,"step_status":step_status,"claims":claims,
+        "unverified_claims":unverified_claims,"skipped_diagnostics":skipped_diagnostics,
+        "model":bounded_projection_text(parsed.get("model").and_then(Value::as_str),128),
+        "error_code":error_code,"finished_at":finished_at,"projection_capped":projection_capped})
 }
 
 /// The plan limits from docs/design/tools.md#todo_write, checked before SQLite so a CHECK
@@ -203,7 +238,7 @@ impl DbStore {
     pub async fn settings(&self) -> Result<Value> {
         self.run(|c| {
             let mut map=serde_json::Map::new();
-            for role in ["main","extraction","compaction"] {
+            for role in ["main","extraction","compaction","verification"] {
                 let value:Option<String>=c.query_row("SELECT value FROM settings WHERE key=?1",[format!("model.{role}")],|r|r.get(0)).optional()?;
                 map.insert(role.into(),json!(value.unwrap_or_default()));
             }
@@ -211,7 +246,7 @@ impl DbStore {
         }).await
     }
     pub async fn set_settings(&self, data:std::collections::BTreeMap<String,String>) -> Result<()> {
-        for (role,value) in &data { if !["main","extraction","compaction"].contains(&role.as_str()) || value.len()>128 || value.chars().any(char::is_control) { bail!("invalid model setting"); } }
+        for (role,value) in &data { if !["main","extraction","compaction","verification"].contains(&role.as_str()) || value.len()>128 || value.chars().any(char::is_control) { bail!("invalid model setting"); } }
         self.run(move|c|{ let tx=c.transaction()?; for (role,value) in data {tx.execute("INSERT INTO settings(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![format!("model.{role}"),value.trim()])?;} tx.commit()?; Ok(()) }).await
     }
     pub async fn role_model(&self, role:&str, default:&str) -> Result<String> {
@@ -479,7 +514,7 @@ impl DbStore {
     pub async fn turn_steps(&self,request_id:String)->Result<Value>{
         self.run(move|c|{
             let mut stmt=c.prepare(crate::agentic_sql::STEPS_LIST)?;
-            let rows=stmt.query_map([request_id],|r|{
+            let rows=stmt.query_map([&request_id],|r|{
                 let input:Option<String>=r.get(6)?;
                 let output:Option<String>=r.get(7)?;
                 let capped=[input.as_deref(),output.as_deref()].iter().flatten().any(|p|p.len()>=PREVIEW_BYTES);
@@ -496,7 +531,11 @@ impl DbStore {
                     "started_at":r.get::<_,String>(13)?,"finished_at":r.get::<_,Option<String>>(14)?,
                 }))
             })?.collect::<rusqlite::Result<Vec<_>>>()?;
-            Ok(json!({"steps":rows}))
+            let verification=c.query_row(crate::agentic_sql::VERIFICATION_LATEST,[&request_id],|r|Ok(verification_projection(
+                r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?,
+                r.get::<_,Option<String>>(3)?,r.get::<_,Option<String>>(4)?,r.get::<_,i64>(5)?==1,
+            ))).optional()?;
+            Ok(json!({"steps":rows,"verification":verification}))
         }).await
     }
 
@@ -613,6 +652,44 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
+    #[tokio::test] async fn verification_model_settings_are_allowed_but_unknown_roles_are_not() {
+        let db=DbStore::init(":memory:").unwrap();
+        let mut settings=std::collections::BTreeMap::new();
+        settings.insert("verification".into(),"cheap-verifier".into());
+        db.set_settings(settings).await.unwrap();
+        assert_eq!(db.settings().await.unwrap()["verification"],"cheap-verifier");
+        assert_eq!(db.role_model("verification","main-model").await.unwrap(),"cheap-verifier");
+        let mut unknown=std::collections::BTreeMap::new();
+        unknown.insert("judge".into(),"model".into());
+        assert!(db.set_settings(unknown).await.is_err());
+    }
+
+    #[tokio::test] async fn turn_steps_projects_a_bounded_latest_verification() {
+        let db=DbStore::init(":memory:").unwrap();
+        let claims=(0..25).map(|index|json!({"claim":if index==0{"c".repeat(600)}else{format!("claim {index}")},
+            "status":"unverified","evidence_step_ids":(0..10).map(|id|format!("step-{id}")).collect::<Vec<_>>(),
+            "reason":if index==0{"r".repeat(600)}else{"missing evidence".into()}})).collect::<Vec<_>>();
+        let diagnostics=(0..15).map(|index|format!("diagnostic {index}")).collect::<Vec<_>>();
+        let output=json!({"status":"unverified","claims":claims,"skipped_diagnostics":diagnostics,"model":"cheap-verifier"}).to_string();
+        db.run(move|c|{
+            let stamp=now();
+            c.execute("INSERT INTO sessions(id,scope,created_at) VALUES('session','global',?1)",[&stamp])?;
+            c.execute("INSERT INTO messages(id,session_id,role,content,status,created_at) VALUES('request','session','user','hi','pending',?1)",[&stamp])?;
+            c.execute("INSERT INTO chat_receipts(request_id,session_id,scope,model,signature,redacted,state,captured_at,updated_at) VALUES('request','session','global','main','sig',0,'generating',?1,?1)",[&stamp])?;
+            c.execute(crate::agentic_sql::STEP_BEGIN,params!["verify-step","request",0,"verification",None::<String>,None::<String>,"{}",stamp])?;
+            c.execute(crate::agentic_sql::STEP_FINISH,params!["verify-step","complete",output,0,0,None::<i64>,None::<i64>,None::<String>,now()])?;
+            Ok(())
+        }).await.unwrap();
+        let response=db.turn_steps("request".into()).await.unwrap();
+        let verification=&response["verification"];
+        assert_eq!((verification["status"].as_str(),verification["unverified_claims"].as_u64()),(Some("unverified"),Some(20)));
+        assert_eq!(verification["claims"].as_array().unwrap().len(),MAX_VERIFICATION_PROJECTION_CLAIMS);
+        assert_eq!(verification["claims"][0]["claim"].as_str().unwrap().chars().count(),500);
+        assert_eq!(verification["claims"][0]["reason"].as_str().unwrap().chars().count(),500);
+        assert_eq!(verification["claims"][0]["evidence_step_ids"].as_array().unwrap().len(),MAX_VERIFICATION_PROJECTION_EVIDENCE_IDS);
+        assert_eq!(verification["skipped_diagnostics"].as_array().unwrap().len(),MAX_VERIFICATION_PROJECTION_DIAGNOSTICS);
+    }
+
     #[tokio::test] async fn scopes_merge_partial_updates_and_gate_tools() {
         let db = DbStore::init(":memory:").unwrap();
         assert!(db.scope_config("global".into()).await.unwrap().is_none(), "an unconfigured scope must read as absent, not as defaults");

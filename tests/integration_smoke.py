@@ -10,7 +10,11 @@ class Provider(BaseHTTPRequestHandler):
     def do_GET(self):self.reply({'data':[{'id':'synthetic-model'}]})
     def do_POST(self):
         body=json.loads(self.rfile.read(int(self.headers['Content-Length'])));requests.append(body)
-        if body['messages'][0]['content'].startswith('Extract at most'):
+        if any('HARNESS_VERIFICATION_V1' in (m.get('content') or '') for m in body['messages']):
+            # P5-T01: the verifier is a separate text-only audit of an answer that already exists,
+            # so it answers with an empty report instead of another coding turn.
+            text=json.dumps({'claims':[],'skipped_diagnostics':[]})
+        elif body['messages'][0]['content'].startswith('Extract at most'):
             payload=json.loads(body['messages'][-1]['content']);events=payload.get('evidence_events',payload) if isinstance(payload,dict) else payload;text='[]'
             for event in events:
                 if 'I prefer Rust' in event['content']:
@@ -69,7 +73,8 @@ def main():
             assert call('/memory/confirm',{'confirmation_id':proposal,'scope':'project-a','confirm':False})[0]==409
             code,second=call('/chat',{'prompt':'Use Rust and continue','session_id':first['session_id'],'scope':'project-a'});assert code==200
             assert second['recalled_context_applied'] is True
-            main=[r for r in requests if not r['messages'][0]['content'].startswith('Extract at most')][-1]
+            audit=lambda request:any('HARNESS_VERIFICATION_V1' in (m.get('content') or '') for m in request['messages'])
+            main=[r for r in requests if not r['messages'][0]['content'].startswith('Extract at most') and not audit(r)][-1]
             assert any(m['role']=='assistant' and m['content']=='Synthetic assistant answer' for m in main['messages'])
             assert any(m['role']=='user' and m['content']=='I prefer Rust' for m in main['messages'])
             transcript='\n'.join(json.dumps({'type':'user','message':{'role':'user','content':f'Note {i}: I prefer Rust 🦀'}}) for i in range(60))
