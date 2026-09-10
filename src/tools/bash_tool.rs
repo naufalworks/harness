@@ -21,18 +21,31 @@ const COMMAND_SUMMARY: usize = 60;
 const SPAWN_TIMEOUT: u64 = 10;
 const LOG_DIR: &str = ".harness/logs";
 
-struct Call { command: String, timeout: u64, clamped: bool, background: bool }
+struct Call {
+    command: String,
+    timeout: u64,
+    clamped: bool,
+    background: bool,
+}
 
-fn invalid(detail: &str) -> ToolResult { ToolResult::err("invalid_arguments", detail) }
+fn invalid(detail: &str) -> ToolResult {
+    ToolResult::err("invalid_arguments", detail)
+}
 
 fn parse(args: &Value) -> Result<Call, ToolResult> {
     let command = match args.get("command") {
         Some(Value::String(s)) if !s.trim().is_empty() => s.clone(),
-        Some(Value::String(_)) | None => return Err(invalid("command is required and must not be blank")),
+        Some(Value::String(_)) | None => {
+            return Err(invalid("command is required and must not be blank"))
+        }
         Some(_) => return Err(invalid("command must be a string")),
     };
-    if command.len() > COMMAND_MAX { return Err(invalid("command must be at most 8 KiB")); }
-    if command.contains('\0') { return Err(invalid("command must not contain a NUL byte")); }
+    if command.len() > COMMAND_MAX {
+        return Err(invalid("command must be at most 8 KiB"));
+    }
+    if command.contains('\0') {
+        return Err(invalid("command must not contain a NUL byte"));
+    }
     match args.get("description") {
         None | Some(Value::Null) | Some(Value::String(_)) => {}
         Some(_) => return Err(invalid("description must be a string")),
@@ -44,7 +57,11 @@ fn parse(args: &Value) -> Result<Call, ToolResult> {
         None | Some(Value::Null) => (DEFAULT_TIMEOUT, false),
         Some(v) => match v.as_i64() {
             Some(n) if n >= 1 => (n.min(MAX_TIMEOUT as i64) as u64, n > MAX_TIMEOUT as i64),
-            _ => return Err(invalid("timeout_seconds must be a whole number of seconds, at least 1")),
+            _ => {
+                return Err(invalid(
+                    "timeout_seconds must be a whole number of seconds, at least 1",
+                ))
+            }
         },
     };
     let background = match args.get("background") {
@@ -52,14 +69,21 @@ fn parse(args: &Value) -> Result<Call, ToolResult> {
         Some(Value::Bool(b)) => *b,
         Some(_) => return Err(invalid("background must be a boolean")),
     };
-    Ok(Call { command, timeout, clamped, background })
+    Ok(Call {
+        command,
+        timeout,
+        clamped,
+        background,
+    })
 }
 
 /// Step title and permission prompt: the model's `description`, else the head of the command.
 fn label(args: &Value) -> String {
     if let Some(text) = args.get("description").and_then(Value::as_str) {
         let text = text.trim();
-        if !text.is_empty() { return truncate_chars(text, DESCRIPTION_MAX); }
+        if !text.is_empty() {
+            return truncate_chars(text, DESCRIPTION_MAX);
+        }
     }
     match args.get("command").and_then(Value::as_str) {
         Some(command) => truncate_chars(command.trim(), COMMAND_SUMMARY),
@@ -68,29 +92,60 @@ fn label(args: &Value) -> String {
 }
 
 fn push_line(text: &mut String, line: &str) {
-    if !text.is_empty() && !text.ends_with('\n') { text.push('\n'); }
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.push('\n');
+    }
     text.push_str(line);
 }
 
 /// POSIX single-quote, so the outer shell hands the command to the inner one untouched.
-fn quote(text: &str) -> String { format!("'{}'", text.replace('\'', "'\\''")) }
+fn quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
+}
 
 /// Step ids come from the harness, not the model, but a stray separator would still escape the
 /// log directory, so the name is reduced to a safe stem.
 fn log_name(step_id: &str) -> String {
-    let safe: String = step_id.chars().take(64)
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+    let safe: String = step_id
+        .chars()
+        .take(64)
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect();
-    if safe.is_empty() { format!("step-{}", uuid::Uuid::new_v4()) } else { safe }
+    if safe.is_empty() {
+        format!("step-{}", uuid::Uuid::new_v4())
+    } else {
+        safe
+    }
 }
 
 fn foreground(ctx: &ToolCtx, call: &Call, summary: String) -> ToolResult {
-    let run = run_capped(&call.command, &ctx.root, &ctx.scope, call.timeout, OUTPUT_CAP);
-    if !run.started { return ToolResult::err("spawn_failed", &run.output); }
+    let run = run_capped(
+        &call.command,
+        &ctx.root,
+        &ctx.scope,
+        call.timeout,
+        OUTPUT_CAP,
+    );
+    if !run.started {
+        return ToolResult::err("spawn_failed", &run.output);
+    }
     let mut out = run.output.clone();
-    if call.clamped { push_line(&mut out, &format!("[timeout_seconds capped at the {MAX_TIMEOUT}s maximum]")); }
+    if call.clamped {
+        push_line(
+            &mut out,
+            &format!("[timeout_seconds capped at the {MAX_TIMEOUT}s maximum]"),
+        );
+    }
     push_line(&mut out, &format!("[{}]", run.label()));
-    if run.timed_out { return ToolResult::failed("timeout", summary, out); }
+    if run.timed_out {
+        return ToolResult::failed("timeout", summary, out);
+    }
     match run.code {
         // A non-zero exit is information, not a broken step: a red test run has to come back as
         // output so the next step can react to it.
@@ -103,7 +158,10 @@ fn foreground(ctx: &ToolCtx, call: &Call, summary: String) -> ToolResult {
 fn background(ctx: &ToolCtx, call: &Call, summary: String) -> ToolResult {
     let dir = ctx.root.join(LOG_DIR);
     if let Err(e) = std::fs::create_dir_all(&dir) {
-        return ToolResult::err("spawn_failed", format!("could not create {}: {e}", paths::display(&ctx.root, &dir)));
+        return ToolResult::err(
+            "spawn_failed",
+            format!("could not create {}: {e}", paths::display(&ctx.root, &dir)),
+        );
     }
     let log = dir.join(format!("{}.log", log_name(&ctx.step_id)));
     let display = paths::display(&ctx.root, &log);
@@ -118,7 +176,11 @@ fn background(ctx: &ToolCtx, call: &Call, summary: String) -> ToolResult {
         log = quote(&log.to_string_lossy()),
     );
     let spawn = run_capped(&script, &ctx.root, &ctx.scope, SPAWN_TIMEOUT, 256);
-    let pid = spawn.output.split_whitespace().last().and_then(|t| t.parse::<u32>().ok());
+    let pid = spawn
+        .output
+        .split_whitespace()
+        .last()
+        .and_then(|t| t.parse::<u32>().ok());
     match pid {
         Some(pid) => ToolResult::ok(summary, json!({
             "pid": pid,
@@ -131,10 +193,18 @@ fn background(ctx: &ToolCtx, call: &Call, summary: String) -> ToolResult {
 
 pub struct Bash;
 impl Tool for Bash {
-    fn name(&self) -> &'static str { "bash" }
-    fn schema(&self) -> &'static str { include_str!("../../tools/schemas/bash.json") }
-    fn side_effecting(&self) -> bool { true }
-    fn summary(&self, args: &Value) -> String { label(args) }
+    fn name(&self) -> &'static str {
+        "bash"
+    }
+    fn schema(&self) -> &'static str {
+        include_str!("../../tools/schemas/bash.json")
+    }
+    fn side_effecting(&self) -> bool {
+        true
+    }
+    fn summary(&self, args: &Value) -> String {
+        label(args)
+    }
     fn permission_payload(&self, ctx: &ToolCtx, args: &Value) -> Value {
         match parse(args) {
             Ok(call) => json!({
@@ -168,28 +238,47 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("hello.txt"), "hello from the project\n").unwrap();
         let root = std::fs::canonicalize(&dir).unwrap();
-        let ctx = ToolCtx { root: root.clone(), scope: "global".into(), request_id: "request".into(), step_id: "step-1".into(), diagnostics_cmd: None };
+        let ctx = ToolCtx {
+            root: root.clone(),
+            scope: "global".into(),
+            request_id: "request".into(),
+            step_id: "step-1".into(),
+            diagnostics_cmd: None,
+        };
         (root, ctx)
     }
 
     #[test]
     fn runs_in_the_root_with_a_stripped_environment() {
         let (_root, ctx) = project();
-        let r = Bash.run(&ctx, json!({ "command": "cat hello.txt", "description": "read the fixture" }));
+        let r = Bash.run(
+            &ctx,
+            json!({ "command": "cat hello.txt", "description": "read the fixture" }),
+        );
         assert_eq!(r.status, ToolStatus::Complete);
         assert_eq!(r.exit_code, Some(0));
         assert_eq!(r.summary, "read the fixture");
-        assert!(r.content.contains("hello from the project"), "{}", r.content);
+        assert!(
+            r.content.contains("hello from the project"),
+            "{}",
+            r.content
+        );
         assert!(r.content.trim_end().ends_with("[exit 0]"), "{}", r.content);
         // The scope is exported; nothing else of ours is.
-        let env = Bash.run(&ctx, json!({ "command": "printf %s \"$HARNESS_SCOPE\"", "description": "scope" }));
+        let env = Bash.run(
+            &ctx,
+            json!({ "command": "printf %s \"$HARNESS_SCOPE\"", "description": "scope" }),
+        );
         assert!(env.content.contains("global"), "{}", env.content);
     }
 
     #[test]
     fn a_failing_command_is_output_not_a_broken_step() {
         let (_root, ctx) = project();
-        let r = Bash.run(&ctx, json!({ "command": "echo boom >&2; exit 3", "description": "fail" }));
+        let r = Bash.run(
+            &ctx,
+            json!({ "command": "echo boom >&2; exit 3", "description": "fail" }),
+        );
         assert_eq!(r.status, ToolStatus::Complete);
         assert_eq!(r.exit_code, Some(3));
         assert_eq!(r.error_code, None);
@@ -210,9 +299,16 @@ mod tests {
     #[test]
     fn an_over_long_timeout_is_capped_instead_of_refused() {
         let (_root, ctx) = project();
-        let r = Bash.run(&ctx, json!({ "command": "true", "description": "no-op", "timeout_seconds": 5000 }));
+        let r = Bash.run(
+            &ctx,
+            json!({ "command": "true", "description": "no-op", "timeout_seconds": 5000 }),
+        );
         assert_eq!(r.exit_code, Some(0));
-        assert!(r.content.contains("capped at the 600s maximum"), "{}", r.content);
+        assert!(
+            r.content.contains("capped at the 600s maximum"),
+            "{}",
+            r.content
+        );
     }
 
     #[test]
@@ -228,7 +324,12 @@ mod tests {
             json!({ "command": "true", "description": 3 }),
         ] {
             let r = Bash.run(&ctx, args.clone());
-            assert_eq!(r.error_code, Some("invalid_arguments"), "{args} -> {}", r.content);
+            assert_eq!(
+                r.error_code,
+                Some("invalid_arguments"),
+                "{args} -> {}",
+                r.content
+            );
         }
     }
 
@@ -245,11 +346,16 @@ mod tests {
         let mut text = String::new();
         for _ in 0..100 {
             text = std::fs::read_to_string(&log).unwrap_or_default();
-            if text.contains("started") { break; }
+            if text.contains("started") {
+                break;
+            }
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
         assert!(text.contains("started"), "log held {text:?}");
-        let _ = std::process::Command::new("sh").arg("-c").arg(format!("kill -9 -{pid} {pid} 2>/dev/null")).status();
+        let _ = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("kill -9 -{pid} {pid} 2>/dev/null"))
+            .status();
     }
 
     #[test]
@@ -264,16 +370,29 @@ mod tests {
         assert!(registry.requires_permission(bash, &safe, PermissionMode::AutoEdit));
         assert!(registry.requires_permission(bash, &safe, PermissionMode::Ask));
         // Padding does not hide a force-push: the check normalizes whitespace first.
-        assert!(registry.requires_permission(bash, &json!({ "command": "git   push    --force origin main" }), PermissionMode::AutoAll));
+        assert!(registry.requires_permission(
+            bash,
+            &json!({ "command": "git   push    --force origin main" }),
+            PermissionMode::AutoAll
+        ));
     }
 
     #[test]
     fn the_summary_prefers_the_description_and_the_payload_carries_the_risk() {
         let (_root, ctx) = project();
-        assert_eq!(Bash.summary(&json!({ "command": "ls", "description": "list files" })), "list files");
+        assert_eq!(
+            Bash.summary(&json!({ "command": "ls", "description": "list files" })),
+            "list files"
+        );
         let long = format!("echo {}", "x".repeat(200));
-        assert_eq!(Bash.summary(&json!({ "command": long })).chars().count(), COMMAND_SUMMARY);
-        let payload = Bash.permission_payload(&ctx, &json!({ "command": "rm -rf /", "description": "nope" }));
+        assert_eq!(
+            Bash.summary(&json!({ "command": long })).chars().count(),
+            COMMAND_SUMMARY
+        );
+        let payload = Bash.permission_payload(
+            &ctx,
+            &json!({ "command": "rm -rf /", "description": "nope" }),
+        );
         assert_eq!(payload["dangerous"], json!(true));
         assert_eq!(payload["timeout_seconds"], json!(DEFAULT_TIMEOUT));
         assert_eq!(payload["cwd"], json!(ctx.root.to_string_lossy()));

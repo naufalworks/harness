@@ -46,7 +46,9 @@ pub struct Index {
 pub fn valid_name(name: &str) -> bool {
     !name.is_empty()
         && name.chars().count() <= MAX_NAME_CHARS
-        && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
 }
 
 /// Enumerate skills in directory-name order. A missing `skills/` directory is not an error; an
@@ -271,8 +273,14 @@ mod tests {
             .map(|(_, entry)| entry.as_str())
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(text.contains("- review: How this repo reviews a diff (skills/review/SKILL.md)"), "{text}");
-        assert!(!text.contains("read the anchors"), "the body must stay out of the window: {text}");
+        assert!(
+            text.contains("- review: How this repo reviews a diff (skills/review/SKILL.md)"),
+            "{text}"
+        );
+        assert!(
+            !text.contains("read the anchors"),
+            "the body must stay out of the window: {text}"
+        );
         assert!(!text.contains("release gate"), "{text}");
         fs::remove_dir_all(root).ok();
     }
@@ -312,7 +320,9 @@ mod tests {
 
     #[test]
     fn skills_index_stops_at_the_cap_and_says_so() {
-        let names: Vec<String> = (0..MAX_SKILLS + 2).map(|i| format!("skill-{i:03}")).collect();
+        let names: Vec<String> = (0..MAX_SKILLS + 2)
+            .map(|i| format!("skill-{i:03}"))
+            .collect();
         let entries: Vec<(&str, &str)> = names
             .iter()
             .map(|name| (name.as_str(), "description: one of many\n\nbody\n"))
@@ -322,7 +332,11 @@ mod tests {
         assert_eq!(index.skills.len(), MAX_SKILLS);
         assert_eq!((index.over_cap, index.skipped), (2, 0));
         let note = index_parts(&root).unwrap().pop().unwrap();
-        assert!(note.1.contains("2 skill(s) past the 32-skill cap"), "{}", note.1);
+        assert!(
+            note.1.contains("2 skill(s) past the 32-skill cap"),
+            "{}",
+            note.1
+        );
         fs::remove_dir_all(root).ok();
     }
 
@@ -331,7 +345,10 @@ mod tests {
         let (body, truncated) = bounded_body("---\ndescription: d\n---\n\nRun `cargo test`.\n");
         assert_eq!(body, "Run `cargo test`.\n");
         assert!(!truncated);
-        assert_eq!(bounded_body("no frontmatter here\n").0, "no frontmatter here\n");
+        assert_eq!(
+            bounded_body("no frontmatter here\n").0,
+            "no frontmatter here\n"
+        );
         assert_eq!(
             bounded_body("---\nunterminated: true\n").0,
             "---\nunterminated: true\n",
@@ -342,10 +359,15 @@ mod tests {
         let (cut, truncated) = bounded_body(&long);
         assert!(truncated && cut.len() <= MAX_BODY_BYTES);
         assert!(long.starts_with(&cut), "the cap must keep a prefix");
-        assert!(cut.chars().all(|c| c == '\u{9577}'), "and never split a character");
+        assert!(
+            cut.chars().all(|c| c == '\u{9577}'),
+            "and never split a character"
+        );
 
         // A description is redacted before it can reach the provider window.
-        assert!(!describe("---\ndescription: api_key=synthetic\n---\nbody\n").contains("synthetic"));
+        assert!(
+            !describe("---\ndescription: api_key=synthetic\n---\nbody\n").contains("synthetic")
+        );
     }
 
     #[test]
@@ -353,7 +375,16 @@ mod tests {
         for name in ["review", "code-review", "code_review", "a1"] {
             assert!(valid_name(name), "{name}");
         }
-        for name in ["", "..", ".", "a/b", "a b", "a.b", "../secrets", &"x".repeat(65)] {
+        for name in [
+            "",
+            "..",
+            ".",
+            "a/b",
+            "a b",
+            "a.b",
+            "../secrets",
+            &"x".repeat(65),
+        ] {
             assert!(!valid_name(name), "{name}");
         }
     }

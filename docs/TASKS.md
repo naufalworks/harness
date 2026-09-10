@@ -323,12 +323,13 @@ Each task has: `status`, `depends`, `design` (doc section), `files` (touched),
 ## P7 · Durable streaming continuation
 
 ### P7-T01 · Persisted generation stream foundation
-- status: todo
+- status: doing
 - depends: P6-T03
 - design: docs/ROADMAP.md#p4
 - files: src/streaming.rs, src/storage.rs, src/main.rs, static/app.js, migrations/*
 - done-when: Generation output can stream through an authenticated transport where every emitted event is persisted before becoming visible to the client. Events have stable ordering, resumable cursors, and explicit completed/interrupted/failed states.
 - verify: cargo test --locked streaming && python3 tests/test_streaming_contracts.py && bash scripts/verify_release.sh
+- note (started 2026-09-10): Existing `/activity/stream` provides durable agent activity replay. P7-T01 extends this pattern to generation output events persisted before client delivery.
 
 ### P7-T02 · Stream recovery and boundary safety
 - status: todo
