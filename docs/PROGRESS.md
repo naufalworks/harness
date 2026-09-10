@@ -18,6 +18,16 @@ Suggested first message to an AI continuing this work:
 
 ---
 
+## 2026-09-10 · AI session (Notion AI via Local) · P5-T03 task tool (read-only explore sub-agent)
+
+- **Delivered**: The model can delegate exploration. `task` is registered like any other tool (tenth in the array), but the loop intercepts the call before `Registry::invoke`, because a sub-agent needs the provider while `Tool::run` is synchronous and filesystem-bound.
+- **One request, one ordered list, still a tree**: the parent opens a `subagent` step whose `parent_step_id` is the `task` tool-call step, and the sub-agent's own model and tool calls hang off that. `STEP_BEGIN` carries the parent id at `?3` and `begin_child_step` is the only way to set it. No migration: schema 003 already had the column and the `subagent` kind.
+- **Read-only by construction, not by permission**: only `read`, `grep` and `glob` are offered, the allow-list is re-checked when the model's call returns, and anything else is refused as `unknown_tool` without reaching the registry — so no approval can be raised inside a delegation even in `auto_all`. `TOOLS` excludes `task`, so a sub-agent cannot spawn one.
+- **Bounded and shared**: a fresh context (own system prompt plus one exploration message, never the parent's history), ≤ 8 model calls, and the parent's remaining steps, tool bytes and wall deadline; what it spent is added back to the parent's counters. The parent sees a capped report (1000-char summary + ≤ 12 paths + why it stopped), never the sub-agent's transcript.
+- **Deviations**: orchestration lives in `agent_loop` rather than `src/subagent.rs`, which is contract-only (tools, bounds, message and report shapes), because only the loop owns the provider, step writer and budgets; the planned `bounded_summary` helper collapsed into `report_content`.
+- **Verification**: release gate exit 0 — 130 Rust tests (9 new), Clippy/build, migrations 001→004, 10 tool schemas, 53 Python contracts, both mock-provider HTTP suites. `recording_integration.py` gained a delegation leg asserting the step tree, the read-only tool array, the report shape and that a refused `write` left `deny.md` untouched. `git diff --check` clean. Browser suites not run: no UI change.
+- **Open**: nothing blocking. Next is P6-T01 (`ast_edit` via ast-grep), which opens P6.
+
 ## 2026-09-10 · AI session (Notion AI via Local) · P5-T02 skills with progressive disclosure
 
 - **Delivered**: A project can keep reusable procedures in `skills/<name>/SKILL.md`. Each turn's window lists only name, one-line description and path; the model calls the new `skill` tool to pull one body on demand, capped at 16 KiB and cut on a UTF-8 boundary after frontmatter is stripped.

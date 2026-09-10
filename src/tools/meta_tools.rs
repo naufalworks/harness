@@ -152,10 +152,10 @@ mod tests {
     }
 
     #[test]
-    fn the_registry_now_carries_a_schema_for_every_tool_including_the_plan_and_skill_tools() {
+    fn the_registry_now_carries_a_schema_for_every_tool_including_the_plan_skill_and_task_tools() {
         let registry = Registry::standard();
         let schemas = registry.schemas().expect("every schema file parses");
         let names: Vec<String> = schemas.iter().map(|s| s["function"]["name"].as_str().unwrap_or_default().to_string()).collect();
-        assert_eq!(names, ["read", "grep", "glob", "edit", "write", "bash", "think", "todo_write", "skill"]);
+        assert_eq!(names, ["read", "grep", "glob", "edit", "write", "bash", "think", "todo_write", "skill", "task"]);
     }
 }

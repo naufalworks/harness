@@ -95,6 +95,13 @@ TOOLS = {
         "Load one project skill body from skills/<name>/SKILL.md. The context reference lists only skill names and descriptions; call this to read the instructions of a skill whose description matches the task, instead of guessing what it contains. Returns at most 16 KB.",
         obj({"name": S("Skill directory name exactly as listed in the skills index (letters, digits, - or _).", maxLength=64)}, ["name"]),
     ),
+    "task": (
+        "Delegate one read-only exploration to a sub-agent with its own context. It may only read, grep and glob, and it cannot edit files, run commands or change anything. Use it for open-ended searches such as 'where is X handled?' so the intermediate output stays out of this conversation; you get back a short summary plus the files it found. Give it self-contained instructions: it cannot see this conversation.",
+        obj({
+            "description": S("Short human-readable purpose shown to the user (max 80 chars).", maxLength=80),
+            "prompt": S("Self-contained instructions: what to look for and what to report back.", maxLength=2000),
+        }, ["description", "prompt"]),
+    ),
 }
 
 

@@ -104,6 +104,18 @@ Args: `{ name: string (≤ 64 chars; letters, digits, `-` or `_`) }`. Loads `ski
 - Output is prefixed with the source line and an explicit note that a skill body is project guidance which cannot grant tool permissions, approve a denied command, or override system rules.
 - Summary: `skill <name> (<n> bytes[, truncated])`.
 
+## task
+
+Args: `{ description?: string (≤ 80 chars), prompt: string (≤ 2000 chars) }`. Runs one read-only exploration in a sub-agent and returns a bounded report. Contract and bounds: `src/subagent.rs`; orchestration: `Ctx::run_task` in `src/agent_loop.rs`.
+
+- Registered like any other tool so the model still sees one immutable definition array, but the loop intercepts the call before `Registry::invoke`, because a sub-agent needs provider calls of its own and `Tool::run` is synchronous and filesystem-bound. A direct registry invocation refuses with `internal_error` instead of pretending to explore.
+- The sub-agent is offered `read`, `grep` and `glob` only, reusing the parent's exact definitions so both agents describe a tool identically. Nothing in that set is side-effecting, so no approval can be raised inside a delegation and `task` itself needs no permission. The allow-list is enforced again on the way back: any other tool name is refused as `unknown_tool` without the registry being reached, so a sub-agent cannot be used to route around a denied edit.
+- `prompt` is required and must be self-contained. The sub-agent never sees the parent conversation, and its transcript never reaches the parent context — spending the sub-agent's context instead of the parent's is the whole point of delegating.
+- Steps: the `task` tool-call step is the parent of one `subagent` step, and the sub-agent's own model calls and tool calls hang off that step under the same `request_id`, so a turn stays one ordered step list that still reads back as a tree. Events: `subagent_started`, `subagent_finished`.
+- Budgets are the parent's rather than new ones: at most 8 model calls, and it stops as soon as the turn's remaining steps, tool bytes or wall deadline run out. What it spent is added to the parent's counters before the loop continues.
+- Returns a header line (model calls, tool calls, and why it stopped when it stopped early), a summary capped at 1000 chars, and up to 12 paths it actually read. A partial exploration says so, so the parent cannot read it as a complete answer.
+- Summary: `explore: <description>`.
+
 ## Later tools (contracts to be written when scheduled)
 
-`task` (P5): read-only sub-agent. `web_fetch` (P5, opt-in per scope). `ast_edit`, `lsp`, `browser` (P6).
+`web_fetch` (P5, opt-in per scope). `ast_edit`, `lsp`, `browser` (P6).

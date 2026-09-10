@@ -8,7 +8,7 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCHEMAS = ROOT / "tools" / "schemas"
-EXPECTED = {"read", "grep", "glob", "edit", "write", "bash", "think", "todo_write", "skill"}
+EXPECTED = {"read", "grep", "glob", "edit", "write", "bash", "think", "todo_write", "skill", "task"}
 NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
 

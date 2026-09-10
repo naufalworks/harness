@@ -676,7 +676,7 @@ mod tests {
             c.execute("INSERT INTO sessions(id,scope,created_at) VALUES('session','global',?1)",[&stamp])?;
             c.execute("INSERT INTO messages(id,session_id,role,content,status,created_at) VALUES('request','session','user','hi','pending',?1)",[&stamp])?;
             c.execute("INSERT INTO chat_receipts(request_id,session_id,scope,model,signature,redacted,state,captured_at,updated_at) VALUES('request','session','global','main','sig',0,'generating',?1,?1)",[&stamp])?;
-            c.execute(crate::agentic_sql::STEP_BEGIN,params!["verify-step","request",0,"verification",None::<String>,None::<String>,"{}",stamp])?;
+            c.execute(crate::agentic_sql::STEP_BEGIN,params!["verify-step","request",None::<String>,0,"verification",None::<String>,None::<String>,"{}",stamp])?;
             c.execute(crate::agentic_sql::STEP_FINISH,params!["verify-step","complete",output,0,0,None::<i64>,None::<i64>,None::<String>,now()])?;
             Ok(())
         }).await.unwrap();

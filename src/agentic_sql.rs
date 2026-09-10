@@ -6,7 +6,14 @@ pub const SCOPE_UPSERT: &str = r#"INSERT INTO scopes(scope,root_path,permission_
 // user to guess a name. Same column order as SCOPE_GET; a fresh install returns no rows.
 pub const SCOPES_LIST: &str = r#"SELECT scope,root_path,permission_mode,diagnostics_cmd,max_steps,max_tool_bytes,max_wall_seconds,created_at,updated_at FROM scopes ORDER BY scope"#;
 
-pub const STEP_BEGIN: &str = r#"INSERT INTO turn_steps(id,request_id,parent_step_id,seq,kind,status,tool_name,tool_call_id,input_json,started_at) VALUES(?1,?2,NULL,?3,?4,'running',?5,?6,?7,?8)"#;
+// P5-T03: `parent_step_id` (?3) is NULL for every step the main loop owns and carries the
+// `task` tool-call step for the steps a sub-agent runs, so one request stays one ordered list.
+pub const STEP_BEGIN: &str = r#"INSERT INTO turn_steps(id,request_id,parent_step_id,seq,kind,status,tool_name,tool_call_id,input_json,started_at) VALUES(?1,?2,?3,?4,?5,'running',?6,?7,?8,?9)"#;
+// The read side of that tree. No Rust caller needs it yet — the loop writes the parent id and
+// projects a request's steps with STEPS_LIST — so it is kept here as the documented statement for
+// nesting a sub-agent's steps, and tests/test_agentic_sql.py executes it against the real schema.
+#[allow(dead_code)]
+pub const STEPS_OF_PARENT: &str = r#"SELECT id,seq,kind,status,tool_name,error_code FROM turn_steps WHERE parent_step_id=?1 ORDER BY seq"#;
 pub const STEP_FINISH: &str = r#"UPDATE turn_steps SET status=?2,output_json=?3,output_bytes=?4,truncated=?5,tokens_in=?6,tokens_out=?7,error_code=?8,finished_at=?9 WHERE id=?1 AND status='running'"#;
 pub const STEP_NEXT_SEQ: &str = r#"SELECT COALESCE(MAX(seq),-1)+1 FROM turn_steps WHERE request_id=?1"#;
 pub const STEPS_LIST: &str = r#"SELECT id,seq,kind,status,tool_name,tool_call_id,substr(input_json,1,2048),substr(output_json,1,2048),output_bytes,truncated,tokens_in,tokens_out,error_code,started_at,finished_at FROM turn_steps WHERE request_id=?1 ORDER BY seq"#;

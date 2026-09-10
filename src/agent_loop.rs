@@ -12,7 +12,7 @@ use rusqlite::{params, OptionalExtension, TransactionBehavior};
 use serde_json::{json, Value};
 use std::{collections::HashMap, sync::Arc, time::{Duration, Instant}};
 use crate::{agentic_sql as sql, memory_agents::{self, MemoryAgents, ToolCall},
-    safety, storage::{now, uid, DbStore, ScopeConfig},
+    safety, storage::{now, uid, DbStore, ScopeConfig}, subagent,
     tools::{Artifact, PermissionMode, Registry, ToolResult, ToolStatus, MAX_OUTPUT}};
 
 /// How often the loop looks for a human decision on a pending approval.
@@ -81,13 +81,24 @@ impl DbStore {
     /// The sequence number comes from the same transaction, so two steps of one request can
     /// never share a `seq`.
     pub async fn begin_step(&self, step: NewStep) -> Result<String> {
+        self.insert_step(None, step).await
+    }
+
+    /// P5-T03: a step a sub-agent owns. Same request, same `seq` sequence and same event feed as
+    /// the main loop's steps; `parent_step_id` is the `task` tool-call step, so the sub-agent's
+    /// work reads as its own list instead of being mistaken for the parent's.
+    pub async fn begin_child_step(&self, parent: String, step: NewStep) -> Result<String> {
+        self.insert_step(Some(parent), step).await
+    }
+
+    async fn insert_step(&self, parent: Option<String>, step: NewStep) -> Result<String> {
         let id = uid();
         let created = id.clone();
         self.run(move |c| {
             let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let seq: i64 = tx.query_row(sql::STEP_NEXT_SEQ, [&step.request], |r| r.get(0))?;
             let stamp = now();
-            tx.execute(sql::STEP_BEGIN, params![id, step.request, seq, step.kind, step.tool_name, step.tool_call_id, step.input.to_string(), stamp])?;
+            tx.execute(sql::STEP_BEGIN, params![id, step.request, parent, seq, step.kind, step.tool_name, step.tool_call_id, step.input.to_string(), stamp])?;
             tx.execute(sql::EVENT, params![step.request, step.session, id, step.event, step.payload.to_string(), stamp])?;
             tx.commit()?;
             Ok(())
@@ -339,6 +350,14 @@ struct CompletedToolCall {
     result: ToolResult,
 }
 
+/// P5-T03: what a delegated exploration spent. A sub-agent draws from the budget of the turn
+/// that spawned it, so the parent adds these to its own counters before deciding to continue.
+struct Delegated {
+    completed: CompletedToolCall,
+    model_calls: i64,
+    tool_bytes: i64,
+}
+
 fn verification_text(text: &str, max_chars: usize) -> String {
     crate::tools::truncate_chars(&safety::redact(text), max_chars)
 }
@@ -538,7 +557,17 @@ pub async fn run(turn: Turn<'_>) -> Result<Outcome> {
         for call in &reply.tool_calls {
             durable_seq += 1;
             let tool_seq = durable_seq;
-            let completed = ctx.run_call(call, deadline).await?;
+            // P5-T03: `task` is offered like any other tool but cannot run through the registry,
+            // because a sub-agent needs provider calls and steps of its own. It spends this
+            // turn's budget, so what it used lands on the same counters before the next pass.
+            let completed = if call.name == "task" {
+                let delegated = ctx.run_task(call, &tools, (max_steps - steps, max_tool_bytes - tool_bytes), deadline).await?;
+                steps += delegated.model_calls;
+                tool_bytes += delegated.tool_bytes;
+                delegated.completed
+            } else {
+                ctx.run_call(call, deadline).await?
+            };
             let result = completed.result;
             verification_evidence.push(tool_verification_evidence(completed.step_id,tool_seq,call,&result));
             tool_bytes += result.bytes as i64;
@@ -657,6 +686,160 @@ impl Ctx<'_> {
         let name = call.name.clone();
         let result = tokio::task::spawn_blocking(move || registry.invoke(tool_ctx.as_ref(), &name, args)).await?;
         self.finish_tool(step, call, result, None).await
+    }
+
+    /// P5-T03: one delegated read-only exploration. The `task` tool-call step is the parent of a
+    /// `subagent` step, and the sub-agent's own model and tool steps hang off that, so the turn
+    /// stays one ordered list that can still be read back as a tree.
+    ///
+    /// Three properties are enforced here rather than trusted to the sub-agent:
+    /// - it is offered read-only tools only, so nothing inside it can ever raise an approval;
+    /// - it draws from the parent's remaining budget and reports back what it spent;
+    /// - the parent model receives a bounded report, never the sub-agent's transcript.
+    async fn run_task(&self, call: &ToolCall, tools: &[Value], remaining: (i64, i64), deadline: Instant) -> Result<Delegated> {
+        let (remaining_steps, remaining_tool_bytes) = remaining;
+        let parsed = call.arguments();
+        let args = parsed.as_ref().ok().filter(|value| value.is_object()).cloned();
+        let asked = args.as_ref().map(subagent::parse);
+        let summary = match &asked { Some(Ok(ask)) => subagent::label(ask), _ => call.name.clone() };
+        let step = self.store.begin_step(NewStep {
+            request: self.request.clone(), session: self.session.clone(), kind: "tool_call",
+            tool_name: Some(call.name.clone()), tool_call_id: Some(call.id.clone()),
+            input: args.unwrap_or_else(|| json!({"unparsed_arguments":safety::redact(&call.arguments_json)})),
+            event: "tool_started", payload: json!({"tool":call.name,"summary":summary}),
+        }).await?;
+
+        let ask = match asked {
+            Some(Ok(ask)) => ask,
+            Some(Err(detail)) => return self.refuse_delegation(step, call, ToolResult::err("invalid_arguments", detail)).await,
+            None => {
+                let detail = match parsed { Err(error) => error.to_string(), Ok(_) => "tool-call arguments must be a JSON object".to_string() };
+                return self.refuse_delegation(step, call, ToolResult::err("invalid_arguments", detail)).await;
+            }
+        };
+        // A turn whose tools were withheld or dropped has nothing read-only to delegate.
+        let definitions = subagent::definitions(tools);
+        if definitions.is_empty() {
+            return self.refuse_delegation(step, call, ToolResult::err("tools_disabled",
+                "no read-only tools are available to delegate; explore with read, grep and glob directly")).await;
+        }
+
+        let sub_step = self.store.begin_child_step(step.clone(), NewStep {
+            request: self.request.clone(), session: self.session.clone(), kind: "subagent",
+            tool_name: None, tool_call_id: None,
+            input: json!({"description":ask.description,"prompt":ask.prompt,"tools":subagent::TOOLS,
+                "max_model_calls":subagent::MAX_MODEL_CALLS,"remaining_steps":remaining_steps,
+                "remaining_tool_bytes":remaining_tool_bytes}),
+            event: "subagent_started", payload: json!({"description":ask.description,"tools":subagent::TOOLS}),
+        }).await?;
+
+        let mut messages = subagent::messages(&ask);
+        let mut model_calls: i64 = 0;
+        let mut tool_calls: i64 = 0;
+        let mut tool_bytes: i64 = 0;
+        let mut files = Vec::<String>::new();
+        let mut summary_text = String::new();
+        let mut stopped = None::<subagent::Stop>;
+        loop {
+            if model_calls >= subagent::MAX_MODEL_CALLS { stopped = Some(subagent::Stop::MaxModelCalls); break; }
+            if model_calls >= remaining_steps { stopped = Some(subagent::Stop::TurnSteps); break; }
+            if tool_bytes >= remaining_tool_bytes { stopped = Some(subagent::Stop::TurnToolBytes); break; }
+            if Instant::now() >= deadline { stopped = Some(subagent::Stop::Deadline); break; }
+
+            let model_step = self.store.begin_child_step(sub_step.clone(), NewStep {
+                request: self.request.clone(), session: self.session.clone(), kind: "model_call",
+                tool_name: None, tool_call_id: None,
+                input: json!({"messages":messages,"tools":tool_names(&definitions)}),
+                event: "model_call_started", payload: json!({"attempt":model_calls+1,"messages":messages.len(),"subagent":true}),
+            }).await?;
+            let replied = self.agents.complete_with_tools(&self.model, messages.clone(), definitions.clone()).await;
+            model_calls += 1;
+            let reply = match replied {
+                Ok(reply) => reply,
+                Err(error) => {
+                    let mut outcome = self.outcome(model_step, "failed", json!({"error":safety::redact(&error.to_string())}),
+                        "model_call_finished", json!({"error_code":"provider_failed","subagent":true}));
+                    outcome.error_code = Some("provider_failed".into());
+                    self.store.finish_step(outcome).await?;
+                    stopped = Some(subagent::Stop::ProviderFailed);
+                    break;
+                }
+            };
+            let tokens_in = reply.usage.prompt_tokens.map(|value| value as i64);
+            let tokens_out = reply.usage.completion_tokens.map(|value| value as i64);
+            let mut finished = self.outcome(model_step, "complete", json!({"text":reply.text,
+                "tool_calls":reply.tool_calls.iter().map(|c| json!({"id":c.id,"name":c.name,"arguments":c.arguments_json})).collect::<Vec<_>>(),
+                "usage":reply.usage}), "model_call_finished",
+                json!({"tokens_in":tokens_in,"tokens_out":tokens_out,"tool_call_count":reply.tool_calls.len(),"subagent":true}));
+            finished.bytes = finished.output.to_string().len() as i64;
+            finished.tokens_in = tokens_in;
+            finished.tokens_out = tokens_out;
+            self.store.finish_step(finished).await?;
+
+            // No tool call means the sub-agent is reporting: that text is the only thing kept.
+            if reply.tool_calls.is_empty() {
+                summary_text = safety::redact(reply.text.as_deref().unwrap_or_default());
+                break;
+            }
+            messages.push(reply.assistant_message.clone());
+            for sub_call in &reply.tool_calls {
+                let sub_args = sub_call.arguments().ok().filter(|value| value.is_object());
+                let allowed = subagent::TOOLS.contains(&sub_call.name.as_str());
+                let tool_summary = match (allowed.then(|| self.registry.get(&sub_call.name)).flatten(), &sub_args) {
+                    (Some(tool), Some(args)) => tool.summary(args),
+                    _ => sub_call.name.clone(),
+                };
+                let tool_step = self.store.begin_child_step(sub_step.clone(), NewStep {
+                    request: self.request.clone(), session: self.session.clone(), kind: "tool_call",
+                    tool_name: Some(sub_call.name.clone()), tool_call_id: Some(sub_call.id.clone()),
+                    input: sub_args.clone().unwrap_or_else(|| json!({"unparsed_arguments":safety::redact(&sub_call.arguments_json)})),
+                    event: "tool_started", payload: json!({"tool":sub_call.name,"summary":tool_summary,"subagent":true}),
+                }).await?;
+                let result = match (&sub_args, allowed) {
+                    // The allow-list is enforced here, not by the schema the sub-agent was sent:
+                    // a model that asks for `bash` is refused without the registry being reached.
+                    (_, false) => ToolResult::err("unknown_tool", format!(
+                        "a sub-agent may only call {}; `{}` is not available to it", subagent::TOOLS.join(", "), sub_call.name)),
+                    (None, true) => ToolResult::err("invalid_arguments", "tool-call arguments must be a JSON object"),
+                    (Some(args), true) => match self.scope.tool_ctx(&self.request, &tool_step) {
+                        None => ToolResult::err("tools_disabled", "this scope has no root_path; configure one before using tools"),
+                        Some(tool_ctx) => {
+                            subagent::record_file(&mut files, &sub_call.name, args);
+                            let registry = self.registry.clone();
+                            let name = sub_call.name.clone();
+                            let args = args.clone();
+                            tokio::task::spawn_blocking(move || registry.invoke(Some(&tool_ctx), &name, args)).await?
+                        }
+                    },
+                };
+                tool_calls += 1;
+                tool_bytes += result.bytes as i64;
+                let completed = self.finish_tool(tool_step, sub_call, result, None).await?;
+                messages.push(json!({"role":"tool","tool_call_id":sub_call.id,"content":completed.result.content}));
+            }
+        }
+
+        let report = subagent::Report { summary: summary_text, files, model_calls, tool_calls, stopped };
+        let content = subagent::report_content(&report);
+        let file_count = report.files.len();
+        let status = if matches!(stopped, Some(subagent::Stop::ProviderFailed)) { "failed" } else { "complete" };
+        let mut outcome = self.outcome(sub_step, status,
+            json!({"summary":report.summary.clone(),"files":report.files.clone(),"model_calls":model_calls,
+                "tool_calls":tool_calls,"stopped":stopped.map(|stop| stop.as_str()),"report_bytes":content.len()}),
+            "subagent_finished",
+            json!({"status":status,"model_calls":model_calls,"tool_calls":tool_calls,"files":file_count,
+                "stopped":stopped.map(|stop| stop.as_str())}));
+        outcome.bytes = content.len() as i64;
+        if status == "failed" { outcome.error_code = Some("provider_failed".into()); }
+        self.store.finish_step(outcome).await?;
+
+        let completed = self.finish_tool(step, call, ToolResult::ok(subagent::label(&ask), content), None).await?;
+        Ok(Delegated { completed, model_calls, tool_bytes })
+    }
+
+    /// A delegation that never started still owes the model a readable tool result.
+    async fn refuse_delegation(&self, step: String, call: &ToolCall, result: ToolResult) -> Result<Delegated> {
+        Ok(Delegated { completed: self.finish_tool(step, call, result, None).await?, model_calls: 0, tool_bytes: 0 })
     }
 
     /// Poll for a human decision. Bounded by the turn's wall budget as well as the row's own
@@ -1056,6 +1239,80 @@ mod tests {
         let context = db.recording_context(request).await.unwrap().unwrap();
         assert_eq!(context["context"]["provider_messages"], requests[0]["messages"], "context_json holds the FIRST window verbatim");
         assert_eq!(context["context"]["adapter"], "tool_calls_v1");
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// P5-T03: a delegated exploration is one `subagent` step under the `task` tool-call step, with
+    /// the sub-agent's own model and tool calls hanging off it. The sub-agent stays read-only even
+    /// in `auto_all`: a `write` it asks for is refused before the registry is reached, so the file
+    /// is untouched and no approval is ever raised. The parent model receives the bounded report,
+    /// not the sub-agent's transcript.
+    #[tokio::test] async fn a_sub_agent_explores_under_its_own_steps_and_cannot_write() {
+        let db = DbStore::init(":memory:").unwrap();
+        let root = project(&db, "auto_all", ScopePatch::default()).await;
+        let script = Script::new(vec![
+            calls(vec![("call-1", "task", r#"{"description":"find beta","prompt":"say which line of notes.md holds beta"}"#)]),
+            calls(vec![("sub-1", "read", r#"{"path":"notes.md"}"#),
+                ("sub-2", "write", r#"{"path":"notes.md","content":"nope\n","overwrite":true}"#)]),
+            text("notes.md line 2 holds beta."),
+            text("beta is on line 2 of notes.md."),
+        ]);
+        let agents = provider(script.clone()).await;
+        let turn = claim(&db, "which line holds beta").await;
+        let request = turn.request.clone();
+        recording::generate(&db, &agents, turn).await.unwrap();
+
+        let saved = receipt(&db, &request).await;
+        assert_eq!(saved["state"], "complete");
+        assert_eq!(saved["response"], "beta is on line 2 of notes.md.");
+        assert_eq!(std::fs::read_to_string(root.join("notes.md")).unwrap(), "alpha\nbeta\n",
+            "delegation must not become a way to reach a side-effecting tool");
+        assert!(permissions(&db).await.is_empty(), "nothing inside a read-only sub-agent can raise an approval");
+
+        let rows = steps(&db, &request).await;
+        let shape: Vec<(&str, &str, &str, &str)> = rows.iter().map(|r| (r["kind"].as_str().unwrap(),
+            r["status"].as_str().unwrap(), r["tool"].as_str().unwrap(), r["error"].as_str().unwrap())).collect();
+        assert_eq!(shape, vec![
+            ("model_call", "complete", "", ""), ("tool_call", "complete", "task", ""),
+            ("subagent", "complete", "", ""), ("model_call", "complete", "", ""),
+            ("tool_call", "complete", "read", ""), ("tool_call", "failed", "write", "unknown_tool"),
+            ("model_call", "complete", "", ""), ("model_call", "complete", "", ""),
+            ("verification", "complete", "", "")], "{rows:#?}");
+
+        // The whole point of `parent_step_id`: one ordered step list that still reads back as a tree.
+        let tree = db.run({
+            let request = request.clone();
+            move |c| {
+                let mut stmt = c.prepare("SELECT COALESCE((SELECT p.seq FROM turn_steps p WHERE p.id=s.parent_step_id),-1) \
+                    FROM turn_steps s WHERE s.request_id=?1 ORDER BY s.seq")?;
+                let rows = stmt.query_map([request], |r| r.get::<_, i64>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            }
+        }).await.unwrap();
+        assert_eq!(tree, vec![-1, -1, 1, 2, 2, 2, 2, -1, -1],
+            "the subagent step hangs off the task step, and the sub-agent's work hangs off the subagent step");
+
+        assert_eq!(kinds(&db, &request).await, vec!["turn_started", "model_call_started", "model_call_finished",
+            "tool_started", "subagent_started", "model_call_started", "model_call_finished",
+            "tool_started", "tool_finished", "tool_started", "tool_finished",
+            "model_call_started", "model_call_finished", "subagent_finished", "tool_finished",
+            "model_call_started", "model_call_finished", "verification_started", "verified", "answer_saved"]);
+
+        let requests = script.requests();
+        assert_eq!(requests.len(), 4, "one parent call, two sub-agent calls, then the parent's answer");
+        let offered: Vec<&str> = requests[1]["tools"].as_array().unwrap().iter()
+            .map(|tool| tool["function"]["name"].as_str().unwrap()).collect();
+        assert_eq!(offered, subagent::TOOLS, "a sub-agent is offered read-only tools only");
+        assert_eq!(requests[1]["messages"].as_array().unwrap().len(), 2,
+            "a sub-agent starts from its own context, not the parent's history");
+
+        let report = requests[3]["messages"].as_array().unwrap().iter()
+            .rfind(|message| message["role"] == "tool").cloned().expect("the report reaches the parent");
+        let content = report["content"].as_str().unwrap();
+        assert!(content.contains("sub-agent report") && content.contains("notes.md line 2 holds beta."), "{content}");
+        assert!(content.contains("files read:") && content.contains("notes.md"), "{content}");
+        assert!(!content.contains("alpha"), "the parent gets the report, never the transcript: {content}");
+        assert!(content.chars().count() <= subagent::MAX_SUMMARY_CHARS + 200, "{content}");
         std::fs::remove_dir_all(root).ok();
     }
 

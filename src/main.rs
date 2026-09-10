@@ -17,6 +17,7 @@ mod agent_loop;  // P1-T10 agentic turn loop: steps, tools, activity events, bud
 mod context;     // P3-T01 deterministic initial window and per-category byte receipts
 mod repo_map;    // P3-T04 bounded per-scope file/symbol map
 mod skills;      // P5-T02 skills index and bounded SKILL.md bodies
+mod subagent;    // P5-T03 read-only exploration sub-agent: tools, bounds, report shape
 mod embeddings;  // P4-T02 deterministic offline vectors and cosine scoring
 use memory_agents::MemoryAgents;
 use storage::DbStore;

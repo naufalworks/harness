@@ -34,7 +34,7 @@ class AgenticSql(unittest.TestCase):
                      "PERMISSION_CREATE", "PERMISSION_GET", "PERMISSION_RESOLVE", "PERMISSION_STATUS", "PERMISSIONS_PENDING", "PERMISSION_EXPIRE",
                      "FILE_CHANGE", "FILE_CHANGES_LIST", "FILE_CHANGE_GET", "FILE_CHANGE_REVERTED",
                      "PLAN_CLEAR", "PLAN_INSERT", "PLAN_LIST", "SESSION_OF_REQUEST",
-                     "RECOVER_STEPS", "RECOVER_PERMISSIONS", "RECOVER_ACTIVITY"]:
+                     "RECOVER_STEPS", "RECOVER_PERMISSIONS", "RECOVER_ACTIVITY", "STEPS_OF_PARENT"]:
             self.assertIn(name, SQL)
 
     def test_scope_roundtrip(self):
@@ -54,9 +54,9 @@ class AgenticSql(unittest.TestCase):
     def test_step_lifecycle_and_listing(self):
         c = connect(); seed_turn(c)
         self.assertEqual(c.execute(SQL["STEP_NEXT_SEQ"], ("r1",)).fetchone()[0], 0)
-        c.execute(SQL["STEP_BEGIN"], ("st0", "r1", 0, "model_call", None, None, json.dumps({"messages": []}), NOW))
+        c.execute(SQL["STEP_BEGIN"], ("st0", "r1", None, 0, "model_call", None, None, json.dumps({"messages": []}), NOW))
         self.assertEqual(c.execute(SQL["STEP_NEXT_SEQ"], ("r1",)).fetchone()[0], 1)
-        c.execute(SQL["STEP_BEGIN"], ("st1", "r1", 1, "tool_call", "read", "call_1", json.dumps({"path": "a"}), NOW))
+        c.execute(SQL["STEP_BEGIN"], ("st1", "r1", None, 1, "tool_call", "read", "call_1", json.dumps({"path": "a"}), NOW))
         n = c.execute(SQL["STEP_FINISH"], ("st0", "complete", json.dumps({"tool_calls": 1}), 12, 0, 100, 20, None, LATER)).rowcount
         self.assertEqual(n, 1)
         # finishing twice is a no-op (status guard)
@@ -66,7 +66,25 @@ class AgenticSql(unittest.TestCase):
         self.assertEqual([r[1] for r in rows], [0, 1])
         self.assertEqual(rows[0][3], "complete"); self.assertEqual(rows[1][12], "not_found")
         with self.assertRaises(sqlite3.IntegrityError):
-            c.execute(SQL["STEP_BEGIN"], ("st2", "r1", 1, "tool_call", None, None, None, NOW))
+            c.execute(SQL["STEP_BEGIN"], ("st2", "r1", None, 1, "tool_call", None, None, None, NOW))
+
+    # P5-T03: a sub-agent's steps stay inside the parent's request and seq sequence, and are
+    # reached through the `task` tool-call step that spawned them.
+    def test_subagent_steps_hang_off_their_parent(self):
+        c = connect(); seed_turn(c)
+        c.execute(SQL["STEP_BEGIN"], ("st0", "r1", None, 0, "tool_call", "task", "call_1", "{}", NOW))
+        c.execute(SQL["STEP_BEGIN"], ("sub", "r1", "st0", 1, "subagent", None, None, "{}", NOW))
+        c.execute(SQL["STEP_BEGIN"], ("sub_model", "r1", "sub", 2, "model_call", None, None, "{}", NOW))
+        c.execute(SQL["STEP_BEGIN"], ("sub_read", "r1", "sub", 3, "tool_call", "read", "call_2", "{}", NOW))
+        c.execute(SQL["STEP_FINISH"], ("sub_read", "failed", "{}", 2, 0, None, None, "not_found", LATER))
+        self.assertEqual([(r[0], r[2], r[4], r[5]) for r in c.execute(SQL["STEPS_OF_PARENT"], ("sub",)).fetchall()],
+                         [("sub_model", "model_call", None, None), ("sub_read", "tool_call", "read", "not_found")])
+        self.assertEqual([r[0] for r in c.execute(SQL["STEPS_OF_PARENT"], ("st0",)).fetchall()], ["sub"])
+        # the turn is still one ordered list, sub-agent steps included
+        self.assertEqual([r[1] for r in c.execute(SQL["STEPS_LIST"], ("r1",)).fetchall()], [0, 1, 2, 3])
+        # a step cannot point at a parent that does not exist
+        with self.assertRaises(sqlite3.IntegrityError):
+            c.execute(SQL["STEP_BEGIN"], ("orphan", "r1", "missing", 4, "model_call", None, None, "{}", NOW))
 
     def test_events_cursor(self):
         c = connect(); seed_turn(c)
@@ -78,14 +96,14 @@ class AgenticSql(unittest.TestCase):
 
     def test_latest_verification_is_bounded_and_request_scoped(self):
         c = connect(); seed_turn(c)
-        c.execute(SQL["STEP_BEGIN"], ("v1", "r1", 0, "verification", None, None, "{}", NOW))
+        c.execute(SQL["STEP_BEGIN"], ("v1", "r1", None, 0, "verification", None, None, "{}", NOW))
         report = json.dumps({"status": "verified", "claims": [], "skipped_diagnostics": []})
         c.execute(SQL["STEP_FINISH"], ("v1", "complete", report, len(report), 0, 10, 2, None, LATER))
         row = c.execute(SQL["VERIFICATION_LATEST"], ("r1",)).fetchone()
         self.assertEqual((row[0], row[1], json.loads(row[2])["status"], row[5]),
                          ("v1", "complete", "verified", 0))
         self.assertIsNone(c.execute(SQL["VERIFICATION_LATEST"], ("other",)).fetchone())
-        c.execute(SQL["STEP_BEGIN"], ("v2", "r1", 1, "verification", None, None, "{}", NOW))
+        c.execute(SQL["STEP_BEGIN"], ("v2", "r1", None, 1, "verification", None, None, "{}", NOW))
         oversized = "x" * 40000
         c.execute(SQL["STEP_FINISH"], ("v2", "failed", oversized, len(oversized), 1, None, None, "verification_failed", LATER))
         latest = c.execute(SQL["VERIFICATION_LATEST"], ("r1",)).fetchone()
@@ -94,7 +112,7 @@ class AgenticSql(unittest.TestCase):
 
     def test_permission_flow(self):
         c = connect(); seed_turn(c)
-        c.execute(SQL["STEP_BEGIN"], ("st1", "r1", 0, "tool_call", "edit", "call_1", "{}", NOW))
+        c.execute(SQL["STEP_BEGIN"], ("st1", "r1", None, 0, "tool_call", "edit", "call_1", "{}", NOW))
         c.execute(SQL["PERMISSION_CREATE"], ("p1", "r1", "st1", "edit", "edit a.rs (+1 -1)", json.dumps({"diff": "-a\n+b"}), NOW, LATER))
         pend = c.execute(SQL["PERMISSIONS_PENDING"], ("proj",)).fetchall()
         self.assertEqual([p[0] for p in pend], ["p1"])
@@ -109,7 +127,7 @@ class AgenticSql(unittest.TestCase):
 
     def test_file_changes_and_plan(self):
         c = connect(); seed_turn(c)
-        c.execute(SQL["STEP_BEGIN"], ("st1", "r1", 0, "tool_call", "edit", "call_1", "{}", NOW))
+        c.execute(SQL["STEP_BEGIN"], ("st1", "r1", None, 0, "tool_call", "edit", "call_1", "{}", NOW))
         c.execute(SQL["FILE_CHANGE"], ("fc1", "r1", "st1", "src/a.rs", "modify", "aaaa", "bbbb", "-x\n+y", 1, NOW))
         with self.assertRaises(sqlite3.IntegrityError):
             c.execute(SQL["FILE_CHANGE"], ("fc2", "r1", "st1", "src/a.rs", "rename", None, None, "", 1, NOW))
@@ -128,7 +146,7 @@ class AgenticSql(unittest.TestCase):
     # P2-T03: the undo reads one change together with its turn's scope, and can only fire once.
     def test_revert_marks_a_change_once(self):
         c = connect(); seed_turn(c)
-        c.execute(SQL["STEP_BEGIN"], ("st1", "r1", 0, "tool_call", "edit", "call_1", "{}", NOW))
+        c.execute(SQL["STEP_BEGIN"], ("st1", "r1", None, 0, "tool_call", "edit", "call_1", "{}", NOW))
         c.execute(SQL["FILE_CHANGE"], ("fc1", "r1", "st1", "notes.md", "modify", "aaaa", "bbbb", "-x\n+y", 1, NOW))
         row = c.execute(SQL["FILE_CHANGE_GET"], ("fc1",)).fetchone()
         self.assertEqual(row[3:9], ("notes.md", "modify", "aaaa", "bbbb", "-x\n+y", 1))
@@ -143,7 +161,7 @@ class AgenticSql(unittest.TestCase):
 
     def test_recovery(self):
         c = connect(); seed_turn(c)
-        c.execute(SQL["STEP_BEGIN"], ("st1", "r1", 0, "tool_call", "bash", "call_1", "{}", NOW))
+        c.execute(SQL["STEP_BEGIN"], ("st1", "r1", None, 0, "tool_call", "bash", "call_1", "{}", NOW))
         c.execute(SQL["PERMISSION_CREATE"], ("p1", "r1", "st1", "bash", "x", "{}", NOW, LATER))
         c.execute("BEGIN IMMEDIATE")
         c.execute(SQL["RECOVER_STEPS"], (LATER,))

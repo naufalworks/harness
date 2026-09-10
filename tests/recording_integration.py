@@ -36,6 +36,11 @@ def main() -> None:
 
     beta_hash = __import__("hashlib").sha256(b"beta").hexdigest()[:4]
     stale_hash = __import__("hashlib").sha256(b"not-the-current-line").hexdigest()[:4]
+    # P5-T03: a sub-agent's own context is `Exploration: <description>\n\n<prompt>`, so its calls
+    # select their own scenario here and can never consume the parent's scripted replies.
+    explore_ask = "find gamma"
+    explore_prompt = "which line of notes.md holds gamma"
+    explore_key = f"Exploration: {explore_ask}\n\n{explore_prompt}"
     scripts = {
         "I prefer Rust": [text("Synthetic durable answer")],
         "simulate provider failure": [failure(503, "synthetic provider failure")],
@@ -53,6 +58,17 @@ def main() -> None:
         "path escape": [
             tool_calls(("escape-1", "read", {"path": "../../etc/passwd"})),
             text("The requested path was outside the project and was not read."),
+        ],
+        "delegate the search": [
+            tool_calls(("task-1", "task", {"description": explore_ask, "prompt": explore_prompt})),
+            text("A sub-agent found gamma on line 2."),
+        ],
+        explore_key: [
+            tool_calls(
+                ("sub-read", "read", {"path": "notes.md"}),
+                ("sub-write", "write", {"path": "deny.md", "content": "should not land\n", "overwrite": True}),
+            ),
+            text("notes.md line 2 holds gamma."),
         ],
         "deny write": [
             tool_calls(("deny-1", "write", {"path": "deny.md", "content": "should not land\\n", "overwrite": True})),
@@ -260,6 +276,44 @@ def main() -> None:
             assert len(happy_requests) == 4
             assert any(message.get("role") == "tool" for message in happy_requests[1]["messages"])
             assert any(message.get("role") == "tool" and "gamma" in message.get("content", "") for message in happy_requests[2]["messages"])
+
+            # P5-T03: one delegated exploration over the real surface. The sub-agent's own model and
+            # tool calls hang off a `subagent` step under the `task` step, it is offered read-only
+            # tools only, and the parent receives the bounded report rather than the transcript.
+            # The mode here is still auto_all, so a refused `write` proves that the allow-list, not
+            # the approval gate, is what keeps a sub-agent read-only.
+            explored = submit("delegate the search")
+            explored_done = wait_receipt(explored["request_id"], "complete")
+            assert explored_done["response"] == "A sub-agent found gamma on line 2."
+            assert (root / "deny.md").read_text() == "keep this file\n", "delegation must not reach a side-effecting tool"
+            with sqlite3.connect(db) as connection:
+                tree = connection.execute(
+                    "SELECT s.kind,s.status,s.tool_name,s.error_code,COALESCE(p.seq,-1) FROM turn_steps s "
+                    "LEFT JOIN turn_steps p ON p.id=s.parent_step_id WHERE s.request_id=? ORDER BY s.seq",
+                    (explored["request_id"],),
+                ).fetchall()
+            assert tree == [
+                ("model_call", "complete", None, None, -1),
+                ("tool_call", "complete", "task", None, -1),
+                ("subagent", "complete", None, None, 1),
+                ("model_call", "complete", None, None, 2),
+                ("tool_call", "complete", "read", None, 2),
+                ("tool_call", "failed", "write", "unknown_tool", 2),
+                ("model_call", "complete", None, None, 2),
+                ("model_call", "complete", None, None, -1),
+                ("verification", "complete", None, None, -1),
+            ], tree
+            explored_kinds = [event["kind"] for event in call("/activity?session_id=" + explored["session_id"])[1]["events"]]
+            assert explored_kinds.index("subagent_started") < explored_kinds.index("subagent_finished") < explored_kinds.index("answer_saved"), explored_kinds
+            sub_bodies = [item["body"] for item in provider.requests if item["scenario"] == explore_key]
+            assert len(sub_bodies) == 2, sub_bodies
+            assert [tool["function"]["name"] for tool in sub_bodies[0]["tools"]] == ["read", "grep", "glob"], sub_bodies[0]["tools"]
+            assert len(sub_bodies[0]["messages"]) == 2, "a sub-agent starts from its own context, not the parent's history"
+            explored_requests = [item["body"] for item in provider.requests if item["scenario"] == "delegate the search"]
+            report = [message for message in explored_requests[-1]["messages"] if message.get("role") == "tool"][-1]["content"]
+            assert "sub-agent report" in report and "notes.md line 2 holds gamma." in report, report
+            assert "files read:" in report and "- notes.md" in report, report
+            assert "alpha" not in report, "the parent gets the report, never the sub-agent's transcript"
 
             # P2-T01: the same rows, live. The stream is opened before the turn, so the frames are
             # produced as the loop commits them, and every frame must be the `/activity` row itself.
