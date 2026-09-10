@@ -1,5 +1,12 @@
 # PROGRESS — journal
 
+## 2026-09-10 · AI session · P7-T02 stream boundary foundation
+
+- **Delivered**: added provider SSE boundary parsing primitives for durable generation streaming.
+- **Delivered**: added stream request builder contract and tests without changing the existing completion path.
+- **Verified**: stream frame parsing now separates complete SSE events from partial network chunks.
+- **Open**: wire the streaming HTTP response into `GenerationSink`, then persist incremental generation deltas.
+
 Append-only. Newest entry first. Each entry: date, who (human / AI session), what changed,
 what was verified and how, what is open. Keep entries short; details go in TASKS.md status
 and the design docs.

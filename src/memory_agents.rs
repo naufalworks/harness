@@ -90,6 +90,27 @@ pub trait GenerationSink: Send {
     fn fail(&mut self, error_code: &str);
 }
 
+#[derive(Default)]
+pub struct BufferedGeneration {
+    pub text: String,
+    pub failed: Option<String>,
+    pub usage: Option<ModelUsage>,
+}
+
+impl GenerationSink for BufferedGeneration {
+    fn delta(&mut self, text: &str) {
+        self.text.push_str(text);
+    }
+
+    fn complete(&mut self, usage: &ModelUsage) {
+        self.usage = Some(usage.clone());
+    }
+
+    fn fail(&mut self, error_code: &str) {
+        self.failed = Some(error_code.to_string());
+    }
+}
+
 #[derive(Deserialize)]
 struct Completion {
     choices: Vec<Choice>,
@@ -144,6 +165,32 @@ impl MemoryAgents {
         }
         serde_json::from_slice(&bytes).context("provider returned invalid JSON")
     }
+    fn decode_stream_delta(frame: &Value) -> Option<&str> {
+        frame.get("choices")
+            .and_then(Value::as_array)
+            .and_then(|choices| choices.first())
+            .and_then(|choice| choice.get("delta"))
+            .and_then(|delta| delta.get("content"))
+            .and_then(Value::as_str)
+    }
+
+    pub(crate) fn parse_stream_frame(data: &str) -> Result<Option<String>> {
+        if data.trim() == "[DONE]" {
+            return Ok(None);
+        }
+        let frame: Value = serde_json::from_str(data).context("invalid provider stream frame")?;
+        Ok(Self::decode_stream_delta(&frame).map(str::to_string))
+    }
+
+    pub(crate) fn parse_sse_event(buffer: &mut String) -> Option<String> {
+        let boundary = buffer.find("\n\n")?;
+        let event = buffer[..boundary].to_string();
+        buffer.drain(..boundary + 2);
+        event.lines()
+            .find_map(|line| line.strip_prefix("data:").map(str::trim))
+            .map(str::to_string)
+    }
+
     pub async fn list_models(&self) -> Result<Value> {
         let response = self
             .http
@@ -361,6 +408,10 @@ fn completion_request(model: &str, messages: Vec<Value>, tools: Option<&[Value]>
     request
 }
 
+fn completion_stream_request(model: &str, messages: Vec<Value>) -> Value {
+    json!({"model": model, "messages": messages, "stream": true})
+}
+
 fn decode_model_turn(message: Value, usage: Option<UsageWire>) -> Result<ModelTurn> {
     let object = message
         .as_object()
@@ -494,6 +545,12 @@ mod provider_tests {
     }
 
     #[test]
+    fn provider_stream_frames_decode_content_deltas() {
+        let delta = r#"{"choices":[{"delta":{"content":"hello"}}]}"#;
+        assert_eq!(MemoryAgents::parse_stream_frame(delta).unwrap(), Some("hello".into()));
+        assert_eq!(MemoryAgents::parse_stream_frame("[DONE]").unwrap(), None);
+    }
+
     fn completion_request_includes_tools_and_auto_choice() {
         let tools = vec![json!({"type":"function","function":{"name":"read"}})];
         let request = completion_request(
@@ -507,10 +564,31 @@ mod provider_tests {
     }
 
     #[test]
+    fn provider_stream_frames_ignore_non_content_deltas() {
+        let delta = r#"{"choices":[{"delta":{"role":"assistant"}}]}"#;
+        assert_eq!(MemoryAgents::parse_stream_frame(delta).unwrap(), None);
+    }
+
+    #[test]
+    fn provider_sse_events_wait_for_complete_frames() {
+        let mut buffer = "data: one\n".to_string();
+        assert_eq!(MemoryAgents::parse_sse_event(&mut buffer), None);
+        buffer.push_str("\ndata: two\n\n");
+        assert!(buffer.contains("data: two"));
+        assert_eq!(MemoryAgents::parse_sse_event(&mut buffer), Some("one".into()));
+    }
+
+    #[test]
     fn completion_request_omits_tools_for_text_only_calls() {
         let request = completion_request("model", Vec::new(), None);
         assert!(request.get("tools").is_none());
         assert!(request.get("tool_choice").is_none());
+    }
+
+    #[test]
+    fn completion_stream_request_enables_streaming() {
+        let request = completion_stream_request("model", Vec::new());
+        assert_eq!(request["stream"], Value::Bool(true));
     }
 
     #[test]
