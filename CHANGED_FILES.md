@@ -56,3 +56,4 @@ All Rust: `src/agentic_sql.rs`, `src/tools/*`, the two-line `src/storage.rs` cha
 ## Status snapshot
 
 done: P1-T01 (needs-verify), P1-T02 · needs-verify: P1-T05, P1-T06 · SQL groundwork done for T09/T10/T11 · next: P1-T07 edit/write, T08 bash, T09 think/todo, T03 provider adapter, T10 loop, T11–T14.
+# upcloud-dev connectivity check
