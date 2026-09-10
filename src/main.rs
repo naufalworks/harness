@@ -16,6 +16,7 @@ mod tools;       // P1-T05/T06 tool registry (needs-verify: written without carg
 mod agent_loop;  // P1-T10 agentic turn loop: steps, tools, activity events, budgets
 mod context;     // P3-T01 deterministic initial window and per-category byte receipts
 mod repo_map;    // P3-T04 bounded per-scope file/symbol map
+mod skills;      // P5-T02 skills index and bounded SKILL.md bodies
 mod embeddings;  // P4-T02 deterministic offline vectors and cosine scoring
 use memory_agents::MemoryAgents;
 use storage::DbStore;

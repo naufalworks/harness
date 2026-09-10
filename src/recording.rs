@@ -216,12 +216,23 @@ pub(crate) async fn generate(store:&DbStore,agents:&MemoryAgents,turn:Generation
         Ok(found)=>found.unwrap_or_else(||ScopeConfig::blank(&turn.scope)),
         Err(_)=>return store.fail_recording(turn.request,"context_failed").await,
     };
-    let repo_parts=if let Some(root)=scope.root_path.clone() {
-        match tokio::task::spawn_blocking(move||crate::repo_map::load_or_refresh(std::path::Path::new(&root))).await {
-            Ok(Ok(map))=>vec![context::NamedPart{id:map.id,text:map.text}],
+    // Both project-derived producers run in one blocking hop: the bounded repository map (P3-T04)
+    // and the skills index (P5-T02). Either one failing is `context_failed`, because a turn that
+    // silently dropped them would look identical to a project that has neither.
+    let (repo_parts,skill_parts)=if let Some(root)=scope.root_path.clone() {
+        let produced=tokio::task::spawn_blocking(move||{
+            let root=std::path::Path::new(&root);
+            let map=crate::repo_map::load_or_refresh(root)?;
+            Ok::<_,anyhow::Error>((map,crate::skills::index_parts(root)?))
+        }).await;
+        match produced {
+            Ok(Ok((map,skills)))=>(
+                vec![context::NamedPart{id:map.id,text:map.text}],
+                skills.into_iter().map(|(id,text)|context::NamedPart{id,text}).collect::<Vec<_>>(),
+            ),
             _=>return store.fail_recording(turn.request,"context_failed").await,
         }
-    } else {Vec::new()};
+    } else {(Vec::new(),Vec::new())};
     let plan=match store.plan(turn.session.clone()).await {
         Ok(plan)=>plan,Err(_)=>return store.fail_recording(turn.request,"context_failed").await,
     };
@@ -234,7 +245,7 @@ pub(crate) async fn generate(store:&DbStore,agents:&MemoryAgents,turn:Generation
     if user_message.id!=turn.request {
         return store.fail_recording(turn.request,"context_failed").await;
     }
-    let sources=context::Sources{repo_map:repo_parts,..context::Sources::default()};
+    let sources=context::Sources{skills_index:skill_parts,repo_map:repo_parts,..context::Sources::default()};
     let built=match context::build(context::BuildInput {scope:&scope,tools:&offered_tools,
         sources:&sources,memories:&recalled,plan:&plan,recent_steps,user_message,
         budgets:context::Budgets::default()}) {

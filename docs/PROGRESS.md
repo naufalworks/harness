@@ -18,6 +18,16 @@ Suggested first message to an AI continuing this work:
 
 ---
 
+## 2026-09-10 · AI session (Notion AI via Local) · P5-T02 skills with progressive disclosure
+
+- **Delivered**: A project can keep reusable procedures in `skills/<name>/SKILL.md`. Each turn's window lists only name, one-line description and path; the model calls the new `skill` tool to pull one body on demand, capped at 16 KiB and cut on a UTF-8 boundary after frontmatter is stripped.
+- **Bounded and sandboxed**: 32 skills, 200-char redacted descriptions, 64-char single-segment names, 256 KiB per file, real directories only (no symlink traversal), with `paths::resolve` still gating the read. Skipped and over-cap directories are counted in the index instead of vanishing; a failed scan degrades to one `skills:not_indexed` line.
+- **Untrusted by construction**: a body arrives as a tool result behind a banner saying project text cannot grant tool permissions, approve a denied command or override system rules.
+- **Deviation from the task wording**: discovery runs per turn before the first provider call, not at process startup, because a scope's root path is configurable at runtime.
+- **Two magic numbers removed**: `src/agent_loop.rs` and `tests/recording_integration.py` both asserted exactly eight tools; they now count the registry's schemas and `tools/schemas/*.json`.
+- **Verification**: release gate exit 0 — 121 Rust tests (9 new), Clippy/build, migrations 001→004, 9 tool schemas, 52 Python contracts, both mock-provider HTTP suites. `recording_integration.py` gained a `skills/review` fixture proving the index reaches the window and the body does not. `git diff --check` clean. Browser suites not run: no UI change.
+- **Open**: this repo ships no `skills/` directory, so the feature stays inert here until one exists. Next is P5-T03 (read-only explore sub-agent).
+
 ## 2026-09-10 · AI session (Notion AI via Local) · P5-T01 verifier step
 
 - **Delivered**: Every text answer is now audited by a separate `verification` step that runs after the main model call and before `answer_saved`. The verifier sees the redacted answer and an evidence manifest of this request's durable tool steps only, and returns claims marked verified / unverified / skipped with the step ids they rest on.

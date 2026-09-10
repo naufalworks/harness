@@ -12,6 +12,7 @@ pub mod textdiff;
 pub mod edit_tools;
 pub mod bash_tool;
 pub mod meta_tools;
+pub mod skill_tool;
 
 pub const MAX_OUTPUT: usize = 32 * 1024;
 const HEAD: usize = 24 * 1024;
@@ -154,6 +155,7 @@ impl Registry {
             Box::new(edit_tools::Edit), Box::new(edit_tools::Write),
             Box::new(bash_tool::Bash),
             Box::new(meta_tools::Think), Box::new(meta_tools::TodoWrite),
+            Box::new(skill_tool::Skill),
         ] }
     }
     pub fn get(&self, name: &str) -> Option<&dyn Tool> { self.tools.iter().find(|t| t.name() == name).map(|b| b.as_ref()) }

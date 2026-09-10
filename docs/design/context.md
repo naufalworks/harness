@@ -24,7 +24,7 @@ use the same builder; chat-only scopes simply have zero tool-definition candidat
 
 P3-T01 defined the stable inputs and receipt slots. P3-T02 now compacts old live tool results and
 caches unchanged reads, P3-T03 compacts an oversized running turn, and P3-T04 supplies a bounded
-repository map. Skills discovery remains P5-T02; none of these producers changes the nine category
+repository map. P5-T02 supplies the skills index; none of these producers changes the nine category
 names or the immutable initial receipt.
 
 ## Default budgets
@@ -33,7 +33,7 @@ names or the immutable initial receipt.
 |---|---:|---|
 | `system_rules` | 8,192 | Rendered `prompts/main_agent.md`; mandatory and atomic. |
 | `tool_definitions` | 12,288 | Compact JSON definitions in registry order; atomic as a set when tools are enabled. |
-| `skills_index` | 4,096 | Named index entries in producer order; whole entries, greedy prefix. Empty until P5-T02. |
+| `skills_index` | 4,096 | Named index entries in producer order; whole entries, greedy prefix. Name, description and path only. |
 | `repo_map` | 8,192 | Per-scope file/top-level-symbol map; whole named map, capped at source and producer level. |
 | `recalled_memories` | 6,144 | Compact JSON memory snapshots in recall rank order; whole memories, greedy prefix. |
 | `plan` | 8,192 | `seq` order, rendered as one status/text line per item; whole items, greedy prefix. |
@@ -100,6 +100,15 @@ names, symlinks and generated/vendor directories, prefers `ctags -x` when availa
 uses bounded language/heading fallbacks. A path/size/mtime signature refreshes external changes on
 the next build; a successful file-changing tool refreshes it immediately. `.harness/` is ignored.
 
+Each `skills/<name>/SKILL.md` in a configured project contributes one index entry: the directory
+name, a description (frontmatter `description:`, else the first non-empty body line, redacted and
+capped at 200 characters), and the root-relative path. Bodies are never in the initial window; the
+`skill` tool loads one on request, bounded to 16 KiB. Discovery runs per turn alongside the
+repository map, because a scope's root is configurable at runtime. At most 32 skills are indexed;
+directories skipped for an unsafe name, a symlink, or a missing, oversized or non-UTF-8 SKILL.md,
+together with anything past the cap, are counted in a final `skills:not_indexed` entry rather than
+disappearing silently.
+
 ## Receipt
 
 `chat_receipts.context_json` advances to format version 2 while retaining the compatibility fields
@@ -152,8 +161,8 @@ trail.
 
 - `system_rules`, `tool_definitions`, `repo_map`, `recalled_memories`, `plan`, `compacted_history`,
   `recent_steps`, and `user_message` are populated when their scoped source exists.
-- `skills_index` remains empty until P5-T02. Any absent optional source has an explicit empty receipt
-  row rather than invented placeholder context.
+- `skills_index` is populated for configured project scopes that have a `skills/` directory. Any
+  absent optional source has an explicit empty receipt row rather than invented placeholder context.
 - The existing database claim remains source-bounded to 20 completed messages. The context manager
   replaces its old pre-provider 24,000-byte trimming so exclusions within that bounded tail become
   visible in the receipt.

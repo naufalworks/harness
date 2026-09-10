@@ -78,6 +78,11 @@ def main() -> None:
         (root / "notes.md").write_text("alpha\nbeta\n")
         (root / "stale.md").write_text("alpha\nbeta\n")
         (root / "deny.md").write_text("keep this file\n")
+        # P5-T02: one real skill, so the receipt proves discovery is wired into a recorded turn.
+        (root / "skills" / "review").mkdir(parents=True)
+        (root / "skills" / "review" / "SKILL.md").write_text(
+            "---\ndescription: How this repo reviews a diff\n---\nRe-anchor before every edit.\n"
+        )
         db = tmp_path / "fixture.db"
         server_port = port()
         token = "synthetic-" + "x" * 40
@@ -193,7 +198,8 @@ def main() -> None:
             assert done["response"] == "Synthetic durable answer"
             assert provider.count("I prefer Rust") == 1
             first_provider = next(item["body"] for item in provider.requests if item["scenario"] == "I prefer Rust")
-            assert len(first_provider["tools"]) == 8 and first_provider["tool_choice"] == "auto"
+            schema_count = len(list((ROOT / "tools/schemas").glob("*.json")))
+            assert len(first_provider["tools"]) == schema_count and first_provider["tool_choice"] == "auto"
             assert call("/chat/submit", first)[0] == 200
             assert provider.count("I prefer Rust") == 1, "idempotent replay must not call the provider"
             changed = {**first, "prompt": "Changed content"}
@@ -212,6 +218,11 @@ def main() -> None:
             assert all(row["candidate_bytes"] == row["included_bytes"] + row["excluded_bytes"] for row in categories)
             assert all(row["included_bytes"] <= row["budget_bytes"] for row in categories)
             assert budget["totals"]["candidate_bytes"] == budget["totals"]["included_bytes"] + budget["totals"]["excluded_bytes"]
+            skills_row = next(row for row in categories if row["name"] == "skills_index")
+            assert [part["id"] for part in skills_row["included_parts"]] == ["skill:review"], skills_row
+            window = "\n".join(str(message.get("content", "")) for message in first_provider["messages"])
+            assert "review: How this repo reviews a diff" in window, "the skills index reaches the first window"
+            assert "Re-anchor before every edit" not in window, "a skill body must never be in the initial window"
             assert call("/chat/requests/" + first["request_id"], auth=False)[0] == 401
             assert call("/chat/requests/" + first["request_id"] + "/context", origin="https://untrusted.invalid")[0] == 403
 

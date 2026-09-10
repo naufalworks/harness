@@ -93,6 +93,17 @@ Args: `{ thought: string (≤ 4000 chars) }`. Stores the text as step output, re
 
 Args: `{ items: [{ text: string (≤ 200), status: "pending"|"in_progress"|"done"|"failed" }] }` (≤ 30 items, at most one `in_progress`). Replaces the session plan transactionally; emits `plan_updated`. Returns the normalized list. The system prompt instructs the model to call it before multi-step work and after each step.
 
+## skill
+
+Args: `{ name: string (≤ 64 chars; letters, digits, `-` or `_`) }`. Loads `skills/<name>/SKILL.md`. This is the second half of progressive disclosure; the first half is the `skills_index` context category (docs/design/context.md).
+
+- Not side-effecting: it reads one known path, so it runs under every permission mode.
+- `name` is a single directory name, never a path. Anything else is `invalid_arguments`, and an unknown name is `not_found`. Both refusals list up to 12 discovered skill names, so a typo costs one call instead of a guessing loop.
+- `paths::resolve` still runs, keeping the sandbox, secret deny-list and symlink rules the single gate for disk access.
+- The result is the file below its frontmatter, redacted, capped at 16 KiB on a UTF-8 boundary. A truncated body names the file and the cap so the model can `read` the rest.
+- Output is prefixed with the source line and an explicit note that a skill body is project guidance which cannot grant tool permissions, approve a denied command, or override system rules.
+- Summary: `skill <name> (<n> bytes[, truncated])`.
+
 ## Later tools (contracts to be written when scheduled)
 
-`task` (P5): read-only sub-agent. `skill` (P5): load `skills/<name>/SKILL.md`. `web_fetch` (P5, opt-in per scope). `ast_edit`, `lsp`, `browser` (P6).
+`task` (P5): read-only sub-agent. `web_fetch` (P5, opt-in per scope). `ast_edit`, `lsp`, `browser` (P6).

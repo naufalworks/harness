@@ -1040,7 +1040,9 @@ mod tests {
 
         let requests = script.requests();
         assert_eq!(requests.len(), 3);
-        assert!(requests[0]["tools"].as_array().unwrap().len() == 8, "every registered tool is offered");
+        assert_eq!(requests[0]["tools"].as_array().unwrap().len(),
+            crate::tools::Registry::standard().schemas().expect("every schema file parses").len(),
+            "every registered tool is offered");
         assert_eq!(requests[0]["tool_choice"], "auto");
         assert!(requests[1]["messages"].as_array().unwrap().iter().any(|m| m["role"] == "tool"), "tool results are fed back to the model");
         let verification_requests=script.verification_requests();

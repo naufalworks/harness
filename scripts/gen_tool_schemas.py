@@ -91,6 +91,10 @@ TOOLS = {
             }
         }, ["items"]),
     ),
+    "skill": (
+        "Load one project skill body from skills/<name>/SKILL.md. The context reference lists only skill names and descriptions; call this to read the instructions of a skill whose description matches the task, instead of guessing what it contains. Returns at most 16 KB.",
+        obj({"name": S("Skill directory name exactly as listed in the skills index (letters, digits, - or _).", maxLength=64)}, ["name"]),
+    ),
 }
 
 

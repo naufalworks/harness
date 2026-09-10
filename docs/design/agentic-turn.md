@@ -96,7 +96,7 @@ Invariants:
 
 | tool | side_effecting | `ask` | `auto_edit` | `auto_all` |
 |---|---|---|---|---|
-| read, grep, glob, think, todo_write | no | run | run | run |
+| read, grep, glob, think, todo_write, skill | no | run | run | run |
 | edit, write | yes | ask | run | run |
 | bash | yes | ask | ask | run, **except deny-list → ask** |
 
