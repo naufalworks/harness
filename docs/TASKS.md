@@ -377,7 +377,7 @@ Each task has: `status`, `depends`, `design` (doc section), `files` (touched),
 - Status: done
 
 ### P7-T02c · Attribute and verify generation replay
-- status: todo
+- status: done
 - depends: P7-T02b
 - design: docs/ROADMAP.md#p4
 - files: src/storage.rs, src/main.rs, src/recording_tests.rs, tests/recording_integration.py
@@ -393,8 +393,8 @@ Each task has: `status`, `depends`, `design` (doc section), `files` (touched),
 - Research Needed: Inspect storage projection and existing activity-stream HTTP fixture.
 - Implementation Plan: Add a failing two-turn attribution assertion; include `request_id` in the bounded generation projection; prove cursor paging and SSE resume without duplicates; cover wrong-session isolation, authentication, interruption, and failure events; run the release gate before marking done.
 - Validation Method: cargo test --locked streaming; python3 tests/recording_integration.py; bash scripts/verify_release.sh.
-- Result: Pending.
-- Status: todo
+- Result: Generation polling and authenticated SSE now project `request_id`; native and compiled-server tests prove two-turn attribution, ordered cursor resume without duplicates, wrong-session isolation, validation/authentication bounds, and completed, interrupted, and failed terminal events. `bash scripts/verify_release.sh` passed with 161 Rust tests, Clippy/build, 53 Python contracts, both local HTTP suites, frontend syntax, and `git diff --check`.
+- Status: done
 
 ### P7-T04 · Correct migration verification reporting
 - status: todo

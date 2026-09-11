@@ -445,6 +445,36 @@ def main() -> None:
                 assert call(path)[0] == code, path
             assert call("/activity/stream?session_id=" + stream_session, auth=False)[0] == 401
 
+            # P7-T02c: every generation row identifies its turn, while the feed remains
+            # session-scoped and resumable through the same bounded cursor over polling and SSE.
+            first_generation = call("/generation?session_id=" + stream_session)[1]
+            assert len(first_generation["events"]) == 2, first_generation
+            assert {event["request_id"] for event in first_generation["events"]} == {streamed_turn["request_id"]}
+            generation_cursor = first_generation["next_after_seq"]
+            generation_live = open_stream(f"/generation/stream?session_id={stream_session}&after_seq={generation_cursor}")
+            second_streamed_turn = submit("I prefer Rust", session=stream_session)
+            wait_receipt(second_streamed_turn["request_id"], "complete")
+            generation_tail = call(f"/generation?session_id={stream_session}&after_seq={generation_cursor}")[1]
+            assert len(generation_tail["events"]) == 2, generation_tail
+            assert {event["request_id"] for event in generation_tail["events"]} == {second_streamed_turn["request_id"]}
+            generation_frames = read_frames(generation_live, len(generation_tail["events"]))
+            generation_live.close()
+            assert [kind for _, kind, _ in generation_frames] == ["generation"] * len(generation_tail["events"])
+            assert [row for _, _, row in generation_frames] == generation_tail["events"]
+            generation_resumed = open_stream(f"/generation/stream?session_id={stream_session}&after_seq={generation_tail['next_after_seq']}", timeout=1.5)
+            assert read_frames(generation_resumed, 1, seconds=3) == [], "generation resume must not replay a delivered event"
+            generation_resumed.close()
+            assert call(f"/generation?session_id={stream_session}&after_seq={generation_tail['next_after_seq']}")[1] == {"events": [], "next_after_seq": generation_tail["next_after_seq"]}
+            for path, code in [
+                (f"/generation?session_id={stream_session}&after_seq=-1", 400),
+                ("/generation?session_id=nope", 400),
+                (f"/generation/stream?session_id={stream_session}&after_seq=-1", 400),
+                ("/generation/stream?session_id=nope", 400),
+            ]:
+                assert call(path)[0] == code, path
+            assert call("/generation?session_id=" + stream_session, auth=False)[0] == 401
+            assert call("/generation/stream?session_id=" + stream_session, auth=False)[0] == 401
+
             # Stale hash anchor: the tool refuses the edit and never touches disk.
             stale = submit("stale anchor")
             wait_receipt(stale["request_id"], "complete")
@@ -588,11 +618,25 @@ def main() -> None:
             assert [(s["kind"], s["status"]) for s in interrupted_steps] == [("model_call", "complete"), ("tool_call", "interrupted")]
             assert provider.count("hold during tool") == before_restart, "restart must not re-execute the bash step"
             assert "interrupted" in [event["kind"] for event in call("/activity?session_id=" + hold["session_id"])[1]["events"]]
+            interrupted_generation = call("/generation?session_id=" + hold["session_id"])[1]["events"]
+            assert any(
+                event["request_id"] == hold["request_id"]
+                and event["state"] == "interrupted"
+                and event["error_code"] == "process_restarted"
+                for event in interrupted_generation
+            ), interrupted_generation
 
             failure_turn = submit("simulate provider failure")
             wait_receipt(failure_turn["request_id"], "failed")
             failed_steps = call("/chat/requests/" + failure_turn["request_id"] + "/steps")[1]["steps"]
             assert [(s["kind"], s["status"], s["error_code"]) for s in failed_steps] == [("model_call", "failed", "provider_failed")]
+            failed_generation = call("/generation?session_id=" + failure_turn["session_id"])[1]["events"]
+            assert any(
+                event["request_id"] == failure_turn["request_id"]
+                and event["state"] == "failed"
+                and event["error_code"] == "provider_failed"
+                for event in failed_generation
+            ), failed_generation
 
             with sqlite3.connect(db) as connection:
                 assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"

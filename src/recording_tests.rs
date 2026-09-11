@@ -93,11 +93,59 @@ async fn full_memory_queue_does_not_rollback_answer() {
 async fn streaming_completion_and_receipt_commit_together() {
     let db = DbStore::init(":memory:").unwrap();
     start(&db, "r", "s").await;
-    db.complete_recording("r".into(), "answer".into()).await.unwrap();
+    db.complete_recording("r".into(), "answer".into())
+        .await
+        .unwrap();
     let events = db.generation_since("s".into(), 0).await.unwrap();
+    assert!(events["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|event| event["request_id"] == "r"));
     assert_eq!(events["events"][0]["content"], "answer");
     assert_eq!(events["events"][1]["state"], "completed");
     assert_eq!(events["events"].as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn generation_replay_attributes_multiple_turns_and_resumes_by_cursor() {
+    let db = DbStore::init(":memory:").unwrap();
+    start(&db, "first", "session").await;
+    db.complete_recording("first".into(), "one".into())
+        .await
+        .unwrap();
+    start(&db, "second", "session").await;
+    db.complete_recording("second".into(), "two".into())
+        .await
+        .unwrap();
+
+    let feed = db.generation_since("session".into(), 0).await.unwrap();
+    let events = feed["events"].as_array().unwrap();
+    assert_eq!(events.len(), 4);
+    assert_eq!(
+        events
+            .iter()
+            .map(|event| event["request_id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["first", "first", "second", "second"]
+    );
+    let first_cursor = events[1]["seq"].as_i64().unwrap();
+
+    let tail = db
+        .generation_since("session".into(), first_cursor)
+        .await
+        .unwrap();
+    assert_eq!(
+        tail["events"],
+        json!([events[2].clone(), events[3].clone()])
+    );
+    assert_eq!(tail["next_after_seq"], events[3]["seq"]);
+    assert!(
+        db.generation_since("other".into(), 0).await.unwrap()["events"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -108,9 +156,21 @@ async fn streaming_event_failure_rolls_back_answer_and_receipt() {
         c.execute_batch("CREATE TRIGGER reject_generation BEFORE INSERT ON generation_events BEGIN SELECT RAISE(ABORT, 'injected failure'); END;")?;
         Ok(())
     }).await.unwrap();
-    assert!(db.complete_recording("r".into(), "answer".into()).await.is_err());
-    assert_eq!(db.recording_receipt("r".into()).await.unwrap().unwrap()["state"], "generating");
-    assert_eq!(db.history("s".into(), None).await.unwrap()["messages"].as_array().unwrap().len(), 1);
+    assert!(db
+        .complete_recording("r".into(), "answer".into())
+        .await
+        .is_err());
+    assert_eq!(
+        db.recording_receipt("r".into()).await.unwrap().unwrap()["state"],
+        "generating"
+    );
+    assert_eq!(
+        db.history("s".into(), None).await.unwrap()["messages"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 #[tokio::test]
@@ -156,9 +216,18 @@ async fn restart_preserves_waiting_and_marks_started_as_interrupted() {
     let first_generation = db.generation_since("s".into(), 0).await.unwrap();
     assert_eq!(first_generation["events"].as_array().unwrap().len(), 1);
     assert_eq!(first_generation["events"][0]["state"], "interrupted");
+    assert_eq!(first_generation["events"][0]["request_id"], "r");
     db.run(recording::recover).await.unwrap();
-    assert_eq!(db.generation_since("s".into(), 0).await.unwrap(), first_generation);
-    assert!(db.generation_since("other".into(), 0).await.unwrap()["events"].as_array().unwrap().is_empty());
+    assert_eq!(
+        db.generation_since("s".into(), 0).await.unwrap(),
+        first_generation
+    );
+    assert!(
+        db.generation_since("other".into(), 0).await.unwrap()["events"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(
         db.recording_receipt("r".into()).await.unwrap().unwrap()["state"],
         "interrupted"

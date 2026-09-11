@@ -1,5 +1,13 @@
 # PROGRESS — journal
 
+## 2026-09-11 · Notion AI via locally · P7-T02c attributed generation replay
+
+- **Fixed**: generation polling and SSE projections now preserve each durable event's `request_id`, so multiple turns in one session can be rendered under the correct message.
+- **Replay coverage**: native tests prove ordered two-turn attribution, bounded cursor paging, exact tails, wrong-session isolation, completed events, and interrupted recovery attribution. The compiled-server suite compares authenticated SSE frames with polling rows and proves cursor resume has no duplicates.
+- **Failure coverage**: the HTTP fixture now verifies interrupted and provider-failed generation rows carry the originating request ID and terminal error code. Invalid cursors, malformed sessions, and unauthenticated polling/streaming remain rejected.
+- **Verification**: `cargo test --locked streaming` passed (9 tests), `cargo test --locked generation` passed, and `bash scripts/verify_release.sh` exited 0 with 161 Rust tests, Clippy/build, 53 Python contracts, both local HTTP suites, frontend syntax, and `git diff --check`. Browser suites were not run because no UI changed.
+- **Review notes**: existing Rust dead-code warnings and Python SQLite `ResourceWarning`s remain non-blocking. The release gate's stale migration summary remains isolated as `P7-T04`, which is next before frontend integration in `P7-T03`.
+
 ## 2026-09-11 · Notion AI via Local · Fast-forward merge and P7 continuation plan
 
 - **Merged**: fast-forwarded `autonomous-development-streaming` into `main` at `554fa6f` and pushed `origin/main`; no conflict resolution or history rewrite was needed.

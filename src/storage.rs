@@ -881,9 +881,9 @@ impl DbStore {
 
     pub async fn generation_since(&self, session_id: String, after_seq: i64) -> Result<Value> {
         self.run(move|c|{
-            let mut stmt=c.prepare("SELECT seq,state,content,error_code,created_at FROM generation_events WHERE session_id=?1 AND seq>?2 ORDER BY seq LIMIT 200")?;
+            let mut stmt=c.prepare("SELECT seq,request_id,state,content,error_code,created_at FROM generation_events WHERE session_id=?1 AND seq>?2 ORDER BY seq LIMIT 200")?;
             let rows=stmt.query_map(params![session_id,after_seq],|r|Ok(json!({
-                "seq":r.get::<_,i64>(0)?,"state":r.get::<_,String>(1)?,"content":r.get::<_,String>(2)?,"error_code":r.get::<_,Option<String>>(3)?,"created_at":r.get::<_,String>(4)?
+                "seq":r.get::<_,i64>(0)?,"request_id":r.get::<_,String>(1)?,"state":r.get::<_,String>(2)?,"content":r.get::<_,String>(3)?,"error_code":r.get::<_,Option<String>>(4)?,"created_at":r.get::<_,String>(5)?
             })))?.collect::<rusqlite::Result<Vec<_>>>()?;
             let next=rows.last().and_then(|e|e["seq"].as_i64()).unwrap_or(after_seq);
             Ok(json!({"events":rows,"next_after_seq":next}))
