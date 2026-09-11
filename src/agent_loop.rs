@@ -9,7 +9,7 @@
 //!    drift apart.
 use crate::{
     agentic_sql as sql,
-    memory_agents::{self, MemoryAgents, ModelTurn, ToolCall},
+    memory_agents::{self, GenerationSink, MemoryAgents, ModelTurn, ToolCall},
     safety,
     storage::{now, uid, DbStore, ScopeConfig},
     subagent,
@@ -587,7 +587,9 @@ struct Ctx<'a> {
     mode: PermissionMode,
 }
 
-pub async fn run(turn: Turn<'_>) -> Result<Outcome> {
+/// `sink` receives redacted answer text as it becomes publishable. Its accumulated `text()` is
+/// the turn's answer, so a sink that published incrementally reports exactly what it published.
+pub async fn run<S: GenerationSink>(turn: Turn<'_>, sink: &mut S) -> Result<Outcome> {
     let Turn {
         store,
         agents,
@@ -747,15 +749,15 @@ pub async fn run(turn: Turn<'_>) -> Result<Outcome> {
         }).await?;
 
         let replied = if tools.is_empty() {
-            let mut sink = memory_agents::BufferedGeneration::default();
-            match ctx.agents.stream_turn(&ctx.model, messages.clone(), &mut sink).await {
+            match ctx.agents.stream_turn(&ctx.model, messages.clone(), sink).await {
                 Ok(()) => {
-                    let text = sink.text;
+                    let text = sink.text().to_string();
+                    let usage = sink.usage().cloned().unwrap_or_default();
                     Ok(ModelTurn {
                         assistant_message: json!({"role":"assistant","content":text}),
                         text: Some(text),
                         tool_calls: Vec::new(),
-                        usage: sink.usage.unwrap_or_default(),
+                        usage,
                     })
                 }
                 Err(error) => Err(error),

@@ -618,3 +618,28 @@ Suggested first message to an AI continuing this work:
 **Next (in order).** P0-T01 on the owner machine → fix compile errors in `src/tools/*` (journal them here) → P1-T07 `edit_tools.rs` (use `textdiff::unified`, anchors via `line_hash`, emit `Artifact::FileChange`) → P1-T08 `bash_tool.rs` → P1-T09 `meta_tools.rs` → P1-T03 provider adapter → P1-T10 loop.
 
 **Resume prompt for an AI.** "Read AGENTS.md, then docs/TASKS.md. Pick the first `todo` whose deps are `done`/`needs-verify`. For Rust files marked needs-verify, run `cargo test --locked` first and fix errors before adding code. Journal every session in docs/PROGRESS.md."
+
+---
+
+## 2026-09-11 (session 3) — P7-T05 safe incremental generation publication
+
+**Context.** Owner asked to run the autonomous dev loop and start P7-T05. First finding of the session: `cargo` was installed under `~/.cargo/bin` but absent from the non-interactive PATH, which is why earlier sessions recorded "no cargo in the sandbox" and parked Rust at `needs-verify`. Fixed by symlinking every `~/.cargo/bin` binary into `/usr/local/bin`, so `cargo` resolves in the server's bare `/bin/sh`. `cargo build --locked`, `cargo test --locked` (161 passed at the time), `cargo clippy --all-targets`, both Python integration suites, `node --check static/app.js` and `git diff --check` were all green before any edit.
+
+**Changed.**
+- Edited `src/safety.rs` — new `classify_line` holds the BEGIN / `in_key` / `sensitive` / keep ladder shared by `redact` and the new `StreamRedactor` so they cannot drift; `REDACTION_MARKER` const; `StreamRedactor` with `push` / `finish` / `pending_len`, `emitted`-guarded `\n` join so dropped key-body lines leave no blank line. 4 new unit tests: chunking equivalence over every single cut and char-wise, split-secret holdback, no-blank-line on a dropped key body, plus an abandonment test.
+- Edited `src/memory_agents.rs` — `GenerationSink` is now async (`BoxFuture` alias, `text()` / `usage()` accessors so a sink's accumulated answer can be read back); `BufferedGeneration` implements them; `consume_stream_response` publishes completed lines as they arrive and flushes the final unterminated line only at `[DONE]`, and every `fail` call is awaited.
+- Edited `src/recording.rs` — new `RecordingGenerationSink`: one `chunk` row committed **before** delivery, first failure recorded as `generation_stream_save_failed` and surfaced by `generate` through `fail_recording`; `complete` writes no row. `complete_recording` now writes the terminal `completed` row only, so the answer is not duplicated.
+- Edited `src/agent_loop.rs` — `run` takes the sink as a parameter instead of constructing a buffer internally.
+- Edited `static/app.js` — `chunk` events append to `.generation-content` via `textContent` in `seq` order; `complete` still renders the saved answer.
+- Edited `src/recording_tests.rs`, `tests/recording_integration.py` — assertions updated from the fixed two-row model to "one `chunk` row per publication, terminal row last".
+
+**Verified here.** `cargo test --locked` → 165 passed, 0 failed. `cargo test --locked streaming` → 9 passed. `cargo test --locked redact` → 5 passed. `python3 tests/test_incremental_publication.py` → 7 OK. `bash scripts/verify_release.sh` → PASS (60 SQL contracts, migrations 001→005, tool schemas). `node --check static/app.js` → OK.
+
+**Not verified.** The browser fixture (`tests/recording_ui.cjs`) — still blocked by the `P7-T06` runtime gap (no `npm` / `npx` / Playwright on this host). The UI change is syntax-checked only.
+
+**Decisions.**
+- Publication unit is a **completed line**, never a provider chunk or token: `redact` drops a matched line whole, and durable append-only events cannot be retracted, so a partial line is never safe. Intra-line masking stays rejected (it would change redaction semantics and needs its own task).
+- The terminal `completed` row carries no content now. Chunks are the answer's durable record; re-writing the answer at completion would duplicate it. `SELECT content ... WHERE state='chunk' ORDER BY seq` is unchanged and still equals `redact(full_answer)`.
+- A publication failure ends the turn explicitly rather than silently truncating an answer the reader already saw.
+
+**Next (in order).** P7-T05 is done on its branch; P7-T06 (browser suites) remains blocked on the runtime gap and needs `npm`/Playwright or a different host. Unrelated and still open: `development-mcp` has no git repository, and `harness` has grown monolithic (`agent_loop.rs` 118 KB, `main.rs` 85 KB, `storage.rs` 70 KB) — worth a task before more features land.

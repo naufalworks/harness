@@ -448,14 +448,19 @@ def main() -> None:
             # P7-T02c: every generation row identifies its turn, while the feed remains
             # session-scoped and resumable through the same bounded cursor over polling and SSE.
             first_generation = call("/generation?session_id=" + stream_session)[1]
-            assert len(first_generation["events"]) == 2, first_generation
+            # P7-T05: the sink publishes chunks incrementally and completion writes the
+            # terminal row, so the count per turn is no longer fixed. Assert the turn
+            # attribution and that the turn ended explicitly.
+            assert first_generation["events"], first_generation
+            assert first_generation["events"][-1]["state"] == "completed", first_generation
             assert {event["request_id"] for event in first_generation["events"]} == {streamed_turn["request_id"]}
             generation_cursor = first_generation["next_after_seq"]
             generation_live = open_stream(f"/generation/stream?session_id={stream_session}&after_seq={generation_cursor}")
             second_streamed_turn = submit("I prefer Rust", session=stream_session)
             wait_receipt(second_streamed_turn["request_id"], "complete")
             generation_tail = call(f"/generation?session_id={stream_session}&after_seq={generation_cursor}")[1]
-            assert len(generation_tail["events"]) == 2, generation_tail
+            assert generation_tail["events"], generation_tail
+            assert generation_tail["events"][-1]["state"] == "completed", generation_tail
             assert {event["request_id"] for event in generation_tail["events"]} == {second_streamed_turn["request_id"]}
             generation_frames = read_frames(generation_live, len(generation_tail["events"]))
             generation_live.close()

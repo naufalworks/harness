@@ -3,7 +3,7 @@
 use crate::{
     agent_loop, agentic_sql as agentic, context,
     ingest::Event,
-    memory_agents::MemoryAgents,
+    memory_agents::{BoxFuture, BufferedGeneration, GenerationSink, MemoryAgents, ModelUsage},
     recording_sql as sql, safety,
     storage::{now, uid, DbStore, Recall, ScopeConfig},
     tools::Registry,
@@ -27,6 +27,82 @@ pub enum Admission {
     ScopeConflict,
     Busy,
     Full,
+}
+
+/// Publishes generation text to the durable event feed as it arrives.
+///
+/// Contract (docs/design/incremental-publication.md): the text handed to `delta` is already
+/// redacted by `safety::StreamRedactor`, and each chunk row is committed *before* delivery, so a
+/// reader can never observe a chunk that was not durable first. Publication failures are
+/// recorded on the sink and reported once, when the turn ends, instead of being buried.
+pub struct RecordingGenerationSink<'a> {
+    store: &'a DbStore,
+    request: String,
+    session: String,
+    failure: Option<&'static str>,
+    buffered: BufferedGeneration,
+}
+
+impl<'a> RecordingGenerationSink<'a> {
+    pub fn new(store: &'a DbStore, request: String, session: String) -> Self {
+        Self {
+            store,
+            request,
+            session,
+            failure: None,
+            buffered: BufferedGeneration::default(),
+        }
+    }
+
+    /// The first publication failure, if any. `generate` turns this into `fail_recording`.
+    pub fn failure(&self) -> Option<&'static str> {
+        self.failure
+    }
+
+    async fn publish(&mut self, text: &str) {
+        if self.failure.is_some() {
+            return;
+        }
+        if self
+            .store
+            .append_generation(
+                self.request.clone(),
+                self.session.clone(),
+                "chunk".to_string(),
+                text.to_string(),
+                None,
+            )
+            .await
+            .is_err()
+        {
+            self.failure = Some("generation_stream_save_failed");
+        }
+    }
+}
+
+impl GenerationSink for RecordingGenerationSink<'_> {
+    fn delta<'a>(&'a mut self, text: &'a str) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            self.buffered.delta(text).await;
+            self.publish(text).await;
+        })
+    }
+
+    fn complete<'a>(&'a mut self, usage: &'a ModelUsage) -> BoxFuture<'a, ()> {
+        // The terminal row is written with the receipt, never here.
+        Box::pin(async move { self.buffered.complete(usage).await })
+    }
+
+    fn fail<'a>(&'a mut self, _error_code: &'a str) -> BoxFuture<'a, ()> {
+        // Failure rows are owned by `fail_recording`.
+        Box::pin(async move {})
+    }
+    fn text(&self) -> &str {
+        self.buffered.text()
+    }
+    fn usage(&self) -> Option<&ModelUsage> {
+        self.buffered.usage()
+    }
 }
 pub struct Generation {
     pub request: String,
@@ -207,11 +283,13 @@ impl DbStore {
                     stamp
                 ],
             )?;
-            // Publish the single redacted answer and terminal event in the receipt transaction.
-            // A failed write rolls everything back; clients cannot observe premature completion.
+            // Publish only the terminal event here. Answer chunks are already durable: every
+            // completed line was committed by the sink before delivery (P7-T05), so re-writing
+            // the answer would duplicate it. `answer` is still stored on the answer message.
+            let _ = &answer;
             tx.execute(
-                "INSERT INTO generation_events(request_id,session_id,state,content,error_code,created_at) VALUES(?1,?2,'chunk',?3,NULL,?4),(?1,?2,'completed','',NULL,?4)",
-                params![request, session, safety::redact(&answer), stamp],
+                "INSERT INTO generation_events(request_id,session_id,state,content,error_code,created_at) VALUES(?1,?2,'completed','',NULL,?3)",
+                params![request, session, stamp],
             )?;
             // No job insert here. A full/failed extraction queue cannot undo this answer.
             tx.commit()?;
@@ -409,6 +487,10 @@ pub(crate) async fn generate(
         return store.fail_recording(turn.request, "context_failed").await;
     }
     // No provider call is allowed before context persistence succeeds.
+    // The sink persists each redacted chunk before delivery, so an incremental answer is durable
+    // before any client can observe it.
+    let mut sink =
+        RecordingGenerationSink::new(store, turn.request.clone(), turn.session.clone());
     let outcome = agent_loop::run(agent_loop::Turn {
         store,
         agents,
@@ -418,8 +500,13 @@ pub(crate) async fn generate(
         scope,
         messages,
         tools,
-    })
+    }, &mut sink)
     .await?;
+    if let Some(code) = sink.failure() {
+        // A chunk that could not be made durable ends the turn explicitly rather than silently
+        // truncating the answer the reader already saw.
+        return store.fail_recording(turn.request, code).await;
+    }
     let answer = match outcome {
         agent_loop::Outcome::Answer(text) => safety::redact(&text),
         agent_loop::Outcome::ProviderFailed => {

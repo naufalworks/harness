@@ -102,9 +102,10 @@ async fn streaming_completion_and_receipt_commit_together() {
         .unwrap()
         .iter()
         .all(|event| event["request_id"] == "r"));
-    assert_eq!(events["events"][0]["content"], "answer");
-    assert_eq!(events["events"][1]["state"], "completed");
-    assert_eq!(events["events"].as_array().unwrap().len(), 2);
+    // P7-T05: completion writes the terminal row only. Answer chunks are published
+    // incrementally by the sink, so no duplicate content row is written here.
+    assert_eq!(events["events"][0]["state"], "completed");
+    assert_eq!(events["events"].as_array().unwrap().len(), 1);
 }
 
 #[tokio::test]
@@ -121,15 +122,15 @@ async fn generation_replay_attributes_multiple_turns_and_resumes_by_cursor() {
 
     let feed = db.generation_since("session".into(), 0).await.unwrap();
     let events = feed["events"].as_array().unwrap();
-    assert_eq!(events.len(), 4);
+    assert_eq!(events.len(), 2);
     assert_eq!(
         events
             .iter()
             .map(|event| event["request_id"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        vec!["first", "first", "second", "second"]
+        vec!["first", "second"]
     );
-    let first_cursor = events[1]["seq"].as_i64().unwrap();
+    let first_cursor = events[0]["seq"].as_i64().unwrap();
 
     let tail = db
         .generation_since("session".into(), first_cursor)
@@ -137,9 +138,9 @@ async fn generation_replay_attributes_multiple_turns_and_resumes_by_cursor() {
         .unwrap();
     assert_eq!(
         tail["events"],
-        json!([events[2].clone(), events[3].clone()])
+        json!([events[1].clone()])
     );
-    assert_eq!(tail["next_after_seq"], events[3]["seq"]);
+    assert_eq!(tail["next_after_seq"], events[1]["seq"]);
     assert!(
         db.generation_since("other".into(), 0).await.unwrap()["events"]
             .as_array()

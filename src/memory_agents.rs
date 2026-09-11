@@ -7,7 +7,11 @@ use anyhow::{bail, Context, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{collections::HashSet, time::Duration};
+use std::{collections::HashSet, future::Future, pin::Pin, time::Duration};
+
+/// Boxed future returned by the async generation-sink methods. A durable publisher must commit
+/// each chunk *before* the transport can deliver it, which a synchronous sink cannot express.
+pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 const MAX_PROVIDER_BODY: usize = 1_048_576;
 const MAX_PROVIDER_TEXT: usize = 131_072;
@@ -84,9 +88,14 @@ pub struct ModelTurn {
 
 /// Consumer for provider streaming adapters. Implementations receive validated content deltas.
 pub trait GenerationSink: Send {
-    fn delta(&mut self, text: &str);
-    fn complete(&mut self, usage: &ModelUsage);
-    fn fail(&mut self, error_code: &str);
+    fn delta<'a>(&'a mut self, text: &'a str) -> BoxFuture<'a, ()>;
+    fn complete<'a>(&'a mut self, usage: &'a ModelUsage) -> BoxFuture<'a, ()>;
+    fn fail<'a>(&'a mut self, error_code: &'a str) -> BoxFuture<'a, ()>;
+    /// The redacted text accumulated so far. The turn's answer is read back from the sink, so a
+    /// sink that published incrementally still reports exactly what it published.
+    fn text(&self) -> &str;
+    /// Usage reported by the provider, when the stream carried it.
+    fn usage(&self) -> Option<&ModelUsage>;
 }
 
 #[derive(Default)]
@@ -97,16 +106,30 @@ pub struct BufferedGeneration {
 }
 
 impl GenerationSink for BufferedGeneration {
-    fn delta(&mut self, text: &str) {
-        self.text.push_str(text);
+    fn delta<'a>(&'a mut self, text: &'a str) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            self.text.push_str(text);
+        })
     }
 
-    fn complete(&mut self, usage: &ModelUsage) {
-        self.usage = Some(usage.clone());
+    fn complete<'a>(&'a mut self, usage: &'a ModelUsage) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            self.usage = Some(usage.clone());
+        })
     }
 
-    fn fail(&mut self, error_code: &str) {
-        self.failed = Some(error_code.to_string());
+    fn fail<'a>(&'a mut self, error_code: &'a str) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            self.failed = Some(error_code.to_string());
+        })
+    }
+
+    fn text(&self) -> &str {
+        &self.text
+    }
+
+    fn usage(&self) -> Option<&ModelUsage> {
+        self.usage.as_ref()
     }
 }
 
@@ -208,11 +231,12 @@ impl MemoryAgents {
         sink: &mut S,
     ) -> Result<()> {
         if !response.status().is_success() {
-            sink.fail("provider_http_error");
+            sink.fail("provider_http_error").await;
             bail!("provider returned HTTP {}", response.status().as_u16());
         }
         let mut buffer = Vec::new();
         let mut text = String::new();
+        let mut redactor = safety::StreamRedactor::new();
         let mut usage = ModelUsage::default();
         let mut received = 0usize;
         while let Some(chunk) = response.chunk().await? {
@@ -226,10 +250,13 @@ impl MemoryAgents {
                     if text.trim().is_empty() {
                         bail!("provider returned no text");
                     }
-                    // A later delta can identify an earlier prefix as a sensitive line or
-                    // private-key block. Whole-answer buffering preserves redact's boundary.
-                    sink.delta(&safety::redact(&text));
-                    sink.complete(&usage);
+                    // Only completed lines are ever released; the final unterminated line is
+                    // flushed here. A failure path never reaches this, so its tail is discarded.
+                    let tail = redactor.finish();
+                    if !tail.is_empty() {
+                        sink.delta(&tail).await;
+                    }
+                    sink.complete(&usage).await;
                     return Ok(());
                 }
                 let frame: Value = serde_json::from_str(&event).context("invalid provider stream frame")?;
@@ -261,11 +288,17 @@ impl MemoryAgents {
                     if text.len().saturating_add(delta.len()) > MAX_PROVIDER_TEXT {
                         bail!("provider text exceeds limit");
                     }
+                    // Publish only completed lines: a pattern can still be finished by later
+                    // bytes of the same line, and a released line can never be retracted.
+                    let publishable = redactor.push(&delta);
+                    if !publishable.is_empty() {
+                        sink.delta(&publishable).await;
+                    }
                     text.push_str(&delta);
                 }
             }
         }
-        sink.fail("incomplete_stream");
+        sink.fail("incomplete_stream").await;
         bail!("provider stream ended before DONE")
     }
 
@@ -353,8 +386,8 @@ impl MemoryAgents {
                 bail!("tool calls are not supported by this text-only adapter");
             }
             let text = turn.text.filter(|v| !v.trim().is_empty()).context("provider returned no text")?;
-            sink.delta(&safety::redact(&text));
-            sink.complete(&turn.usage);
+            sink.delta(&safety::redact(&text)).await;
+            sink.complete(&turn.usage).await;
             return Ok(());
         }
         self.consume_stream_response(response, sink).await

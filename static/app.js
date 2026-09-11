@@ -170,6 +170,7 @@ function renderGenerationEvent(event) {
   const box = generationView(event.request_id);
   box.classList.remove('generating','complete','failed','interrupted'); box.classList.add(state); box.dataset.state = state;
   const content = box.querySelector('.generation-content'); const label = box.querySelector('.generation-state');
+  if (state === 'chunk') { if (box.dataset.chunked !== 'true') { content.textContent = ''; box.dataset.chunked = 'true'; } content.textContent += typeof event.content === 'string' ? event.content : ''; label.textContent = 'Thinking\u2026'; }
   if (state === 'complete') { content.textContent = typeof event.content === 'string' ? event.content : ''; label.textContent = 'Done · saved response'; }
   else if (state === 'failed') { content.textContent = 'The provider failed before an answer was saved.'; label.textContent = `Failed${event.error_code ? ` · ${event.error_code}` : ''}`; }
   else if (state === 'interrupted') { content.textContent = 'The server restarted before an answer was saved. Nothing was resent.'; label.textContent = 'Interrupted'; }
