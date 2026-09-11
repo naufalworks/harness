@@ -439,12 +439,13 @@ Each task has: `status`, `depends`, `design` (doc section), `files` (touched),
 - note (2026-09-11, design ready): Design landed at `docs/design/incremental-publication.md`. Finding that shapes the work: `safety::redact` decides per line and replaces a matched line whole, so a pattern can still be completed by later bytes of the same line and no partial line may be published; intra-line masking is rejected because durable publication cannot be retracted. Plan is `safety::StreamRedactor` (line holdback, `in_key` carry-over, bounded pending tail, tail discarded on failure) plus one `chunk` row per publication, with no event-vocabulary or migration change. `tests/test_incremental_publication.py` is the executable spec: it derives markers and thresholds from `src/safety.rs` so it cannot drift, and proves chunk-split equivalence, monotone-prefix publication, holdback and tail discard over split-secret, private-key, CRLF, Unicode, token-shape and no-newline fixtures (7 tests; Python suite 53 → 60, OK). Still open: the Rust implementation and its cargo gate.
 
 ### P7-T06 · Make the browser suites executable
-- status: blocked
+- status: done
 - depends: P7-T03
 - blocked-by: the MCP host has `node`, `python3` and `git` but no `npm`, `npx` or `playwright` module, so the fixtures have no browser runtime (`require('playwright')` → `MODULE_NOT_FOUND`).
 - files: tests/recording_ui.cjs, tests/ui_smoke.cjs, scripts/verify_release.sh, README.md
 - done-when: `node tests/recording_ui.cjs` and `node tests/ui_smoke.cjs` run to completion on a documented setup, and that setup lives in the repo instead of in journal entries.
-- verify: node tests/recording_ui.cjs && node tests/ui_smoke.cjs
+- verify: scripts/verify_browser.sh
+- note (resolved 2026-09-12): Runtime installed and both fixtures pass. `npm` 9.2.0 via apt, `playwright` 1.63.0 with Chromium 1243 and its system libraries. The setup now lives in the repo: `scripts/setup_browser_tests.sh` installs it, `scripts/verify_browser.sh` runs both fixtures after resolving the browser from Playwright rather than a hard-coded path, and README documents both. `scripts/verify_release.sh` runs the suites when `node_modules` is present and skips them with a notice otherwise, so the gate stays green on a bare host. Evidence: `node tests/recording_ui.cjs` -> passed, 18 checks; `node tests/ui_smoke.cjs` -> passed, 24 checks; both with `CHROMIUM_PATH` resolved by Playwright and no `/usr/local/bin/chromium` symlink present.
 - note (opened 2026-09-11): Owner action. Either install a runtime (`npm install -D playwright && npx playwright install chromium`) or reuse the `P5-T01` pattern `NODE_PATH=<dir>/node_modules CHROMIUM_PATH=<browser> node tests/recording_ui.cjs`. Both fixtures pass `node --check`, so this is a runtime gap, not a code defect, and the release gate deliberately excludes browser suites.
 
 ---

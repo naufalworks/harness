@@ -1,0 +1,6 @@
+{
+  "name": "harness-tests",
+  "private": true,
+  "description": "Browser test fixtures for harness",
+  "devDependencies": { "playwright": "^1.49.0" }
+}

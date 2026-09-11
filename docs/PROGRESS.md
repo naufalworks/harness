@@ -643,3 +643,26 @@ Suggested first message to an AI continuing this work:
 - A publication failure ends the turn explicitly rather than silently truncating an answer the reader already saw.
 
 **Next (in order).** P7-T05 is done on its branch; P7-T06 (browser suites) remains blocked on the runtime gap and needs `npm`/Playwright or a different host. Unrelated and still open: `development-mcp` has no git repository, and `harness` has grown monolithic (`agent_loop.rs` 118 KB, `main.rs` 85 KB, `storage.rs` 70 KB) — worth a task before more features land.
+
+---
+
+## 2026-09-12 (session 4) — P7-T06 browser suites executable
+
+**Context.** Owner asked to install whatever the tests needed, after P7-T05 landed. P7-T06 had been `blocked` on a runtime gap: the host had `node`, `python3` and `git` but no `npm`, `npx` or Playwright module, so both browser fixtures failed at `require('playwright')`.
+
+**Installed.** `npm` 9.2.0 (`apt-get install --no-install-recommends npm`), then `playwright` 1.63.0 plus Chromium 1243 and its system libraries in the project. `package-lock.json` and `node_modules/` were already git-ignored, so `package.json` is the only new tracked file.
+
+**Changed.**
+- Added `scripts/setup_browser_tests.sh` — installs the runtime, fails with a clear message when `npm` is missing.
+- Added `scripts/verify_browser.sh` — runs both fixtures after resolving the browser via Playwright's own `executablePath()`, so nothing is hard-coded per machine; honours a `CHROMIUM_PATH` override.
+- Edited `scripts/verify_release.sh` — runs the browser suites when `node_modules` exists, skips them with a notice otherwise.
+- Edited `README.md` — documents the setup and the reason the suites sit outside the default gate.
+- Added `package.json` — the Playwright dev dependency.
+
+**Verified here.** `node tests/recording_ui.cjs` -> `passed`, 18 checks. `node tests/ui_smoke.cjs` -> `passed`, 24 checks. Both run through `scripts/verify_browser.sh` with the `/usr/local/bin/chromium` symlink removed, proving the documented path stands on its own. The release gate was re-run after the edit and stays green.
+
+**Not verified.** The fixtures exercise a mocked API only — neither starts the compiled Rust service, so they are frontend evidence, not end-to-end evidence. That boundary is printed by the fixtures themselves.
+
+**Decisions.**
+- The browser suites stay out of the default `verify_release.sh` path but run automatically when the runtime is present. A bare host should not fail the release gate over an optional browser install, and a provisioned host should not silently skip coverage.
+- `verify_browser.sh` resolves Chromium from Playwright instead of a fixed path, so the repo carries no machine-specific assumption.

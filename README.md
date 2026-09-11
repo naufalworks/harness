@@ -41,6 +41,25 @@ only; Lock/reload clears it. Drafts are never persisted to the browser.
 - **Recall.** Local FTS5 (BM25, no extra model call) over approved active
   memories in the conversation scope plus global.
 
+## Browser suites
+
+Two browser fixtures check the frontend against a mocked API (they do not run the
+Rust service): `tests/recording_ui.cjs` covers recording, the generation feed and
+resume behaviour; `tests/ui_smoke.cjs` covers the wider UI surface. Both need a real
+browser, so they are kept out of `scripts/verify_release.sh`'s default path.
+
+```sh
+scripts/setup_browser_tests.sh   # once per machine: Playwright + Chromium + system libs
+scripts/verify_browser.sh        # run both fixtures
+```
+
+`setup_browser_tests.sh` needs `npm` (Debian/Ubuntu: `apt-get install -y --no-install-recommends npm`)
+and root for Chromium's system libraries. `verify_browser.sh` resolves the browser from
+Playwright itself, so no path is hard-coded; override with `CHROMIUM_PATH` if needed.
+`verify_release.sh` runs the browser suites automatically when `node_modules` is present
+and skips them with a notice when it is not.
+
+
 ## Verify
 
 ```sh

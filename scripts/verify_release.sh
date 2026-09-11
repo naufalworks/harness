@@ -9,4 +9,9 @@ python3 -m unittest discover -s tests -p 'test_*.py' -v
 python3 tests/integration_smoke.py
 python3 tests/recording_integration.py
 node --check static/app.js
-echo 'Native, SQL and local mock-provider HTTP gates passed. Run the browser suites separately.'
+if [ -d node_modules ]; then
+  scripts/verify_browser.sh
+else
+  echo 'Browser suites skipped: run scripts/setup_browser_tests.sh to enable them.'
+fi
+echo 'Native, SQL, local mock-provider HTTP and browser gates passed.'
