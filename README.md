@@ -15,6 +15,29 @@ cargo run --release    # listens on 127.0.0.1:8080
 Open `http://127.0.0.1:8080`, paste the token. The token stays in tab memory
 only; Lock/reload clears it. Drafts are never persisted to the browser.
 
+### Exposing it on a tailnet
+
+The service binds loopback only. To reach it from another device, front it with
+`tailscale serve` rather than rebinding:
+
+```sh
+tailscale serve --bg --https=8443 http://127.0.0.1:8080
+```
+
+Then add that origin to `.env` before restarting, or every API call from the
+browser is refused with `Origin not allowed`:
+
+```sh
+HARNESS_ALLOWED_ORIGINS=https://<machine>.<tailnet>.ts.net:8443
+```
+
+The allow-list exists because the token is sent as a bearer header from the
+page; accepting arbitrary origins would let any site the browser visits spend
+it. Loopback origins on the bound port are always permitted, so local use needs
+no configuration. Note that a Funnel route on :443 is a *different* listener —
+pointing a public domain at this service would place it on the open internet
+behind nothing but the token.
+
 ## Layout
 
 | Path | Purpose |

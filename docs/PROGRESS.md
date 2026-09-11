@@ -589,3 +589,35 @@ Suggested first message to an AI continuing this work:
 **Next (in order).** P0-T01 on the owner machine → fix compile errors in `src/tools/*` (journal them here) → P1-T07 `edit_tools.rs` (use `textdiff::unified`, anchors via `line_hash`, emit `Artifact::FileChange`) → P1-T08 `bash_tool.rs` → P1-T09 `meta_tools.rs` → P1-T03 provider adapter → P1-T10 loop.
 
 **Resume prompt for an AI.** "Read AGENTS.md, then docs/TASKS.md. Pick the first `todo` whose deps are `done`/`needs-verify`. For Rust files marked needs-verify, run `cargo test --locked` first and fix errors before adding code. Journal every session in docs/PROGRESS.md."
+
+## 2026-09-12 — tailnet origin allow-list
+
+**Goal:** make the deployed instance usable from a tailnet browser, which the
+origin guard was rejecting with `Origin not allowed`.
+
+**Root cause:** `authenticate` compared the request `Origin` against three
+loopback strings built from `HARNESS_ADDR`'s port. A browser reaching the app
+through `tailscale serve` sends `https://<machine>.<tailnet>.ts.net:8443`, which
+could never match, so every authenticated call failed regardless of a valid
+token. The guard itself is correct — arbitrary origins must not be accepted,
+since the page sends the bearer token.
+
+**Change:** `Harness` gained `origins: Arc<Vec<String>>`, seeded with the same
+three loopback defaults and extended by an optional comma-separated
+`HARNESS_ALLOWED_ORIGINS`. The hardcoded inline array is gone; the comparison
+now reads the configured list.
+
+**Verified here.** `cargo test --locked` -> 166 passed, 0 failed (up from 165;
+new `configured_origin_is_allowed`, existing `foreign_origin_is_rejected`
+still passes). Release binary rebuilt and the unit restarted. Replayed the
+exact failing request with the real browser origin -> 200; `https://evil.invalid`
+-> 403; `http://127.0.0.1:8080` -> 200, so the defaults are intact.
+
+**Decisions.**
+- The extra origins come from configuration, not a hardcoded hostname. The
+  tailnet name is deployment-specific and must not live in source.
+- Loopback defaults stay unconditional: local use should never require config,
+  and removing them would break the documented `cargo run` path.
+- An unset or empty variable changes nothing, so the default posture is exactly
+  as strict as before.
+

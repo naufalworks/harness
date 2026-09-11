@@ -35,6 +35,7 @@ struct Harness {
     agents: MemoryAgents,
     token: Arc<String>,
     port: u16,
+    origins: Arc<Vec<String>>,
     api_limit: Arc<Semaphore>,
 }
 struct ApiError(StatusCode, &'static str);
@@ -76,15 +77,10 @@ async fn authenticate(State(h): State<Harness>, request: Request, next: Next) ->
             .into_response();
     }
     if let Some(origin) = request.headers().get(header::ORIGIN) {
-        let allowed = [
-            format!("http://127.0.0.1:{}", h.port),
-            format!("http://localhost:{}", h.port),
-            format!("http://[::1]:{}", h.port),
-        ];
         if !origin
             .to_str()
             .ok()
-            .is_some_and(|o| allowed.iter().any(|a| a == o))
+            .is_some_and(|o| h.origins.iter().any(|a| a == o))
         {
             return (
                 StatusCode::FORBIDDEN,
@@ -1066,11 +1062,24 @@ async fn main() -> Result<()> {
         &key,
         &env::var("HARNESS_MODEL").unwrap_or_else(|_| "LongCat-2.0".into()),
     )?;
+    let mut origins = vec![
+        format!("http://127.0.0.1:{}", addr.port()),
+        format!("http://localhost:{}", addr.port()),
+        format!("http://[::1]:{}", addr.port()),
+    ];
+    if let Ok(extra) = env::var("HARNESS_ALLOWED_ORIGINS") {
+        for candidate in extra.split(',').map(str::trim).filter(|c| !c.is_empty()) {
+            if !origins.iter().any(|o| o == candidate) {
+                origins.push(candidate.to_string());
+            }
+        }
+    }
     let state = Harness {
         store: store.clone(),
         agents: agents.clone(),
         token: Arc::new(token),
         port: addr.port(),
+        origins: Arc::new(origins),
         api_limit: Arc::new(Semaphore::new(8)),
     };
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -1092,6 +1101,11 @@ mod tests {
             agents: MemoryAgents::new("http://127.0.0.1:9", "synthetic", "test").unwrap(),
             token: Arc::new("x".repeat(32)),
             port: 8080,
+            origins: Arc::new(vec![
+                "http://127.0.0.1:8080".into(),
+                "http://localhost:8080".into(),
+                "http://[::1]:8080".into(),
+            ]),
             api_limit: Arc::new(Semaphore::new(8)),
         })
     }
@@ -1118,6 +1132,29 @@ mod tests {
                 axum::http::Request::builder()
                     .uri("/memory/status")
                     .header("Authorization", format!("Bearer {}", "x".repeat(32)))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+    #[tokio::test]
+    async fn configured_origin_is_allowed() {
+        let state = Harness {
+            store: DbStore::init(":memory:").unwrap(),
+            agents: MemoryAgents::new("http://127.0.0.1:9", "synthetic", "test").unwrap(),
+            token: Arc::new("x".repeat(32)),
+            port: 8080,
+            origins: Arc::new(vec!["https://upcloud-dev.example.ts.net:8443".into()]),
+            api_limit: Arc::new(Semaphore::new(8)),
+        };
+        let response = router(state)
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/memory/status")
+                    .header("Authorization", format!("Bearer {}", "x".repeat(32)))
+                    .header("Origin", "https://upcloud-dev.example.ts.net:8443")
                     .body(Body::empty())
                     .unwrap(),
             )
