@@ -1,5 +1,13 @@
 # PROGRESS — journal
 
+## 2026-09-11 · Notion AI via Local · Fast-forward merge and P7 continuation plan
+
+- **Merged**: fast-forwarded `autonomous-development-streaming` into `main` at `554fa6f` and pushed `origin/main`; no conflict resolution or history rewrite was needed.
+- **Baseline**: the merged checkpoint had a clean tree and passed the full release gate before merge: 160 Rust tests, Clippy/build, 53 Python contracts, both local HTTP suites, frontend syntax, and `git diff --check`.
+- **Next task**: `P7-T02c` is the next executable correctness task. It now explicitly depends on `P7-T02b` and names the storage, HTTP, native test, and integration-test files it owns.
+- **Execution order**: finish attributed/resumable multi-turn generation replay (`P7-T02c`), correct migration reporting (`P7-T04`), then integrate the durable feed into the frontend (`P7-T03`). The frontend task depends on both backend replay and truthful migration-gate evidence.
+- **Safety decision**: whole-answer buffering remains the active boundary. Incremental publication stays deferred until redaction can prove that secrets split across chunks never become visible early.
+
 ## 2026-09-11 · Notion AI via Local · P7-T02b idempotent generation recovery
 
 - **Reviewed**: resumed the in-progress recovery fix on `autonomous-development-streaming`, inspected its existing diff, recovery ordering, recording SQL, generation projection, pending P7 tasks, and release gates without overwriting unrelated work.

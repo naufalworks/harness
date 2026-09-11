@@ -378,6 +378,9 @@ Each task has: `status`, `depends`, `design` (doc section), `files` (touched),
 
 ### P7-T02c · Attribute and verify generation replay
 - status: todo
+- depends: P7-T02b
+- design: docs/ROADMAP.md#p4
+- files: src/storage.rs, src/main.rs, src/recording_tests.rs, tests/recording_integration.py
 - Goal: Make generation replay usable across multiple turns.
 - Objective: Include request identifiers and verify authenticated resumable transport.
 - Reason: generation_since drops request_id from rows even though one session contains multiple turns.
@@ -388,13 +391,16 @@ Each task has: `status`, `depends`, `design` (doc section), `files` (touched),
 - Task Description: Add request_id to generation projections and cover transport contracts.
 - Expected Outcome: Clients can render each event under the correct message.
 - Research Needed: Inspect storage projection and existing activity-stream HTTP fixture.
-- Implementation Plan: Add failing attribution assertion, extend query/projection, test feed and SSE.
+- Implementation Plan: Add a failing two-turn attribution assertion; include `request_id` in the bounded generation projection; prove cursor paging and SSE resume without duplicates; cover wrong-session isolation, authentication, interruption, and failure events; run the release gate before marking done.
 - Validation Method: cargo test --locked streaming; python3 tests/recording_integration.py; bash scripts/verify_release.sh.
 - Result: Pending.
 - Status: todo
 
 ### P7-T04 · Correct migration verification reporting
 - status: todo
+- depends: P7-T02c
+- design: docs/PLAN.md#p7--durable-generation-continuation
+- files: tests/test_migrations.py, docs/PROGRESS.md
 - Goal: Keep release evidence accurate.
 - Objective: Report the migration chain actually tested.
 - Reason: tests/test_migrations.py applies 005 and checks version 5 but prints version 4; the prior progress entry repeated that stale output.
@@ -412,7 +418,7 @@ Each task has: `status`, `depends`, `design` (doc section), `files` (touched),
 
 ### P7-T03 · Frontend durable stream integration
 - status: todo
-- depends: P7-T01
+- depends: P7-T01, P7-T02c, P7-T04
 - design: docs/ROADMAP.md#p4
 - files: static/app.js, static/*.css, src/main.rs
 - done-when: Chat UI consumes durable stream events instead of fake typing animation, preserves ordering after reconnect, and clearly distinguishes completed, interrupted, and failed responses.

@@ -113,6 +113,16 @@ after being loaded.
 ### P6 — Structural tooling
 `ast_edit` (ast-grep), `lsp` (diagnostics, references, rename), browser tool via CDP.
 
+### P7 — Durable generation continuation
+Generation output uses a persisted, authenticated, resumable event feed rather than
+browser-owned work. The atomic provider boundary and idempotent restart recovery are
+landed on `main`. Continue in this order: (1) add per-event request attribution and
+prove multi-turn cursor/SSE replay (`P7-T02c`), (2) correct migration-gate reporting
+(`P7-T04`), and (3) connect the chat UI to the durable generation feed with explicit
+complete, failed, and interrupted states (`P7-T03`). Keep whole-answer buffering until
+an incremental redaction design can prove that a secret split across chunks is never
+published early.
+
 ## 6. Non-goals (for now)
 Multi-user, remote bind, encrypted exact-original archive (see ROADMAP P1), OpenAI-
 compatible proxy API, autonomous background coding without a human in the loop.
