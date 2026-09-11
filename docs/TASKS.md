@@ -430,11 +430,12 @@ Each task has: `status`, `depends`, `design` (doc section), `files` (touched),
 ### P7-T05 · Safe incremental generation publication
 - status: todo
 - depends: P7-T02a, P7-T03
-- design: docs/PLAN.md#p7--durable-generation-continuation
-- files: src/memory_agents.rs, src/safety.rs, src/recording.rs, src/recording_tests.rs, static/app.js
+- design: docs/design/incremental-publication.md
+- files: src/memory_agents.rs, src/safety.rs, src/recording.rs, src/recording_tests.rs, static/app.js, tests/test_incremental_publication.py
 - done-when: Generation text can be published before DONE without a redactable pattern split across provider chunks ever becoming visible. A boundary-aware redactor withholds any tail that could still complete a pattern, the UI renders the incremental text in order, and a regression proves a secret split across two chunks is never published early and is never published unredacted afterwards.
 - verify: cargo test --locked streaming && cargo test --locked redact && bash scripts/verify_release.sh
 - note (opened 2026-09-11): Carries the deferred `P7-T02a` decision. Whole-answer buffering stays the active boundary until this task proves incremental safety; no other task may relax it as a side effect. Needs a host with cargo.
+- note (2026-09-11, design ready): Design landed at `docs/design/incremental-publication.md`. Finding that shapes the work: `safety::redact` decides per line and replaces a matched line whole, so a pattern can still be completed by later bytes of the same line and no partial line may be published; intra-line masking is rejected because durable publication cannot be retracted. Plan is `safety::StreamRedactor` (line holdback, `in_key` carry-over, bounded pending tail, tail discarded on failure) plus one `chunk` row per publication, with no event-vocabulary or migration change. `tests/test_incremental_publication.py` is the executable spec: it derives markers and thresholds from `src/safety.rs` so it cannot drift, and proves chunk-split equivalence, monotone-prefix publication, holdback and tail discard over split-secret, private-key, CRLF, Unicode, token-shape and no-newline fixtures (7 tests; Python suite 53 → 60, OK). Still open: the Rust implementation and its cargo gate.
 
 ### P7-T06 · Make the browser suites executable
 - status: blocked

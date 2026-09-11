@@ -120,11 +120,12 @@ landed on `main`. Landed since then: per-event request attribution with proven
 multi-turn cursor/SSE replay (`P7-T02c`), truthful migration-gate reporting (`P7-T04`),
 and a chat UI that renders the durable feed with explicit complete, failed and
 interrupted states (`P7-T03`). The phase's umbrella tasks (`P7-T01`, `P7-T02`) are
-closed on that evidence. Two things remain: publication before DONE stays deferred as
-`P7-T05` until a boundary-aware redactor can prove that a secret split across provider
-chunks is never published early — whole-answer buffering is the active boundary until
-then — and running the browser suites needs a host browser runtime, tracked as
-`P7-T06`.
+closed on that evidence. Two things remain. Publication before DONE stays deferred as
+`P7-T05`, now designed in `docs/design/incremental-publication.md`: the publication unit
+is a completed line, because `safety::redact` erases a matched line whole and a released
+prefix could never be retracted, and whole-answer buffering stays the active boundary
+until the Rust side lands against `tests/test_incremental_publication.py`. Running the
+browser suites still needs a host browser runtime, tracked as `P7-T06`.
 
 ## 6. Non-goals (for now)
 Multi-user, remote bind, encrypted exact-original archive (see ROADMAP P1), OpenAI-

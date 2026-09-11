@@ -1,5 +1,16 @@
 # PROGRESS — journal
 
+## 2026-09-11 · Notion AI via Local · P7-T05 design and executable publication spec
+
+- Drafted `docs/design/incremental-publication.md`: today's whole-answer boundary, the constraint that actually blocks incremental publication, invariants I1–I5, the `safety::StreamRedactor` shape, the rejected alternative, storage/UI impact, and the test matrix.
+- Grounding finding: `safety::redact` decides per line, replaces a matched line whole, and carries `-----BEGIN … PRIVATE KEY-----` state across lines. A pattern can therefore still be completed by later bytes of the same line (`pass` + `word=hidden`), and publication is durable and append-only, so a released partial line could never be retracted. The safe publication unit is a completed line, not a provider chunk and not a token.
+- Recorded the rejection of intra-line masking: it would require changing `redact` from dropping a line to masking a span, which weakens a deliberately conservative module and needs its own task rather than arriving as a side effect of streaming work.
+- Added `tests/test_incremental_publication.py` as the executable spec. It derives the marker vocabulary, the `sk-`/`AKIA` thresholds and the redaction marker from `src/safety.rs` so the reference cannot drift, then proves chunk-split equivalence, monotone-prefix publication, holdback until a line terminator, and tail discard on failure — over split-secret, private-key, CRLF, Unicode, token-shape, trailing-newline and no-newline fixtures, across every single cut, one-character chunks and seeded multi-cuts.
+- Repointed `P7-T05`'s design link from the PLAN anchor to the new doc, added the spec to its file list, appended a design-ready note, and refreshed the PLAN P7 paragraph.
+- Verified here: `python3 tests/test_incremental_publication.py` (7 tests, OK) and `python3 -m unittest discover -s tests -p 'test_*.py'` (60 tests, OK, up from 53), with migrations `001 -> 002 -> 003 -> 004 -> 005` and tool schemas 13 files / 17798 bytes still reported by the suite.
+- Not verified here: no `cargo`, so `safety::StreamRedactor` is designed and specified but not implemented or gated; `npm`, `npx` and the `playwright` module are still absent, so `P7-T06` stays blocked.
+- Next: on a cargo host, implement `StreamRedactor` and the per-publication `chunk` row against this spec, then run `cargo test --locked streaming && cargo test --locked redact && bash scripts/verify_release.sh`.
+
 ## 2026-09-11 · Notion AI via Local · P7 phase closure and remaining-work split
 
 - **Resumed and re-verified the checkpoint before changing anything**: `/root/development/harness` on `p7-frontend-generation-stream`, clean tree, HEAD `b6a5fb1` "feat(ui): render durable generation events", and `git rev-list --left-right --count` against `origin/p7-frontend-generation-stream` reporting `0 0`.
