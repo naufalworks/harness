@@ -13,6 +13,8 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MIG = ROOT / "migrations"
 CHAIN = ["001_core.sql", "002_recording.sql", "003_agentic.sql", "004_memory_kinds.sql", "005_generation_stream.sql"]
+VERSIONS = [name.split("_", 1)[0] for name in CHAIN]
+LATEST_VERSION = int(VERSIONS[-1])
 
 EXPECTED_TABLES = {
     1: {"sessions", "messages", "sources", "jobs", "candidates", "memories", "memory_revisions", "settings"},
@@ -46,7 +48,7 @@ def check_fts5():
 def test_full_chain():
     c = fresh()
     apply(c, len(CHAIN))
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 5
+    assert c.execute("PRAGMA user_version").fetchone()[0] == LATEST_VERSION
     have = tables(c)
     for v, names in EXPECTED_TABLES.items():
         missing = names - have
@@ -188,7 +190,10 @@ def main():
     test_populated_v3_to_v4()
     test_004_memory_categories_and_embedding_constraints()
     test_003_constraints()
-    print("migrations OK: 001 -> 002 -> 003 -> 004, user_version=4, data/FTS/FKs preserved")
+    print(
+        f"migrations OK: {' -> '.join(VERSIONS)}, "
+        f"user_version={LATEST_VERSION}, data/FTS/FKs preserved"
+    )
 
 
 class Suite(unittest.TestCase):

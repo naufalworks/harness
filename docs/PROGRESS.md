@@ -1,5 +1,12 @@
 # PROGRESS — journal
 
+## 2026-09-11 · Notion AI via locally · P7-T04 truthful migration reporting
+
+- **Fixed**: `tests/test_migrations.py` derives both its displayed migration sequence and expected latest `user_version` from `CHAIN`, eliminating the stale hard-coded `004` / version 4 success line.
+- **Correction**: the earlier P7-T02a journal note saying Python migration coverage stopped at 004 was inaccurate. The test already applied and asserted migration 005; only its printed summary was stale. Historical P6 entries describing 001→004 remain accurate for their dates.
+- **Verification**: `python3 tests/test_migrations.py` exits 0 and now reports `001 -> 002 -> 003 -> 004 -> 005, user_version=5, data/FTS/FKs preserved`; `git diff --check` passes.
+- **Next**: `P7-T03` is unblocked for frontend durable generation-feed integration.
+
 ## 2026-09-11 · Notion AI via locally · P7-T02c attributed generation replay
 
 - **Fixed**: generation polling and SSE projections now preserve each durable event's `request_id`, so multiple turns in one session can be rendered under the correct message.

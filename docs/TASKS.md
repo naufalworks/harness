@@ -397,7 +397,7 @@ Each task has: `status`, `depends`, `design` (doc section), `files` (touched),
 - Status: done
 
 ### P7-T04 · Correct migration verification reporting
-- status: todo
+- status: done
 - depends: P7-T02c
 - design: docs/PLAN.md#p7--durable-generation-continuation
 - files: tests/test_migrations.py, docs/PROGRESS.md
@@ -413,8 +413,8 @@ Each task has: `status`, `depends`, `design` (doc section), `files` (touched),
 - Research Needed: Compare CHAIN, full-chain assertions and output.
 - Implementation Plan: Derive output, run migration test, correct journal and commit.
 - Validation Method: python3 tests/test_migrations.py; git diff --check.
-- Result: Pending.
-- Status: todo
+- Result: Migration success output now derives its displayed chain and latest user version from `CHAIN`; the full-chain assertion uses the same derived latest version. `python3 tests/test_migrations.py` reports `001 -> 002 -> 003 -> 004 -> 005, user_version=5`, and `git diff --check` passes.
+- Status: done
 
 ### P7-T03 · Frontend durable stream integration
 - status: todo
