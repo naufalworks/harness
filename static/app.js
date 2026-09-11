@@ -67,8 +67,23 @@ function message(m, target = $('log')) {
       box.append(detail);
       const tray = node('section', undefined, 'suggestion-tray'); tray.dataset.requestId = m.request_id; tray.hidden = true; box.append(tray);
     }
+  } else if (m.request_id) {
+    box.append(node('span', 'Done · saved response', 'muted generation-state'));
   }
   target.append(box);
+  if (m.role === 'user' && ['failed','interrupted'].includes(m.generation_state)) {
+    const terminal = node('article', undefined, `message assistant generation-message ${m.generation_state}`);
+    terminal.dataset.requestId = m.request_id || '';
+    terminal.dataset.state = m.generation_state;
+    terminal.append(
+      node('strong', 'Harness'),
+      node('span', m.generation_state === 'interrupted'
+        ? 'The server restarted before an answer was saved. Nothing was resent.'
+        : 'The provider failed before an answer was saved.'),
+      node('span', m.generation_state === 'interrupted' ? 'Interrupted' : 'Failed', 'muted generation-state'),
+    );
+    target.append(terminal);
+  }
 }
 async function refreshStatus() {
   const myEpoch = epoch; const data = await api('/memory/status');
@@ -121,22 +136,117 @@ function accepted(receipt) {
   // Clear only the submitted draft, never text typed after it.
   if (pendingPrompt !== null && $('prompt').value === pendingPrompt) $('prompt').value = '';
 }
+
+// P7-T03: answers are rendered only from persisted generation rows. The receipt poll still
+// controls admission and terminal cleanup, but its `response` field is never used to paint the
+// live answer. The cursor is kept with the pending request identity so a reload resumes after
+// the last row this tab handled instead of replaying it into the UI.
+const generationStream = { controller: null, retry: null, sessionId: null, requestId: null, cursor: 0, failures: 0, view: null };
+function saveGenerationCursor() {
+  if (!pending || pending.request_id !== generationStream.requestId) return;
+  pending.generation_cursor = generationStream.cursor;
+  sessionStorage.setItem('harness_pending', JSON.stringify(pending));
+}
+function closeGenerationStream(reset = true) {
+  if (generationStream.retry) clearTimeout(generationStream.retry);
+  if (generationStream.controller) generationStream.controller.abort();
+  generationStream.retry = null; generationStream.controller = null;
+  if (reset) Object.assign(generationStream, { sessionId: null, requestId: null, cursor: 0, failures: 0, view: null });
+}
+function generationView(requestId) {
+  if (generationStream.view?.isConnected && generationStream.view.dataset.requestId === requestId) return generationStream.view;
+  const box = node('article', undefined, 'message assistant generation-message generating');
+  box.dataset.requestId = requestId; box.dataset.state = 'generating'; box.setAttribute('aria-live', 'polite');
+  box.append(node('strong', 'Harness'), node('span', 'Waiting for the recorded answer…', 'generation-content'), node('span', 'Thinking…', 'muted generation-state'));
+  const empty = $('log').querySelector(':scope > .empty'); if (empty) empty.remove();
+  $('log').append(box); generationStream.view = box;
+  $('chatscroll').scrollTop = $('chatscroll').scrollHeight;
+  return box;
+}
+function renderGenerationEvent(event) {
+  if (!event || event.request_id !== generationStream.requestId) return;
+  const state = event.state;
+  if (!['generating','complete','failed','interrupted'].includes(state)) return;
+  const box = generationView(event.request_id);
+  box.classList.remove('generating','complete','failed','interrupted'); box.classList.add(state); box.dataset.state = state;
+  const content = box.querySelector('.generation-content'); const label = box.querySelector('.generation-state');
+  if (state === 'complete') { content.textContent = typeof event.content === 'string' ? event.content : ''; label.textContent = 'Done · saved response'; }
+  else if (state === 'failed') { content.textContent = 'The provider failed before an answer was saved.'; label.textContent = `Failed${event.error_code ? ` · ${event.error_code}` : ''}`; }
+  else if (state === 'interrupted') { content.textContent = 'The server restarted before an answer was saved. Nothing was resent.'; label.textContent = 'Interrupted'; }
+  else { content.textContent = 'Waiting for the recorded answer…'; label.textContent = 'Thinking…'; }
+  $('chatscroll').scrollTop = $('chatscroll').scrollHeight;
+}
+function applyGenerationEvent(event) {
+  const seq = Number(event?.seq);
+  if (!Number.isFinite(seq) || seq <= generationStream.cursor) return;
+  generationStream.cursor = seq; saveGenerationCursor(); renderGenerationEvent(event);
+}
+function consumeGenerationFrame(frame) {
+  if (!frame.trim() || frame.startsWith(':')) return;
+  let seq = null; const data = [];
+  for (const line of frame.split('\n')) {
+    if (line.startsWith('id:')) seq = Number(line.slice(3).trim());
+    else if (line.startsWith('data:')) data.push(line.slice(5).trimStart());
+  }
+  if (!data.length) return;
+  try { const event = JSON.parse(data.join('\n')); if (seq !== null && event.seq === undefined) event.seq = seq; applyGenerationEvent(event); } catch {}
+}
+async function pollGeneration(sessionId) {
+  if (!token || !sessionId || generationStream.sessionId !== sessionId) return;
+  const data = await api(`/generation?session_id=${encodeURIComponent(sessionId)}&after_seq=${generationStream.cursor}`);
+  for (const event of data.events || []) applyGenerationEvent(event);
+}
+async function followGenerationStream(sessionId, requestId) {
+  if (!token || !sessionId || !requestId || generationStream.controller) return;
+  if (generationStream.sessionId !== sessionId || generationStream.requestId !== requestId) {
+    closeGenerationStream();
+    generationStream.sessionId = sessionId; generationStream.requestId = requestId;
+    generationStream.cursor = Number(pending?.request_id === requestId ? pending.generation_cursor : 0) || 0;
+  }
+  const controller = new AbortController(); const myEpoch = epoch;
+  generationStream.controller = controller;
+  try {
+    const response = await fetch(`/generation/stream?session_id=${encodeURIComponent(sessionId)}&after_seq=${generationStream.cursor}`,
+      { headers: { 'Authorization': `Bearer ${token}` }, signal: controller.signal });
+    if (!response.ok || !response.body) throw new Error(`Generation stream unavailable (${response.status})`);
+    generationStream.failures = 0;
+    const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = '';
+    for (;;) {
+      const chunk = await reader.read(); if (chunk.done) break;
+      if (!token || myEpoch !== epoch || pending?.request_id !== requestId) return;
+      buffer += decoder.decode(chunk.value, { stream: true });
+      const frames = buffer.split('\n\n'); buffer = frames.pop();
+      for (const frame of frames) consumeGenerationFrame(frame);
+    }
+    buffer += decoder.decode();
+    for (const frame of buffer.split('\n\n')) consumeGenerationFrame(frame);
+  } catch (error) { if (error?.name !== 'AbortError') generationStream.failures++; }
+  finally { if (generationStream.controller === controller) generationStream.controller = null; controller.abort(); }
+  if (token && myEpoch === epoch && pending?.request_id === requestId && generationStream.failures < 3 && !generationStream.controller) {
+    generationStream.retry = setTimeout(() => { generationStream.retry = null; followGenerationStream(sessionId, requestId); }, Math.min(1000 * 2 ** generationStream.failures, 5000));
+  }
+}
 async function followReceipt(first, myEpoch) {
   let data = first;
   for (let i=0; i<120; i++) {
     if (!token || myEpoch !== epoch) return;
     accepted(data);
-    // P2-T01: subscribe once per turn; the stream itself decides when the rail re-reads.
-    if (data.session_id) followActivityStream(data.session_id).catch(() => {});
+    const terminal = ['complete','failed','interrupted'].includes(data.state);
+    if (i === 0 && !terminal) { await loadHistory(); notice('Your message is saved. You can reconnect later to check the answer.'); }
+    // The activity rail and answer use independent durable cursors.
+    if (data.session_id) {
+      followActivityStream(data.session_id).catch(() => {});
+      followGenerationStream(data.session_id, data.request_id).catch(() => {});
+      await pollGeneration(data.session_id).catch(() => {});
+    }
     await refreshAgentTurn(data).catch(() => {});
-    if (['complete','failed','interrupted'].includes(data.state)) {
-      rememberPending(null); closeActivityStream(); $('retryrequest').hidden = true;
-      await loadHistory(); await loadSessions();
+    if (terminal) {
+      closeGenerationStream(false); rememberPending(null); closeActivityStream(); $('retryrequest').hidden = true;
+      await loadHistory(); await loadSessions(); closeGenerationStream();
       if (data.state === 'complete') notice(data.redacted ? 'Answer saved. Sensitive-looking input was filtered before saving.' : 'Answer saved on this device.');
       else notice(data.state === 'interrupted' ? 'Your message is saved. The server restarted before the answer completed; nothing was resent.' : 'Your message is saved, but the answer did not complete.', true);
       return;
     }
-    if (i === 0) { await loadHistory(); notice('Your message is saved. You can reconnect later to check the answer.'); }
     await new Promise(resolve => setTimeout(resolve, 1000));
     if (!token || myEpoch !== epoch) return;
     data = await api(`/chat/requests/${encodeURIComponent(data.request_id)}`);
@@ -160,7 +270,7 @@ async function sendAttempt(retry = false) {
   if (pending && !retry) return resumeRecording();
   const prompt = retry ? pendingPrompt : $('prompt').value;
   if (typeof prompt !== 'string' || !prompt.trim() || new TextEncoder().encode(prompt).length > 16000) return notice('Message must contain 1–16000 UTF-8 bytes.', true);
-  if (!retry) { pendingPrompt = prompt; rememberPending({request_id:crypto.randomUUID(),session_id:session,scope}); }
+  if (!retry) { pendingPrompt = prompt; rememberPending({request_id:crypto.randomUUID(),session_id:session,scope,generation_cursor:0}); }
   let admitted = false;
   const myEpoch = epoch; setBusy(true); captureLabel('Sending…');
   try {
@@ -189,7 +299,7 @@ $('authform').addEventListener('submit', async event => {
   } catch (error) { token = ''; $('workspace').hidden = true; $('auth').hidden = false; notice(error.message, true); }
 });
 $('lock').addEventListener('click', () => {
-  token = ''; epoch++; setBusy(false); pendingPrompt = null;
+  token = ''; epoch++; setBusy(false); pendingPrompt = null; closeGenerationStream(); closeActivityStream();
   $('workspace').hidden = true; $('auth').hidden = false; $('connection').textContent = 'Locked';
   for (const id of ['log','candidates','jobs','recalled','sessionlist']) $(id).replaceChildren();
   $('modelnames').textContent = ''; $('stats').textContent = ''; $('mainmodel').value = ''; $('extractmodel').value = ''; $('verificationmodel').value = ''; $('prompt').value = ''; $('file').value = ''; $('consent').checked = false;
@@ -208,7 +318,7 @@ $('checkrecording').addEventListener('click', resumeRecording);
 $('retryrequest').addEventListener('click', () => sendAttempt(true));
 $('leavepending').addEventListener('click', () => {
   if (!pending || !window.confirm('Start a new conversation without resending or cancelling this request? Any saved work remains in History. Unsaved draft text will be cleared.')) return;
-  epoch++; setBusy(false); rememberPending(null); $('retryrequest').hidden = true; $('prompt').value = '';
+  epoch++; setBusy(false); closeGenerationStream(); closeActivityStream(); rememberPending(null); $('retryrequest').hidden = true; $('prompt').value = '';
   session = crypto.randomUUID(); persistSession(); historyCursor = null; $('oldermessages').hidden = true;
   $('log').replaceChildren(node('p', 'New conversation. Check History later for the previous answer.', 'empty')); captureLabel(''); notice('Nothing was resent. Any saved work remains in History.');
 });

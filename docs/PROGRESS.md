@@ -1,5 +1,13 @@
 # PROGRESS — journal
 
+## 2026-09-11 · Notion AI via locally · P7-T03 durable generation UI
+
+- **Merged baseline**: fast-forwarded the completed P7 replay-attribution and migration-reporting commits into `main` at `c7e35bf` and pushed `origin/main` before starting the UI work; no conflicts or history rewrite were needed.
+- **Durable answer path**: the chat subscribes with authenticated `fetch` to `/generation/stream`, parses split UTF-8/SSE frames, advances only on increasing database sequence IDs, stores the cursor with the pending request, and resumes from it after reload. `/generation` is the fallback when streaming is unavailable.
+- **Visible states**: whole answers appear atomically from persisted `complete` events rather than the receipt response or a typewriter effect. Generating, failed, and interrupted states have explicit text-only cards, and reopened failed/interrupted history keeps the same distinction.
+- **Coverage**: the mocked browser fixture now serves generation polling/SSE rows and asserts durable complete content, persisted cursor resume, authenticated generation subscription, and failed/interrupted cards. All content is assigned through `textContent`.
+- **Verification**: `node --check static/app.js`, `node --check tests/recording_ui.cjs`, `git diff --check`, and `bash scripts/verify_release.sh` passed: 161 Rust tests, Clippy/build, migration chain through 005, 53 Python contracts, schemas, both local HTTP suites, and frontend syntax. The Playwright browser fixture could not execute because this checkout has no `playwright` module; its syntax passed and the release gate does not include browser suites.
+
 ## 2026-09-11 · Notion AI via locally · P7-T04 truthful migration reporting
 
 - **Fixed**: `tests/test_migrations.py` derives both its displayed migration sequence and expected latest `user_version` from `CHAIN`, eliminating the stale hard-coded `004` / version 4 success line.

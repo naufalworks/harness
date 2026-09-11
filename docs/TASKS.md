@@ -417,12 +417,13 @@ Each task has: `status`, `depends`, `design` (doc section), `files` (touched),
 - Status: done
 
 ### P7-T03 · Frontend durable stream integration
-- status: todo
+- status: done
 - depends: P7-T01, P7-T02c, P7-T04
 - design: docs/ROADMAP.md#p4
-- files: static/app.js, static/*.css, src/main.rs
+- files: static/app.js, static/style.css, tests/recording_ui.cjs
 - done-when: Chat UI consumes durable stream events instead of fake typing animation, preserves ordering after reconnect, and clearly distinguishes completed, interrupted, and failed responses.
 - verify: node --check static/app.js && bash scripts/verify_release.sh
+- note (done): The chat now renders live answers only from authenticated `/generation/stream` or its `/generation` fallback, never from the receipt response. The pending request stores the last handled generation cursor for reload/reconnect, rows are ignored unless their sequence advances, and completed content is painted atomically from the persisted event. Failed and interrupted turns render explicit durable terminal cards in live and reopened history. The mocked browser fixture now covers generation subscription, persisted-cursor resume, durable complete content, and both terminal failures. `node --check static/app.js`, `node --check tests/recording_ui.cjs`, `git diff --check`, and the full release gate passed (161 Rust tests, 53 Python contracts, both local HTTP suites, migration 005, schemas, build/Clippy, and frontend syntax). The browser fixture itself could not run in this checkout because the Playwright module is not installed.
 
 ---
 

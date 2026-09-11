@@ -232,6 +232,11 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere}
 .message.assistant>strong{color:var(--green)}
 .message>span{grid-column:2;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.62}
 .message>.muted{grid-column:2;font-size:11.5px;color:var(--text-3)}
+.generation-message.generating .generation-content{color:var(--text-2)}
+.generation-message.failed>strong{color:var(--red)}
+.generation-message.interrupted>strong{color:var(--orange)}
+.generation-message.failed .generation-state{color:var(--red)}
+.generation-message.interrupted .generation-state{color:var(--orange)}
 .empty{color:var(--text-3);padding:26px;border:1px dashed var(--border);border-radius:10px;font-size:13.5px}
 #log>.empty{border:none;text-align:center;padding:72px 20px;font-size:14.5px;color:var(--text-2)}
 #log>.empty::before{

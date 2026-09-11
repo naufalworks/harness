@@ -7,9 +7,11 @@ const root=path.resolve(__dirname,'..'), out=path.join(root,'docs/qa');fs.mkdirS
  try {
   const page=await browser.newPage({viewport:{width:1120,height:900},colorScheme:'light'});
   const errors=[];page.on('pageerror',e=>errors.push(String(e)));
-  const records=new Map();let submits=0, nextState='complete', abortSubmit=false, offline=false, hold=false, polls=0, streams=0;
+  const records=new Map();let submits=0, nextState='complete', abortSubmit=false, offline=false, hold=false, polls=0, streams=0, generationStreams=0, generationSeq=0, generationReady=false;const generationAfter=[];
   const hostile='<img src=x onerror="window.INJECTED=1">';
   function receipt(item){return {request_id:item.request_id,session_id:item.session_id,scope:item.scope,model:'synthetic-main',state:hold?'generating':item.final,response:hold?null:item.final==='complete'?'Keep the conversation. Be selective about what becomes memory.':null,memory_status:'deferred',redacted:false,recalled:[],events:[{kind:'captured',at:'2026-09-08T13:01:00Z'},{kind:'generation_started',at:'2026-09-08T13:01:01Z'},{kind:'context_saved',at:'2026-09-08T13:01:01Z'},...(!hold&&item.final==='complete'?[{kind:'answer_saved',at:'2026-09-08T13:01:03Z'}]:[])],context:{model:'synthetic-main',provider_messages:[{role:'user',content:item.prompt}],memories:[{key:'explanation_style',value:'Concise, with runnable examples. '+hostile,revision:4,scope:'global',evidence:{quote:'I like concise explanations with runnable examples.'}}]}};}
+  function generationEvents(item){const state=generationReady&&item.final==='complete'?'complete':receipt(item).state;const events=[{seq:item.generation_start,request_id:item.request_id,state:'generating',content:null,error_code:null,created_at:'2026-09-08T13:01:01Z'}];if(state!=='generating')events.push({seq:item.generation_terminal,request_id:item.request_id,state,content:state==='complete'?'Keep the conversation. Be selective about what becomes memory.':null,error_code:state==='failed'?'provider_failed':state==='interrupted'?'process_restarted':null,created_at:'2026-09-08T13:01:03Z'});return events;}
+  function generationRows(sessionId,after){return [...records.values()].filter(v=>v.session_id===sessionId).flatMap(generationEvents).filter(v=>v.seq>after).sort((a,b)=>a.seq-b.seq);}
   await page.route('http://127.0.0.1:8080/**',async route=>{
    const req=route.request(),u=new URL(req.url()),p=u.pathname;
    const staticFiles={'/':'index.html','/app.js':'app.js','/style.css':'style.css'};
@@ -27,10 +29,12 @@ const root=path.resolve(__dirname,'..'), out=path.join(root,'docs/qa');fs.mkdirS
    }
    if(p==='/chat/submit'){
     submits++;const body=JSON.parse(req.postData());
-    if(!records.has(body.request_id))records.set(body.request_id,{...body,final:nextState});
+    if(!records.has(body.request_id))records.set(body.request_id,{...body,final:nextState,generation_start:++generationSeq,generation_terminal:++generationSeq});
     if(abortSubmit){abortSubmit=false;return route.abort('failed');}
     return route.fulfill({status:202,json:receipt(records.get(body.request_id))});
    }
+   if(p==='/generation'){const after=Number(u.searchParams.get('after_seq')||0),events=generationRows(u.searchParams.get('session_id'),after);return route.fulfill({json:{events,next_after_seq:events.length?events.at(-1).seq:after}});}
+   if(p==='/generation/stream'){generationStreams++;const after=Number(u.searchParams.get('after_seq')||0);generationAfter.push(after);const events=generationRows(u.searchParams.get('session_id'),after);const body=events.map(event=>`id: ${event.seq}\nevent: generation\ndata: ${JSON.stringify(event)}\n\n`).join('')+': heartbeat\n\n';return route.fulfill({contentType:'text/event-stream',body});}
    if(p.startsWith('/chat/requests/')){polls++;const id=p.split('/')[3];if(!records.has(id))return route.fulfill({status:404,json:{error:'Recording receipt not found'}});return route.fulfill({json:receipt(records.get(id))});}
    // P2-T03: the rail asks every turn for its recorded changes. This suite covers the receipt
    // flow, so an empty list keeps it honest; the diff cards themselves are gated in ui_smoke.cjs.
@@ -53,7 +57,10 @@ const root=path.resolve(__dirname,'..'), out=path.join(root,'docs/qa');fs.mkdirS
   hold=true;await page.fill('#prompt','How should we separate chat history from memory?');await page.click('#send');
   await page.waitForFunction(()=>document.getElementById('capturestatus').textContent==='Thinking…');assert.strictEqual(await page.locator('#prompt').inputValue(),'');
   assert(!await page.evaluate(()=>JSON.stringify({...localStorage,...sessionStorage}).includes('How should we')));
-  hold=false;await page.waitForFunction(()=>document.getElementById('notice').textContent.startsWith('Answer saved'));
+  generationReady=true;await page.waitForFunction(()=>document.querySelector('.generation-message[data-state="complete"]')?.textContent.includes('Keep the conversation.'));
+  assert((await page.locator('.generation-message[data-state="complete"] .generation-state').innerText()).includes('saved response'));
+  assert(Number(JSON.parse(await page.evaluate(()=>sessionStorage.getItem('harness_pending'))).generation_cursor)>0);
+  generationReady=false;hold=false;await page.waitForFunction(()=>document.getElementById('notice').textContent.startsWith('Answer saved'));
   await page.locator('.receipt>summary').last().click();await page.waitForSelector('.receipt-memory');
   assert((await page.locator('.receipt-content').innerText()).includes('Waiting for queue space'));
   assert.strictEqual(await page.locator('.receipt-content img').count(),0);assert.strictEqual(await page.evaluate(()=>window.INJECTED),undefined);
@@ -73,14 +80,15 @@ const root=path.resolve(__dirname,'..'), out=path.join(root,'docs/qa');fs.mkdirS
    nextState=state;await page.click('#newchat');await page.fill('#prompt','This message survives '+state+'.');await page.click('#send');
    await page.waitForFunction(s=>document.getElementById('capturestatus').textContent.includes(s==='failed'?'answer failed':'answer interrupted')&&document.getElementById('log').textContent.includes('This message survives'),state);
    assert((await page.locator('#log').innerText()).includes('This message survives'));
+   assert(await page.locator(`.generation-message[data-state="${state}"]`).count()>0);
    assert.strictEqual(await page.evaluate(()=>sessionStorage.getItem('harness_pending')),null);
   }
   // History really reopens a previous session rather than starting a new one.
   await page.setViewportSize({width:1120,height:900});await page.click('#sessionhistory>summary');await page.waitForSelector('.session-entry');await shot('history-desktop');
   await page.locator('.session-entry').first().click();await page.waitForFunction(()=>document.getElementById('log').textContent.includes('How should we'));
-  assert(submits>=5);assert(polls>0);assert(streams>0,'the rail must subscribe to the activity stream');assert.deepStrictEqual(errors,[]);
+  assert(submits>=5);assert(polls>0);assert(streams>0,'the rail must subscribe to the activity stream');assert(generationStreams>0,'answers must subscribe to the generation stream');assert(generationAfter.some(cursor=>cursor>0),'generation reconnect must resume from a persisted cursor');assert.deepStrictEqual(errors,[]);
   await page.click('#lock');assert.strictEqual(await page.locator('#log').innerText(),'');assert.strictEqual(await page.locator('#sessionlist').innerText(),'');
-  const result={status:'passed',scope:'Mocked API only — Rust not executed',checks:['saved_before_answer','raw_prompt_not_persisted_in_browser','context_receipt','memory_backlog_does_not_hide_answer','hostile_context_as_text','desktop_mobile_dark_light_no_overflow','lost_submit_response_recovers_without_resend','reload_recovers_without_resend','token_not_persisted','provider_failure_retains_message','restart_interruption_retains_message','session_reopen','activity_stream_subscribed','lock_clears_visible_history','no_javascript_exceptions']};
+  const result={status:'passed',scope:'Mocked API only — Rust not executed',checks:['saved_before_answer','durable_generation_answer','generation_cursor_resume','generation_terminal_states','raw_prompt_not_persisted_in_browser','context_receipt','memory_backlog_does_not_hide_answer','hostile_context_as_text','desktop_mobile_dark_light_no_overflow','lost_submit_response_recovers_without_resend','reload_recovers_without_resend','token_not_persisted','provider_failure_retains_message','restart_interruption_retains_message','session_reopen','activity_stream_subscribed','lock_clears_visible_history','no_javascript_exceptions']};
   fs.writeFileSync(path.join(out,'recording-ui-results.json'),JSON.stringify(result,null,2));console.log(JSON.stringify(result));
  } finally {await browser.close();}
 })().then(()=>process.exit(0)).catch(e=>{console.error(e);process.exit(1)});
