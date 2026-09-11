@@ -1,5 +1,13 @@
 # PROGRESS — journal
 
+## 2026-09-11 · Notion AI via Local · P7-T02b idempotent generation recovery
+
+- **Reviewed**: resumed the in-progress recovery fix on `autonomous-development-streaming`, inspected its existing diff, recovery ordering, recording SQL, generation projection, pending P7 tasks, and release gates without overwriting unrelated work.
+- **Fixed**: `recover` now writes a generation `interrupted` event only for receipts that are still `generating`, before the receipt-state transition. Historical terminal receipts therefore cannot gain duplicate events or advance replay cursors on later startups.
+- **Regression coverage**: the restart test captures the first generation feed, runs recovery again, proves byte-for-byte identical replay, and proves an unclaimed receipt in another session remains event-free and `captured`.
+- **Verification**: `cargo test --locked restart` passed (2 tests), `cargo test --locked streaming` passed (9 tests), and `bash scripts/verify_release.sh` exited 0 (160 Rust tests, Clippy/build, migrations/contracts, 53 Python tests, both local HTTP suites, frontend syntax). `git diff --check` passed. Browser suites were not run because no UI changed.
+- **Review notes**: the gate still reports three pre-existing Rust dead-code warnings and Python SQLite `ResourceWarning`s. These are non-blocking cleanup candidates. P7-T02c remains the next focused correctness task; P7-T04 already tracks the stale migration summary.
+
 ## 2026-09-10 · Codex via @local · P7-T02a provider boundary repair
 
 - **Located/resumed**: `/root/development/harness`; clean inherited `main` at `227bd7e`; work is on `autonomous-development-streaming`.

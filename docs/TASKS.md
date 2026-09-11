@@ -359,6 +359,57 @@ Each task has: `status`, `depends`, `design` (doc section), `files` (touched),
 - Status: done
 - Decision: Buffer the bounded answer until DONE and redact as a whole. Safe incremental display remains pending.
 
+### P7-T02b · Idempotent generation recovery
+- status: done
+- Goal: Preserve a stable generation event history across restarts.
+- Objective: Record interruption exactly once for each newly interrupted turn.
+- Reason: recover selects every historical interrupted receipt after updating states, duplicating events and growing the log on every startup.
+- Expected Result: Repeated recovery does not add events for terminal turns.
+- Success Criteria: Regression proves identical generation cursor after repeated recovery; release gate passes.
+- Priority: high correctness; before frontend integration.
+- Task ID: P7-T02b
+- Task Description: Limit generation interruption inserts to receipts transitioning from generating.
+- Expected Outcome: Stable replay without rewriting existing history or replaying provider/tool calls.
+- Research Needed: Compare recording/activity recovery ordering and generation SQL.
+- Implementation Plan: Reproduce duplication, insert before receipt state update using generating predicate, verify and commit.
+- Validation Method: cargo test --locked restart; bash scripts/verify_release.sh.
+- Result: Recovery now inserts a generation interruption before transitioning only receipts still in `generating`; a second recovery leaves generation and recording cursors unchanged. `cargo test --locked restart` passed (2 tests), the full release gate passed (160 Rust tests, Clippy/build, 53 Python contracts, both HTTP suites, frontend syntax), and `git diff --check` passed. Browser suites were not run because no UI changed.
+- Status: done
+
+### P7-T02c · Attribute and verify generation replay
+- status: todo
+- Goal: Make generation replay usable across multiple turns.
+- Objective: Include request identifiers and verify authenticated resumable transport.
+- Reason: generation_since drops request_id from rows even though one session contains multiple turns.
+- Expected Result: Every event names its request; replay remains ordered and session-scoped.
+- Success Criteria: Multi-turn attribution, cursor paging, SSE replay, authorization and error-state tests pass.
+- Priority: high correctness.
+- Task ID: P7-T02c
+- Task Description: Add request_id to generation projections and cover transport contracts.
+- Expected Outcome: Clients can render each event under the correct message.
+- Research Needed: Inspect storage projection and existing activity-stream HTTP fixture.
+- Implementation Plan: Add failing attribution assertion, extend query/projection, test feed and SSE.
+- Validation Method: cargo test --locked streaming; python3 tests/recording_integration.py; bash scripts/verify_release.sh.
+- Result: Pending.
+- Status: todo
+
+### P7-T04 · Correct migration verification reporting
+- status: todo
+- Goal: Keep release evidence accurate.
+- Objective: Report the migration chain actually tested.
+- Reason: tests/test_migrations.py applies 005 and checks version 5 but prints version 4; the prior progress entry repeated that stale output.
+- Expected Result: Release output and progress record accurately describe migration coverage.
+- Success Criteria: python3 tests/test_migrations.py prints the actual latest version.
+- Priority: documentation/test reliability.
+- Task ID: P7-T04
+- Task Description: Derive migration success summary from CHAIN and correct the prior journal claim.
+- Expected Outcome: No stale hard-coded migration version in success output.
+- Research Needed: Compare CHAIN, full-chain assertions and output.
+- Implementation Plan: Derive output, run migration test, correct journal and commit.
+- Validation Method: python3 tests/test_migrations.py; git diff --check.
+- Result: Pending.
+- Status: todo
+
 ### P7-T03 · Frontend durable stream integration
 - status: todo
 - depends: P7-T01

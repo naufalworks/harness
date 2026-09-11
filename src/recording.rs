@@ -49,11 +49,13 @@ pub fn recover(c: &mut Connection) -> Result<()> {
     tx.execute(agentic::RECOVER_STEPS, [&stamp])?;
     tx.execute(agentic::RECOVER_PERMISSIONS, [&stamp])?;
     tx.execute(agentic::RECOVER_ACTIVITY, [&stamp])?;
-    tx.execute(sql::RECOVER, [&stamp])?;
+    // Select only receipts transitioning in this transaction. Historical interruptions
+    // must not acquire another generation event (and another replay cursor) on startup.
     tx.execute(
-        "INSERT INTO generation_events(request_id,session_id,state,content,error_code,created_at) SELECT request_id,session_id,'interrupted','', 'process_restarted', ?1 FROM chat_receipts WHERE state='interrupted' AND error_code='process_restarted'",
+        "INSERT INTO generation_events(request_id,session_id,state,content,error_code,created_at) SELECT request_id,session_id,'interrupted','', 'process_restarted', ?1 FROM chat_receipts WHERE state='generating'",
         [&stamp],
     )?;
+    tx.execute(sql::RECOVER, [&stamp])?;
     tx.execute(sql::RECOVER_MESSAGES, [])?;
     tx.execute(
         "UPDATE jobs SET status='pending' WHERE status='running'",

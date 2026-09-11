@@ -153,7 +153,12 @@ async fn restart_preserves_waiting_and_marks_started_as_interrupted() {
     start(&db, "r", "s").await;
     db.capture_chat(input("waiting", "other")).await.unwrap();
     db.run(recording::recover).await.unwrap();
+    let first_generation = db.generation_since("s".into(), 0).await.unwrap();
+    assert_eq!(first_generation["events"].as_array().unwrap().len(), 1);
+    assert_eq!(first_generation["events"][0]["state"], "interrupted");
     db.run(recording::recover).await.unwrap();
+    assert_eq!(db.generation_since("s".into(), 0).await.unwrap(), first_generation);
+    assert!(db.generation_since("other".into(), 0).await.unwrap()["events"].as_array().unwrap().is_empty());
     assert_eq!(
         db.recording_receipt("r".into()).await.unwrap().unwrap()["state"],
         "interrupted"
