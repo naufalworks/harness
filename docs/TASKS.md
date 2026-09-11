@@ -323,16 +323,17 @@ Each task has: `status`, `depends`, `design` (doc section), `files` (touched),
 ## P7 · Durable streaming continuation
 
 ### P7-T01 · Persisted generation stream foundation
-- status: doing
+- status: done
 - depends: P6-T03
 - design: docs/ROADMAP.md#p4
 - files: src/memory_agents.rs, src/storage.rs, src/main.rs, static/app.js, migrations/*
 - done-when: Generation output can stream through an authenticated transport where every emitted event is persisted before becoming visible to the client. Events have stable ordering, resumable cursors, and explicit completed/interrupted/failed states.
 - verify: cargo test --locked streaming && bash scripts/verify_release.sh
 - note (started 2026-09-10): Existing `/activity/stream` provides durable agent activity replay. P7-T01 extends this pattern to generation output events persisted before client delivery.
+- note (closed 2026-09-11): Closed by its landed subtasks rather than by new code. Generation events are persisted before delivery and served over authenticated polling and SSE with `request_id` attribution, ordered resumable cursors, and explicit complete/failed/interrupted terminal states (`P7-T02c`), and the chat UI consumes that feed (`P7-T03`). Verification evidence for this tree is the gate run at `b6a5fb1`: `bash scripts/verify_release.sh` exit 0 with 161 Rust tests, Clippy/build, 53 Python contracts, migration chain through 005, both local HTTP suites, and frontend syntax. Publication before DONE is deliberately out of scope here and is tracked as `P7-T05`.
 
 ### P7-T02 · Stream recovery and boundary safety
-- status: doing
+- status: done
 - depends: P7-T01
 - design: docs/ROADMAP.md#p4
 - files: src/memory_agents.rs, tests/*stream*
@@ -340,6 +341,7 @@ Each task has: `status`, `depends`, `design` (doc section), `files` (touched),
 - verify: cargo test --locked streaming
 
 - note (2026-09-10): Reopened after inspection. The inherited streaming module/test paths do not exist; verification now names executable Rust tests. Full P7 still needs incremental safe publication, transport/reconnect coverage, request identification in the session feed, and restart-event deduplication.
+- note (closed 2026-09-11): Closed by `P7-T02a` (bounded byte framing, strict UTF-8, whole-answer redaction, one atomic publication), `P7-T02b` (interruption recorded exactly once per newly interrupted turn, so repeated recovery cannot grow the feed), and `P7-T02c` (multi-turn attribution, cursor paging, SSE resume without duplicates, wrong-session isolation, authentication bounds, terminal failure events). Same `b6a5fb1` gate evidence as `P7-T01`. The one boundary question left — publishing before DONE without ever exposing a secret split across provider chunks — is `P7-T05`, not part of this task.
 
 ### P7-T02a · Repair provider boundary and atomic publication
 - status: done
@@ -424,6 +426,24 @@ Each task has: `status`, `depends`, `design` (doc section), `files` (touched),
 - done-when: Chat UI consumes durable stream events instead of fake typing animation, preserves ordering after reconnect, and clearly distinguishes completed, interrupted, and failed responses.
 - verify: node --check static/app.js && bash scripts/verify_release.sh
 - note (done): The chat now renders live answers only from authenticated `/generation/stream` or its `/generation` fallback, never from the receipt response. The pending request stores the last handled generation cursor for reload/reconnect, rows are ignored unless their sequence advances, and completed content is painted atomically from the persisted event. Failed and interrupted turns render explicit durable terminal cards in live and reopened history. The mocked browser fixture now covers generation subscription, persisted-cursor resume, durable complete content, and both terminal failures. `node --check static/app.js`, `node --check tests/recording_ui.cjs`, `git diff --check`, and the full release gate passed (161 Rust tests, 53 Python contracts, both local HTTP suites, migration 005, schemas, build/Clippy, and frontend syntax). The browser fixture itself could not run in this checkout because the Playwright module is not installed.
+
+### P7-T05 · Safe incremental generation publication
+- status: todo
+- depends: P7-T02a, P7-T03
+- design: docs/PLAN.md#p7--durable-generation-continuation
+- files: src/memory_agents.rs, src/safety.rs, src/recording.rs, src/recording_tests.rs, static/app.js
+- done-when: Generation text can be published before DONE without a redactable pattern split across provider chunks ever becoming visible. A boundary-aware redactor withholds any tail that could still complete a pattern, the UI renders the incremental text in order, and a regression proves a secret split across two chunks is never published early and is never published unredacted afterwards.
+- verify: cargo test --locked streaming && cargo test --locked redact && bash scripts/verify_release.sh
+- note (opened 2026-09-11): Carries the deferred `P7-T02a` decision. Whole-answer buffering stays the active boundary until this task proves incremental safety; no other task may relax it as a side effect. Needs a host with cargo.
+
+### P7-T06 · Make the browser suites executable
+- status: blocked
+- depends: P7-T03
+- blocked-by: the MCP host has `node`, `python3` and `git` but no `npm`, `npx` or `playwright` module, so the fixtures have no browser runtime (`require('playwright')` → `MODULE_NOT_FOUND`).
+- files: tests/recording_ui.cjs, tests/ui_smoke.cjs, scripts/verify_release.sh, README.md
+- done-when: `node tests/recording_ui.cjs` and `node tests/ui_smoke.cjs` run to completion on a documented setup, and that setup lives in the repo instead of in journal entries.
+- verify: node tests/recording_ui.cjs && node tests/ui_smoke.cjs
+- note (opened 2026-09-11): Owner action. Either install a runtime (`npm install -D playwright && npx playwright install chromium`) or reuse the `P5-T01` pattern `NODE_PATH=<dir>/node_modules CHROMIUM_PATH=<browser> node tests/recording_ui.cjs`. Both fixtures pass `node --check`, so this is a runtime gap, not a code defect, and the release gate deliberately excludes browser suites.
 
 ---
 

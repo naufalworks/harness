@@ -1,5 +1,15 @@
 # PROGRESS — journal
 
+## 2026-09-11 · Notion AI via Local · P7 phase closure and remaining-work split
+
+- **Resumed and re-verified the checkpoint before changing anything**: `/root/development/harness` on `p7-frontend-generation-stream`, clean tree, HEAD `b6a5fb1` "feat(ui): render durable generation events", and `git rev-list --left-right --count` against `origin/p7-frontend-generation-stream` reporting `0 0`.
+- **Closed the umbrellas**: `P7-T01` and `P7-T02` were still `doing` even though every subtask beneath them (`P7-T02a`, `P7-T02b`, `P7-T02c`, `P7-T04`, `P7-T03`) is `done`. Both are now `done` with notes that map each `done-when` clause to the subtask that satisfied it and cite the `b6a5fb1` gate run (161 Rust tests, Clippy/build, 53 Python contracts, migration chain through 005, both local HTTP suites, frontend syntax) as their verification evidence. No code changed, so no new Rust result is claimed.
+- **Scheduled what is actually left**: the two open items are now tasks instead of prose. `P7-T05` (todo) owns safe incremental publication and inherits the `P7-T02a` decision that whole-answer buffering holds until a boundary-aware redactor proves a secret split across provider chunks is never published early. `P7-T06` (blocked) owns making the browser suites executable and records the exact owner commands.
+- **PLAN refreshed**: the P7 section no longer prescribes the finished `P7-T02c` → `P7-T04` → `P7-T03` order; it states what landed, that the umbrellas are closed on that evidence, and names the two remaining threads.
+- **Verified here (docs-only change)**: `python3 -m unittest discover -s tests -p 'test_*.py'` 53 tests OK, `python3 tests/test_migrations.py` reporting `001 -> 002 -> 003 -> 004 -> 005, user_version=5, data/FTS/FKs preserved`, `python3 tests/recording_integration.py` PASS, `python3 scripts/gen_tool_schemas.py` 13 files, `node --check` on `static/app.js`, `tests/recording_ui.cjs` and `tests/ui_smoke.cjs`, and `git diff --check`.
+- **Not verified here**: this host has `node`, `python3` and `git` but no `cargo`, `rustc`, `npm`, `npx` or `playwright` module, so `bash scripts/verify_release.sh` exits 2 (`BLOCKED: Rust/cargo required`) and the browser fixtures cannot run. `require('playwright')` returns `MODULE_NOT_FOUND`, which confirms the reported Playwright limitation is a host gap rather than a defect.
+- **Next**: `P7-T05` is the next implementation task and needs the Rust toolchain, so it must run on a cargo-capable host. `P7-T06` needs an owner decision about installing a browser runtime.
+
 ## 2026-09-11 · Notion AI via locally · P7-T03 durable generation UI
 
 - **Merged baseline**: fast-forwarded the completed P7 replay-attribution and migration-reporting commits into `main` at `c7e35bf` and pushed `origin/main` before starting the UI work; no conflicts or history rewrite were needed.
