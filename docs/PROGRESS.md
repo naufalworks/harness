@@ -718,3 +718,13 @@ exact failing request with the real browser origin -> 200; `https://evil.invalid
 **Confirmed by owner.** End-to-end chat, including the real provider round-trip, working on the restarted service (2026-09-12 09:07 +07). No provider turn was sent from the agent side.
 
 **Next.** Six `Json<...>` extractors remain (`confirm`, `candidates`, scope patch, decision, memory ingest); converting them to `JsonBody` would make every JSON route answer JSON uniformly. `tests/integration_smoke.py:84` already accepts `400` or `422`, so that change needs no test edit. Also still open from earlier sessions: `development-mcp` has no git repository, and `harness` is monolithic (`agent_loop.rs`, `main.rs`, `storage.rs`).
+
+---
+
+## 2026-09-12 (session 5, follow-up) — uniform JSON rejections and branch cleanup
+
+**Changed.** The six remaining body extractors in `src/main.rs` (`confirm`, `edit_candidate`, `set_config`, `set_scope`, `decide_permission`, `ingest_memory`) now use `JsonBody`, so no served route can answer a malformed body with axum's `text/plain` 422. One plain `Json` extractor remains in `src/agent_loop.rs`: it is the mock provider inside the test module, not a served route, so it stays.
+
+**Branches.** Deleted seven fully merged topic branches locally and on origin: `p7-t05-incremental-publication` (0f4ad37), `p7-t06-browser-runtime` (20c90a3), `p7-frontend-generation-stream` (460f667), `p7-migration-reporting` (c7e35bf), `p7-generation-replay-attribution` (a758030), `autonomous-development-streaming` (554fa6f), `fix-tailnet-origin-allowlist` (965457d). Every SHA is reachable from `main`, so any branch can be recreated with `git branch <name> <sha>`. Kept `upcloud-verify` (not merged) and the `v1`, `v2-upgrade`, `v3` release lines. This removes the divergent tips that caused a build from a stale branch head earlier in the session.
+
+**Verified.** `bash scripts/verify_release.sh` -> PASS (60 Python tests, migrations `001 -> 005`, both mock-provider integration suites, `recording_ui.cjs` 18 checks, `ui_smoke.cjs` 24 checks), then redeployed with `systemctl restart harness` and probed each converted route with a body no target type can accept.

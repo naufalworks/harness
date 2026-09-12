@@ -301,7 +301,7 @@ struct ConfirmRequest {
 }
 async fn confirm(
     State(h): State<Harness>,
-    Json(req): Json<ConfirmRequest>,
+    JsonBody(req): JsonBody<ConfirmRequest>,
 ) -> ApiResult<Json<Value>> {
     safety::scope(&req.scope).map_err(|_| invalid("Invalid scope"))?;
     let status = h
@@ -356,7 +356,7 @@ struct CandidateEdit {
 async fn edit_candidate(
     State(h): State<Harness>,
     Path(id): Path<String>,
-    Json(req): Json<CandidateEdit>,
+    JsonBody(req): JsonBody<CandidateEdit>,
 ) -> ApiResult<Json<Value>> {
     Uuid::parse_str(&id).map_err(|_| invalid("Invalid candidate identifier"))?;
     safety::scope(&req.scope).map_err(|_| invalid("Invalid scope"))?;
@@ -406,7 +406,7 @@ async fn get_config(State(h): State<Harness>) -> ApiResult<Json<Value>> {
 }
 async fn set_config(
     State(h): State<Harness>,
-    Json(data): Json<BTreeMap<String, String>>,
+    JsonBody(data): JsonBody<BTreeMap<String, String>>,
 ) -> ApiResult<Json<Value>> {
     h.store.set_settings(data).await.map_err(db_error)?;
     Ok(Json(json!({"status":"saved"})))
@@ -450,7 +450,7 @@ async fn get_scope(
 async fn set_scope(
     State(h): State<Harness>,
     Path(scope): Path<String>,
-    Json(patch): Json<storage::ScopePatch>,
+    JsonBody(patch): JsonBody<storage::ScopePatch>,
 ) -> ApiResult<Json<storage::ScopeConfig>> {
     safety::scope(&scope).map_err(|_| invalid("Invalid scope"))?;
     let patch = patch.validate().map_err(invalid)?;
@@ -490,7 +490,7 @@ struct DecisionRequest {
 async fn decide_permission(
     State(h): State<Harness>,
     Path(id): Path<String>,
-    Json(req): Json<DecisionRequest>,
+    JsonBody(req): JsonBody<DecisionRequest>,
 ) -> ApiResult<Json<Value>> {
     safety::scope(&req.scope).map_err(|_| invalid("Invalid scope"))?;
     Uuid::parse_str(&id).map_err(|_| invalid("Invalid approval identifier"))?;
@@ -954,7 +954,7 @@ struct IngestRequest {
 }
 async fn ingest_memory(
     State(h): State<Harness>,
-    Json(req): Json<IngestRequest>,
+    JsonBody(req): JsonBody<IngestRequest>,
 ) -> ApiResult<(StatusCode, Json<Value>)> {
     safety::scope(&req.scope).map_err(|_| invalid("Invalid scope"))?;
     if req.content.len() > 1_048_576
