@@ -18,6 +18,8 @@ A scope now owns a project.
 
 `GET /scopes/{scope}` → row or 404. `POST /scopes/{scope}` body `{root_path?, permission_mode?, diagnostics_cmd?, max_steps?, max_tool_bytes?, max_wall_seconds?}`; the server canonicalizes `root_path`, requires it to exist and be a directory, rejects paths inside the harness data dir.
 
+The body must be a JSON **object**, here and on every JSON route: a top-level array or scalar is `400 {"error": ...}`, refused by `JsonBody` in `src/main.rs` on the first non-whitespace byte. Without that check serde's derive also accepts the sequence form of a struct, so `[]` parsed as an all-defaults `ScopePatch` and answered `200` after rewriting the row. `{}` is legal and names no field: it creates the scope when the scope does not exist yet, and otherwise returns the stored row without moving `updated_at`.
+
 ## Schema (003_agentic.sql)
 
 Additive. `PRAGMA user_version=3`. `DbStore::init` accepts versions 0..3 and applies 003 when `< 3`.

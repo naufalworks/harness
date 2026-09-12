@@ -296,6 +296,17 @@ pub struct ScopePatch {
 }
 
 impl ScopePatch {
+    /// True when the caller named no field at all. An empty patch states no intent, so
+    /// `upsert_scope` answers with the stored row instead of rewriting it, and `updated_at`
+    /// moves only when a value actually moved.
+    pub fn is_empty(&self) -> bool {
+        self.root_path.is_none()
+            && self.permission_mode.is_none()
+            && self.diagnostics_cmd.is_none()
+            && self.max_steps.is_none()
+            && self.max_tool_bytes.is_none()
+            && self.max_wall_seconds.is_none()
+    }
     /// Normalize and reject before anything reaches SQLite, so a bad request is a 400 and
     /// never a CHECK-constraint failure. Canonicalizing `root_path` touches the filesystem.
     pub fn validate(mut self) -> std::result::Result<Self, &'static str> {
@@ -773,14 +784,26 @@ impl DbStore {
     }
     /// Merge a validated patch into the stored row so a partial POST never clears a column
     /// the caller did not mention; `created_at` survives every later update.
+    ///
+    /// A patch that names no field asks for no change, so an existing row is returned untouched
+    /// instead of being rewritten with a fresh `updated_at` — "last changed" then means it. A
+    /// scope that does not exist yet is still created, because that is what posting to a new
+    /// scope asks for.
     pub async fn upsert_scope(&self, scope: String, patch: ScopePatch) -> Result<ScopeConfig> {
         safety::scope(&scope)?;
         self.run(move |c| {
             let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            let mut next = tx
+            let stored = tx
                 .query_row(crate::agentic_sql::SCOPE_GET, [&scope], scope_row)
-                .optional()?
-                .unwrap_or_else(|| ScopeConfig::blank(&scope));
+                .optional()?;
+            let mut next = match stored {
+                Some(unchanged) if patch.is_empty() => {
+                    tx.commit()?;
+                    return Ok(unchanged);
+                }
+                Some(row) => row,
+                None => ScopeConfig::blank(&scope),
+            };
             if let Some(value) = patch.root_path {
                 next.root_path = value;
             }
@@ -1347,6 +1370,53 @@ mod tests {
             "a scope without root_path must not hand a working directory to any tool"
         );
         std::fs::remove_dir_all(dir).ok();
+    }
+    /// An empty patch carries no intent. Rewriting the row anyway moved `updated_at`, which is
+    /// how a settings-shaped probe could look like a change that never happened.
+    #[tokio::test]
+    async fn an_empty_patch_leaves_the_stored_row_untouched() {
+        let db = DbStore::init(":memory:").unwrap();
+        let saved = db
+            .upsert_scope(
+                "global".into(),
+                ScopePatch {
+                    permission_mode: Some("auto_edit".into()),
+                    max_steps: Some(Some(7)),
+                    ..Default::default()
+                }
+                .validate()
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let untouched = db
+            .upsert_scope("global".into(), ScopePatch::default().validate().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            (
+                &untouched.permission_mode,
+                &untouched.max_steps,
+                &untouched.created_at,
+                &untouched.updated_at
+            ),
+            (
+                &saved.permission_mode,
+                &saved.max_steps,
+                &saved.created_at,
+                &saved.updated_at
+            ),
+            "an empty patch must not rewrite the row, not even its updated_at"
+        );
+        let created = db
+            .upsert_scope("fresh".into(), ScopePatch::default().validate().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(created.permission_mode, "ask");
+        assert!(
+            db.scope_config("fresh".into()).await.unwrap().is_some(),
+            "posting to a scope that does not exist still creates it"
+        );
     }
     #[test]
     fn scopes_reject_unusable_configuration() {

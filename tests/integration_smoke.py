@@ -82,9 +82,14 @@ def main():
             assert call('/memory/ingest',imported)[0]==202
             assert call('/memory/ingest',imported)[1]['duplicate'] is True
             assert call('/memory/ingest',{'path':'/unapproved/path'})[0] in (400,422)
+            assert call('/scopes/body-contract',[])[0]==400
+            assert call('/scopes/body-contract',{'permission_mode':'ask'})[0]==200
+            stamped=call('/scopes/body-contract')[1]['updated_at']
+            assert call('/scopes/body-contract',{})[0]==200
+            assert call('/scopes/body-contract')[1]['updated_at']==stamped
             code,redacted=call('/chat',{'prompt':'api_key=synthetic-value','scope':'secret-test'});assert code==200 and redacted['redacted']
             assert all('synthetic-value' not in json.dumps(r) for r in requests)
-            print('PASS: authenticated API, origin protection, candidate filtering/editing, approval, scope, multi-turn recall, idempotent ingestion, path rejection, provider redaction')
+            print('PASS: authenticated API, origin protection, candidate filtering/editing, approval, scope, multi-turn recall, idempotent ingestion, path rejection, JSON object body contract, provider redaction')
         finally:
             app.terminate()
             try:app.wait(timeout=5)

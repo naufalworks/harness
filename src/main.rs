@@ -1,13 +1,14 @@
 use anyhow::{bail, Result};
 use axum::{
+    body::Bytes,
     extract::{rejection::JsonRejection, DefaultBodyLimit, FromRequest, Path, Query, Request, State},
-    http::{header, StatusCode},
+    http::{header, HeaderMap, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
-use serde::Deserialize;
+use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::{json, Value};
 use std::{collections::BTreeMap, env, net::SocketAddr, sync::Arc, time::Duration};
 use tokio::sync::Semaphore;
@@ -62,26 +63,61 @@ fn default_scope() -> String {
 // axum answers extractor rejections itself, with a text/plain 422 the browser cannot parse; the UI
 // then reports "Unexpected response (<status>)" and keeps the draft. Map those rejections onto
 // ApiError so every failure on a JSON route stays a JSON {"error": ...} the UI can show verbatim.
+//
+// The body must also be a JSON *object*. serde's derive accepts a sequence as well as a map for
+// any struct, so a top-level array satisfies any struct whose every field has a default: a `[]`
+// posted to the scope route deserialized into an all-defaults `ScopePatch` and answered 200 after
+// rewriting the row. `deny_unknown_fields` cannot catch that, because an array carries no field
+// names to reject. Requiring an object here closes the hole for every JSON route at once,
+// including target types added later, instead of leaving each handler to remember.
 struct JsonBody<T>(T);
+/// One rejection path for every JSON route: the parser's own detail goes to the journal, and the
+/// reader gets a fixed sentence they can act on.
+fn reject_body(detail: &str) -> ApiError {
+    eprintln!(
+        "{}",
+        json!({"event":"request_body_rejected","detail":detail})
+    );
+    invalid("Request body was not accepted. Reload this tab, then send again")
+}
+/// Mirrors axum's own rule (`application/json`, or any `application/...+json`). Buffering the body
+/// here means `Json`'s content-type check is never reached, so it has to live here instead.
+fn json_content_type(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| {
+            value
+                .split(';')
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_lowercase()
+        })
+        .is_some_and(|essence| {
+            essence == "application/json"
+                || (essence.starts_with("application/") && essence.ends_with("+json"))
+        })
+}
 impl<S, T> FromRequest<S> for JsonBody<T>
 where
-    Json<T>: FromRequest<S, Rejection = JsonRejection>,
+    T: DeserializeOwned,
     S: Send + Sync,
 {
     type Rejection = ApiError;
     async fn from_request(request: Request, state: &S) -> ApiResult<Self> {
-        match Json::<T>::from_request(request, state).await {
-            Ok(Json(value)) => Ok(Self(value)),
-            Err(rejection) => {
-                eprintln!(
-                    "{}",
-                    json!({"event":"request_body_rejected","detail":rejection.body_text()})
-                );
-                Err(invalid(
-                    "Message payload was not accepted. Reload this tab, then send again",
-                ))
-            }
+        if !json_content_type(request.headers()) {
+            return Err(reject_body("Body is not declared as JSON"));
         }
+        let bytes = Bytes::from_request(request, state)
+            .await
+            .map_err(|rejection| reject_body(&rejection.body_text()))?;
+        if bytes.iter().copied().find(|b| !b.is_ascii_whitespace()) != Some(b'{') {
+            return Err(reject_body("Body is not a JSON object"));
+        }
+        Json::<T>::from_bytes(&bytes)
+            .map(|Json(value)| Self(value))
+            .map_err(|rejection: JsonRejection| reject_body(&rejection.body_text()))
     }
 }
 
@@ -1284,6 +1320,71 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+    /// A JSON body has to be an object. serde's derive also accepts a sequence for a struct, so
+    /// before this guard `[]` deserialized into an all-defaults `ScopePatch` and the scope route
+    /// answered 200 after rewriting the row. The rule belongs to every JSON route, not just that
+    /// one, so probe a handler for each shape of target type: patch struct, chat struct, string
+    /// map, and ingest struct.
+    #[tokio::test]
+    async fn non_object_json_bodies_are_refused_with_json() {
+        for (uri, body) in [
+            ("/scopes/global", "[]"),
+            ("/scopes/global", r#"[{"permission_mode":"ask"}]"#),
+            ("/scopes/global", r#""ask""#),
+            ("/scopes/global", "  \n "),
+            ("/chat/submit", "[]"),
+            ("/config", "[]"),
+            ("/memory/ingest", "17"),
+        ] {
+            let response = app()
+                .oneshot(
+                    authorized("POST", uri)
+                        .header("content-type", "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::BAD_REQUEST,
+                "{uri} must refuse the body {body}"
+            );
+            assert!(
+                body_json(response).await["error"].is_string(),
+                "{uri} must answer JSON for the body {body}"
+            );
+        }
+    }
+    /// `{}` is a valid patch that names no field. It still creates a scope that does not exist,
+    /// because that is what posting to a new scope asks for; `storage` owns the proof that it
+    /// does not rewrite a row that already exists.
+    #[tokio::test]
+    async fn an_empty_patch_still_creates_a_missing_scope() {
+        let app = app();
+        let created = app
+            .clone()
+            .oneshot(
+                authorized("POST", "/scopes/fresh")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(created.status(), StatusCode::OK);
+        let stored = app
+            .clone()
+            .oneshot(
+                authorized("GET", "/scopes/fresh")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(stored.status(), StatusCode::OK);
+        assert_eq!(body_json(stored).await["permission_mode"], json!("ask"));
     }
     /// P1-T15: the picker's data. A fresh install lists nothing (so the UI can say "set one up")
     /// and a configured scope is listed with the root path that decides whether tools exist.
