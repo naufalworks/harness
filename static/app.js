@@ -6,7 +6,11 @@ let session = sessionStorage.getItem('harness_session') || crypto.randomUUID();
 let busy = false, epoch = 0, historyCursor = null, sessionsCursor = null;
 let pending = null, pendingPrompt = null;
 try { pending = JSON.parse(sessionStorage.getItem('harness_pending') || 'null'); } catch { sessionStorage.removeItem('harness_pending'); }
-if (pending && (typeof pending.request_id !== 'string' || pending.session_id !== session || pending.scope !== scope)) pending = null;
+// Keep only the fields the server accepts. A draft identity stored by another build can carry extra
+// keys (P7-T05 stored generation_cursor), and posting those back made /chat/submit reject the body.
+const PENDING_FIELDS = ['request_id', 'session_id', 'scope'];
+if (pending && typeof pending === 'object') { pending = Object.fromEntries(PENDING_FIELDS.filter(key => typeof pending[key] === 'string').map(key => [key, pending[key]])); sessionStorage.setItem('harness_pending', JSON.stringify(pending)); }
+if (pending && (typeof pending.request_id !== 'string' || pending.session_id !== session || pending.scope !== scope)) { pending = null; sessionStorage.removeItem('harness_pending'); }
 $('scope').value = scope;
 function notice(text, error = false) { $('notice').textContent = text; $('notice').classList.toggle('error', error); }
 function captureLabel(text) { $('capturestatus').textContent = text; }
@@ -164,7 +168,9 @@ async function sendAttempt(retry = false) {
   let admitted = false;
   const myEpoch = epoch; setBusy(true); captureLabel('Sending…');
   try {
-    const result = await api('/chat/submit', {prompt, ...pending}); admitted = true;
+    const body = {prompt};
+    if (pending) for (const key of PENDING_FIELDS) { if (typeof pending[key] === 'string') body[key] = pending[key]; }
+    const result = await api('/chat/submit', body); admitted = true;
     if (token && myEpoch === epoch) await followReceipt(result, myEpoch);
   } catch (error) {
     if (token && myEpoch === epoch) {

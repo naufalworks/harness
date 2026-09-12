@@ -1,6 +1,6 @@
 use anyhow::{bail, Result};
 use axum::{
-    extract::{DefaultBodyLimit, Path, Query, Request, State},
+    extract::{rejection::JsonRejection, DefaultBodyLimit, FromRequest, Path, Query, Request, State},
     http::{header, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -57,6 +57,32 @@ fn invalid(message: &'static str) -> ApiError {
 }
 fn default_scope() -> String {
     "global".into()
+}
+
+// axum answers extractor rejections itself, with a text/plain 422 the browser cannot parse; the UI
+// then reports "Unexpected response (<status>)" and keeps the draft. Map those rejections onto
+// ApiError so every failure on a JSON route stays a JSON {"error": ...} the UI can show verbatim.
+struct JsonBody<T>(T);
+impl<S, T> FromRequest<S> for JsonBody<T>
+where
+    Json<T>: FromRequest<S, Rejection = JsonRejection>,
+    S: Send + Sync,
+{
+    type Rejection = ApiError;
+    async fn from_request(request: Request, state: &S) -> ApiResult<Self> {
+        match Json::<T>::from_request(request, state).await {
+            Ok(Json(value)) => Ok(Self(value)),
+            Err(rejection) => {
+                eprintln!(
+                    "{}",
+                    json!({"event":"request_body_rejected","detail":rejection.body_text()})
+                );
+                Err(invalid(
+                    "Message payload was not accepted. Reload this tab, then send again",
+                ))
+            }
+        }
+    }
 }
 
 #[allow(deprecated)]
@@ -181,7 +207,7 @@ async fn admit_chat(h: &Harness, req: ChatRequest) -> ApiResult<Value> {
 }
 async fn submit_chat(
     State(h): State<Harness>,
-    Json(req): Json<ChatRequest>,
+    JsonBody(req): JsonBody<ChatRequest>,
 ) -> ApiResult<(StatusCode, Json<Value>)> {
     let receipt = admit_chat(&h, req).await?;
     let code = if receipt["state"] == "captured" || receipt["state"] == "generating" {
@@ -195,7 +221,7 @@ async fn submit_chat(
 // 202 receipt. Disconnecting never owns/cancels the generation worker.
 async fn chat(
     State(h): State<Harness>,
-    Json(req): Json<ChatRequest>,
+    JsonBody(req): JsonBody<ChatRequest>,
 ) -> ApiResult<(StatusCode, Json<Value>)> {
     let mut receipt = admit_chat(&h, req).await?;
     let request = receipt["request_id"].as_str().unwrap().to_string();
