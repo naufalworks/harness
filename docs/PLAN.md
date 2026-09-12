@@ -127,6 +127,11 @@ prefix could never be retracted, and whole-answer buffering stays the active bou
 until the Rust side lands against `tests/test_incremental_publication.py`. Running the
 browser suites still needs a host browser runtime, tracked as `P7-T06`.
 
+### P8 — Causal observability
+Current traces show sequence and outcome, but not the cross-component dependency chain that explains why a tool call happened, which evidence supported it, what state it changed, or where a failure first became possible. P8 adds bounded, typed provenance edges across memory/evidence, model claims, tool calls, permissions, observations, mutations, and recovery. It deliberately excludes hidden chain-of-thought and starts with one coding-turn incident graph before any broad observability platform work.
+
+Acceptance: a reviewer can start from a denial, stale-anchor failure, or crash recovery and navigate to the earliest known causal break, all affected durable rows, and the recovery action. Missing provenance is reported as unknown, not guessed.
+
 ## 6. Non-goals (for now)
 Multi-user, remote bind, encrypted exact-original archive (see ROADMAP P1), OpenAI-
 compatible proxy API, autonomous background coding without a human in the loop.

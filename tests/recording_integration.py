@@ -487,6 +487,14 @@ def main() -> None:
             stale_steps = call("/chat/requests/" + stale["request_id"] + "/steps")[1]["steps"]
             assert any(s["tool_name"] == "edit" and s["error_code"] == "stale_anchor" and s["status"] == "failed" for s in stale_steps)
             assert call("/changes?request_id=" + stale["request_id"])[1] == {"changes": []}
+            stale_incident = call("/chat/requests/" + stale["request_id"] + "/incident")[1]
+            stale_edge = next(edge for edge in stale_incident["edges"] if edge["relation"] == "contradicts")
+            read_step = next(s for s in stale_steps if s["tool_name"] == "read")
+            edit_step = next(s for s in stale_steps if s["tool_name"] == "edit")
+            assert stale_edge["source"] == "step:" + read_step["id"]
+            assert stale_edge["target"] == "step:" + edit_step["id"]
+            assert stale_incident["earliest_known_break"]["node_id"] == "step:" + edit_step["id"]
+            assert any(item["reason"] == "no recorded provenance edge" for item in stale_incident["unknown_provenance"]), stale_incident
 
             # Sandbox escape: the read is recorded as a failed tool, with no filesystem escape.
             escape = submit("path escape")
@@ -597,6 +605,13 @@ def main() -> None:
             assert (root / "deny.md").read_text() == "keep this file\n"
             denied_steps = call("/chat/requests/" + denied["request_id"] + "/steps")[1]["steps"]
             assert any(s["tool_name"] == "write" and s["status"] == "denied" and s["error_code"] == "denied" for s in denied_steps)
+            incident_code, incident = call("/chat/requests/" + denied["request_id"] + "/incident")
+            assert incident_code == 200
+            assert incident["request"]["request_id"] == denied["request_id"]
+            assert incident["bounds"] == {"max_nodes": 400, "max_edges": 2000}
+            assert incident["earliest_known_break"]["known"] is True
+            assert incident["earliest_known_break"]["reason"] in ("denied", "permission denied")
+            assert any(item["reason"] == "no recorded provenance edge" for item in incident["unknown_provenance"])
 
             # Budget exhaustion: one model call is allowed, then the loop answers honestly without
             # making another paid provider call.

@@ -471,3 +471,41 @@ Each task has: `status`, `depends`, `design` (doc section), `files` (touched),
 - Portable continuation packet export.
 - Cost dashboard per scope/day.
 - Voice input.
+
+## P8 · Causal observability
+
+### P8-T01 · Define durable provenance edges
+- status: done
+- depends: P7-T08
+- design: docs/design/causal-observability.md
+- files: migrations/*, src/agentic_sql.rs, src/storage.rs, docs/design/causal-observability.md
+- done-when: a bounded typed edge can reference existing evidence, step, permission, mutation, memory, and recovery rows; invalid references and unsupported edge kinds fail closed; no chain-of-thought is stored.
+- verify: python3 tests/test_migrations.py && cargo test --locked storage
+- note (2026-09-12, done): migration 006 adds a request-scoped graph capped at 2,000 typed edges over same-scope evidence/memory and same-request step/permission/mutation/recovery rows. A polymorphic-reference trigger rejects missing or mismatched endpoints, delete guards prevent durable edges from becoming orphans, and the storage API accepts only the seven documented relations with no freeform reasoning payload. The exact verify command passed with migration chain 001→006 and 10 storage tests; all 11 agentic SQL contract tests also passed. Existing unrelated Rust formatting drift remains outside this task.
+
+### P8-T02 · Build the causal incident read model
+- status: done
+- depends: P8-T01
+- design: docs/design/causal-observability.md
+- files: src/main.rs, src/storage.rs, static/app.js, tests/recording_integration.py
+- done-when: an authenticated read-only endpoint returns an incident graph with upstream/downstream traversal, unknown provenance markers, bounded nodes/edges, and the earliest known causal break.
+- verify: python3 tests/recording_integration.py && node --check static/app.js
+- note (2026-09-12, done): added authenticated GET `/chat/requests/{id}/incident`. The bounded projection returns request, step, permission, mutation, and recovery nodes; typed edges with explicit upstream/downstream adjacency; unknown provenance markers for unlinked durable rows; and the earliest known failure, denial, or recovery break. The HTTP integration gate proves a denied write is navigable without implying hidden reasoning. Verified with `python3 tests/recording_integration.py && node --check static/app.js`; the integration run passed after rebuilding the debug binary.
+
+### P8-T03 · Prove cross-component failure attribution
+- status: done
+- depends: P8-T02
+- design: docs/design/causal-observability.md
+- files: tests/browser_e2e_failure.cjs, tests/recording_integration.py, docs/qa/e2e-verification-report.md
+- done-when: real denial, stale-anchor, and crash-recovery runs produce navigable causal graphs; tests distinguish missing evidence from contradiction and assert no duplicate side effect.
+- verify: scripts/verify_e2e.sh
+- note (2026-09-12, done): runtime recording now links tool steps to permission decisions, applied mutations, stale-anchor contradictions, and exact restart recovery events. The denial browser fixture proves a denied permission triggers its failed step without an authorization edge; the HTTP integration fixture links the current read to the stale edit with `contradicts` while retaining explicit unknown markers; the SIGKILL fixture links the interrupted bash step to recovery and proves one edit, one bash step, and no replay. `scripts/verify_e2e.sh` passed against real Chromium, axum, SQLite, filesystem, and loopback provider.
+
+### P8-T04 · Ship the interactive incident graph
+- status: done
+- depends: P8-T03
+- design: docs/design/causal-observability.md
+- files: static/*, docs/qa/e2e-verification-report.md
+- done-when: the dashboard can filter an incident, select a node, show its evidence and state transition, and link back to the original durable rows without implying hidden reasoning access.
+- verify: scripts/verify_browser.sh && node --check static/app.js
+- note (2026-09-12, done): the activity rail now loads the bounded incident projection, highlights the earliest known break, filters by all seven typed relations, lets reviewers traverse linked nodes, exposes provenance status and durable row identity, and jumps from step/mutation nodes to their recorded step or file-change view. Saved message receipts can reopen historical incidents. `scripts/verify_browser.sh && node --check static/app.js` passed; the real `scripts/verify_e2e.sh` gate also passed after the UI change.

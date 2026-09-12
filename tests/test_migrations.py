@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Offline migration-chain check. No Rust toolchain needed.
 
-Applies migrations/001 -> 002 -> 003 -> 004 -> 005 to an in-memory SQLite DB the same way
+Applies migrations/001 -> 002 -> 003 -> 004 -> 005 -> 006 to an in-memory SQLite DB the same way
 `DbStore::init` does (execute_batch in order), then asserts the expected tables,
 user_version and CHECK constraints. Also verifies a populated v3 database upgrades to v4.
 """
@@ -12,7 +12,7 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MIG = ROOT / "migrations"
-CHAIN = ["001_core.sql", "002_recording.sql", "003_agentic.sql", "004_memory_kinds.sql", "005_generation_stream.sql"]
+CHAIN = ["001_core.sql", "002_recording.sql", "003_agentic.sql", "004_memory_kinds.sql", "005_generation_stream.sql", "006_provenance_edges.sql"]
 VERSIONS = [name.split("_", 1)[0] for name in CHAIN]
 LATEST_VERSION = int(VERSIONS[-1])
 
@@ -22,6 +22,7 @@ EXPECTED_TABLES = {
     3: {"scopes", "turn_steps", "activity_events", "permission_requests", "file_changes", "plan_items"},
     4: {"memory_embeddings"},
     5: {"generation_events"},
+    6: {"provenance_edges"},
 }
 
 
@@ -183,6 +184,48 @@ def test_003_constraints():
     assert c.execute("SELECT status FROM permission_requests WHERE id='p1'").fetchone()[0] == "expired"
 
 
+def test_006_provenance_constraints():
+    c = fresh()
+    apply(c, len(CHAIN))
+    now = "2026-01-01T00:00:00Z"
+    c.execute("INSERT INTO sessions(id,scope,created_at) VALUES('s1','proj',?)", (now,))
+    c.execute("INSERT INTO messages(id,session_id,role,content,status,created_at) VALUES('req','s1','user','hi','pending',?)", (now,))
+    c.execute("INSERT INTO chat_receipts(request_id,session_id,scope,model,signature,redacted,state,captured_at,updated_at) VALUES('req','s1','proj','m','sig',0,'generating',?,?)", (now, now))
+    c.execute("INSERT INTO turn_steps(id,request_id,seq,kind,status,started_at) VALUES('step','req',0,'tool_call','running',?)", (now,))
+    c.execute("INSERT INTO permission_requests(id,request_id,step_id,tool_name,summary,args_json,status,created_at,expires_at) VALUES('permit','req','step','edit','edit','{}','approved',?,?)", (now, now))
+    c.execute("INSERT INTO file_changes(id,request_id,step_id,path,action,diff,applied,created_at) VALUES('change','req','step','a','modify','',1,?)", (now,))
+    c.execute("INSERT INTO sources(id,scope,name,format,fingerprint,parser_version,content,warnings,created_at) VALUES('source','proj','n','jsonl','fp','1','safe','[]',?)", (now,))
+    c.execute("INSERT INTO candidates(id,scope,key,value,category,source_id,evidence,expected_revision,status,created_at,expires_at) VALUES('candidate','proj','k','v','fact','source','{}',0,'approved',?,2000000000)", (now,))
+    c.execute("INSERT INTO memories(id,scope,key,value,category,status,revision,candidate_id,created_at,updated_at) VALUES('memory','proj','k','v','fact','active',1,'candidate',?,?)", (now, now))
+    c.execute("INSERT INTO activity_events(request_id,session_id,kind,payload_json,created_at) VALUES('req','s1','interrupted','{}',?)", (now,))
+    recovery = str(c.execute("SELECT last_insert_rowid()").fetchone()[0])
+    nodes = [("evidence", "source"), ("step", "step"), ("permission", "permit"),
+             ("mutation", "change"), ("memory", "memory"), ("recovery", recovery)]
+    for index, ((source_kind, source_id), (target_kind, target_id)) in enumerate(zip(nodes, nodes[1:] + nodes[:1])):
+        c.execute("INSERT INTO provenance_edges(id,request_id,source_kind,source_id,relation,target_kind,target_id,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                  (f"edge-{index}", "req", source_kind, source_id, "depends_on", target_kind, target_id, now))
+    assert c.execute("SELECT count(*) FROM provenance_edges").fetchone()[0] == 6
+    try:
+        c.execute("DELETE FROM sources WHERE id='source'")
+    except sqlite3.IntegrityError:
+        pass
+    else:
+        raise AssertionError("referenced provenance endpoint was deleted")
+    bad = [
+        ("bad-kind", "req", "claim", "x", "supports", "step", "step", now),
+        ("bad-relation", "req", "step", "step", "caused", "mutation", "change", now),
+        ("missing", "req", "step", "missing", "supports", "mutation", "change", now),
+        ("self", "req", "step", "step", "depends_on", "step", "step", now),
+    ]
+    for row in bad:
+        try:
+            c.execute("INSERT INTO provenance_edges(id,request_id,source_kind,source_id,relation,target_kind,target_id,created_at) VALUES(?,?,?,?,?,?,?,?)", row)
+        except sqlite3.IntegrityError:
+            pass
+        else:
+            raise AssertionError(f"invalid provenance edge was accepted: {row[0]}")
+
+
 def main():
     check_fts5()
     test_full_chain()
@@ -190,6 +233,7 @@ def main():
     test_populated_v3_to_v4()
     test_004_memory_categories_and_embedding_constraints()
     test_003_constraints()
+    test_006_provenance_constraints()
     print(
         f"migrations OK: {' -> '.join(VERSIONS)}, "
         f"user_version={LATEST_VERSION}, data/FTS/FKs preserved"

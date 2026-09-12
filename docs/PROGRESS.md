@@ -1,5 +1,44 @@
 # PROGRESS — journal
 
+## 2026-09-12 · ClickUp Brain via Local MCP · P8-T04 incident graph UI
+
+- Added an inline incident graph to the activity rail, not a modal: relation filtering, earliest-break summary, node selection, edge traversal, explicit known/unknown provenance, and durable row IDs.
+- Step and mutation nodes jump back to the recorded step or file-change view; saved message receipts can reopen historical incidents.
+- Verified at 13:00 WIB: `scripts/verify_browser.sh && node --check static/app.js` passed. `scripts/verify_e2e.sh` also passed against the real Rust server and Chromium after the UI change.
+- P8 causal observability is now complete through its four executable tasks. Next work must be chosen from the remaining ordered backlog rather than inventing a P8 follow-up.
+
+## 2026-09-12 · ClickUp Brain via Local MCP · P8-T03 failure attribution
+
+- Added runtime provenance for permission dependencies and decisions, file mutations, stale-anchor contradictions, and restart recovery.
+- Recovery events now carry the exact interrupted step and a durable `step triggers recovery` edge; receipt-level `process_restarted` remains the terminal summary, not the earliest break.
+- Extended the real denial, stale-anchor, and SIGKILL fixtures to navigate `/chat/requests/{id}/incident`, distinguish contradiction from unknown provenance, and assert no duplicate side effect.
+- Verified at 12:57 WIB: `scripts/verify_e2e.sh` passed with real Chromium, axum, SQLite, filesystem, and loopback provider. The full Rust suite also passed: 170 tests.
+- Next: P8-T04, ship the interactive incident graph in the dashboard.
+
+## 2026-09-12 · ClickUp Brain via Local MCP · P8-T02 incident read model
+
+- Added the authenticated read-only `/chat/requests/{id}/incident` endpoint.
+- The projection is bounded to 400 nodes and 2,000 edges, includes explicit upstream/downstream adjacency, returns earliest-known-break evidence, and marks unlinked rows as `unknown` rather than guessing support.
+- Added the denial-path HTTP assertion to `tests/recording_integration.py`.
+- Verified: `cargo build --locked && python3 tests/recording_integration.py && node --check static/app.js` passed.
+- Next: P8-T03, prove denial, stale-anchor, and crash-recovery attribution with navigable graphs and no duplicate side effects.
+
+## 2026-09-12 · ClickUp Brain via Local MCP · P8-T01 durable provenance edges
+
+- Added append-only migration `006_provenance_edges.sql`: six durable node kinds, seven relations, a 2,000-edge request cap, endpoint validation, request/scope isolation, uniqueness, and delete guards that preserve row-backed references.
+- Added storage validation plus write/read APIs without a freeform reasoning field, so the graph cannot become a hidden chain-of-thought store.
+- Extended migration, SQL contract, and Rust storage tests across evidence, step, permission, mutation, memory, recovery, bad kinds/relations, missing rows, self-edges, and referenced-row deletion.
+- Verified: `python3 tests/test_migrations.py && cargo test --locked storage` passed (001→006, 10 storage tests); `python3 -m unittest tests/test_agentic_sql.py` passed (11 tests).
+- Next: P8-T02, build the bounded causal incident read model and earliest-known-break projection.
+
+## 2026-09-12 · AI session · P8 causal observability direction
+
+- Researched current agent observability gaps: outcome-only evaluation, weak span-level failure localization, memory failures whose cause predates the visible error, and missing cross-component provenance/recovery links.
+- Updated `docs/PLAN.md` and `docs/ROADMAP.md` with P8, a bounded causal observability phase rather than another generic trace viewer.
+- Added `docs/design/causal-observability.md` with the edge vocabulary, guardrails, first stale-memory/stale-anchor experiment, and success criteria.
+- Added P8-T01 through P8-T04 to `docs/TASKS.md`. The next executable task is P8-T01: define durable provenance edges.
+- Not verified: docs-only planning change; no schema or runtime code changed.
+
 ## 2026-09-11 · Notion AI via Local · P7-T05 design and executable publication spec
 
 - Drafted `docs/design/incremental-publication.md`: today's whole-answer boundary, the constraint that actually blocks incremental publication, invariants I1–I5, the `safety::StreamRedactor` shape, the rejected alternative, storage/UI impact, and the test matrix.

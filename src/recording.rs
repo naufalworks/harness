@@ -125,6 +125,7 @@ pub fn recover(c: &mut Connection) -> Result<()> {
     tx.execute(agentic::RECOVER_STEPS, [&stamp])?;
     tx.execute(agentic::RECOVER_PERMISSIONS, [&stamp])?;
     tx.execute(agentic::RECOVER_ACTIVITY, [&stamp])?;
+    tx.execute(agentic::RECOVER_PROVENANCE, [&stamp])?;
     // Select only receipts transitioning in this transaction. Historical interruptions
     // must not acquire another generation event (and another replay cursor) on startup.
     tx.execute(

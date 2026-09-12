@@ -1,5 +1,5 @@
 """Offline contract test for src/agentic_sql.rs: every constant is executed against the
-migrated schema (001->002->003) with a Python driver mirroring src/agent_loop.rs.
+migrated schema (001->006) with a Python driver mirroring src/agent_loop.rs.
 No Rust toolchain needed. Rust/HTTP gates remain separate."""
 import json, re, sqlite3, unittest, uuid
 from pathlib import Path
@@ -14,7 +14,7 @@ LATER = "2026-09-09T00:30:00Z"
 def connect():
     c = sqlite3.connect(":memory:", isolation_level=None)
     c.execute("PRAGMA foreign_keys=ON")
-    for name in ("001_core.sql", "002_recording.sql", "003_agentic.sql"):
+    for name in ("001_core.sql", "002_recording.sql", "003_agentic.sql", "004_memory_kinds.sql", "005_generation_stream.sql", "006_provenance_edges.sql"):
         c.executescript((ROOT / "migrations" / name).read_text())
     return c
 
@@ -33,8 +33,9 @@ class AgenticSql(unittest.TestCase):
         for name in ["SCOPE_GET", "SCOPE_UPSERT", "SCOPES_LIST", "STEP_BEGIN", "STEP_FINISH", "STEP_NEXT_SEQ", "STEPS_LIST", "VERIFICATION_LATEST", "EVENT", "EVENTS_AFTER",
                      "PERMISSION_CREATE", "PERMISSION_GET", "PERMISSION_RESOLVE", "PERMISSION_STATUS", "PERMISSIONS_PENDING", "PERMISSION_EXPIRE",
                      "FILE_CHANGE", "FILE_CHANGES_LIST", "FILE_CHANGE_GET", "FILE_CHANGE_REVERTED",
+                     "PROVENANCE_EDGE_INSERT", "PROVENANCE_EDGES_LIST",
                      "PLAN_CLEAR", "PLAN_INSERT", "PLAN_LIST", "SESSION_OF_REQUEST",
-                     "RECOVER_STEPS", "RECOVER_PERMISSIONS", "RECOVER_ACTIVITY", "STEPS_OF_PARENT"]:
+                     "RECOVER_STEPS", "RECOVER_PERMISSIONS", "RECOVER_ACTIVITY", "RECOVER_PROVENANCE", "STEPS_OF_PARENT"]:
             self.assertIn(name, SQL)
 
     def test_scope_roundtrip(self):
@@ -159,6 +160,16 @@ class AgenticSql(unittest.TestCase):
         c.execute(SQL["EVENT"], ("r1", "s1", "st1", "file_reverted", json.dumps({"change_id": "fc1", "path": "notes.md"}), LATER))
         self.assertEqual([r[0] for r in c.execute("SELECT kind FROM activity_events WHERE request_id=?", ("r1",))], ["file_reverted"])
 
+    def test_provenance_edges_resolve_real_rows(self):
+        c = connect(); seed_turn(c)
+        c.execute(SQL["STEP_BEGIN"], ("step", "r1", None, 0, "tool_call", "edit", "call", "{}", NOW))
+        c.execute(SQL["PERMISSION_CREATE"], ("permit", "r1", "step", "edit", "edit", "{}", NOW, LATER))
+        c.execute(SQL["PROVENANCE_EDGE_INSERT"], ("edge", "r1", "step", "step", "depends_on", "permission", "permit", NOW))
+        self.assertEqual(c.execute(SQL["PROVENANCE_EDGES_LIST"], ("r1",)).fetchone()[1:6],
+                         ("step", "step", "depends_on", "permission", "permit"))
+        with self.assertRaises(sqlite3.IntegrityError):
+            c.execute(SQL["PROVENANCE_EDGE_INSERT"], ("orphan", "r1", "step", "missing", "supports", "permission", "permit", NOW))
+
     def test_recovery(self):
         c = connect(); seed_turn(c)
         c.execute(SQL["STEP_BEGIN"], ("st1", "r1", None, 0, "tool_call", "bash", "call_1", "{}", NOW))
@@ -167,10 +178,15 @@ class AgenticSql(unittest.TestCase):
         c.execute(SQL["RECOVER_STEPS"], (LATER,))
         c.execute(SQL["RECOVER_PERMISSIONS"], (LATER,))
         c.execute(SQL["RECOVER_ACTIVITY"], (LATER,))
+        c.execute(SQL["RECOVER_PROVENANCE"], (LATER,))
         c.execute("UPDATE chat_receipts SET state='interrupted',error_code='process_restarted',updated_at=?1 WHERE state='generating'", (LATER,))
         c.execute("COMMIT")
         self.assertEqual(c.execute("SELECT status FROM turn_steps WHERE id='st1'").fetchone()[0], "interrupted")
         self.assertEqual(c.execute("SELECT status FROM permission_requests WHERE id='p1'").fetchone()[0], "expired")
+        recovery = c.execute("SELECT seq,step_id FROM activity_events WHERE request_id='r1' AND kind='interrupted'").fetchone()
+        self.assertEqual(recovery[1], "st1")
+        self.assertEqual(c.execute("SELECT source_id,relation,target_id FROM provenance_edges WHERE request_id='r1'").fetchone(),
+                         ("st1", "triggers", str(recovery[0])))
         ev = c.execute(SQL["EVENTS_AFTER"], ("s1", 0)).fetchall()
         self.assertEqual([e[3] for e in ev], ["interrupted"])
 

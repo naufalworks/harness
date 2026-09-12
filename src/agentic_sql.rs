@@ -1,4 +1,4 @@
-// Agentic-turn statements (schema 003). Offline contract tests execute these exact strings
+// Agentic-turn statements (schema 003+, including provenance in 006). Offline contract tests execute these exact strings
 // against the migrated schema: tests/test_agentic_sql.py.
 pub const SCOPE_GET: &str = r#"SELECT scope,root_path,permission_mode,diagnostics_cmd,max_steps,max_tool_bytes,max_wall_seconds,created_at,updated_at FROM scopes WHERE scope=?1"#;
 pub const SCOPE_UPSERT: &str = r#"INSERT INTO scopes(scope,root_path,permission_mode,diagnostics_cmd,max_steps,max_tool_bytes,max_wall_seconds,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?8) ON CONFLICT(scope) DO UPDATE SET root_path=excluded.root_path,permission_mode=excluded.permission_mode,diagnostics_cmd=excluded.diagnostics_cmd,max_steps=excluded.max_steps,max_tool_bytes=excluded.max_tool_bytes,max_wall_seconds=excluded.max_wall_seconds,updated_at=excluded.updated_at"#;
@@ -38,6 +38,11 @@ pub const FILE_CHANGES_LIST: &str = r#"SELECT id,step_id,path,action,before_hash
 pub const FILE_CHANGE_GET: &str = r#"SELECT f.id,f.request_id,f.step_id,f.path,f.action,f.before_hash,f.after_hash,f.diff,f.applied,f.reverted_at,r.scope,r.session_id FROM file_changes f JOIN chat_receipts r ON r.request_id=f.request_id WHERE f.id=?1"#;
 pub const FILE_CHANGE_REVERTED: &str = r#"UPDATE file_changes SET reverted_at=?2 WHERE id=?1 AND reverted_at IS NULL"#;
 
+// P8-T01: edges carry row identities only. Endpoint existence and request/scope ownership are
+// enforced by migration 006's trigger, so a caller cannot create a plausible-looking orphan.
+pub const PROVENANCE_EDGE_INSERT: &str = r#"INSERT INTO provenance_edges(id,request_id,source_kind,source_id,relation,target_kind,target_id,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)"#;
+pub const PROVENANCE_EDGES_LIST: &str = r#"SELECT id,source_kind,source_id,relation,target_kind,target_id,created_at FROM provenance_edges WHERE request_id=?1 ORDER BY created_at,id LIMIT 2000"#;
+
 pub const PLAN_CLEAR: &str = r#"DELETE FROM plan_items WHERE session_id=?1"#;
 pub const PLAN_INSERT: &str = r#"INSERT INTO plan_items(id,session_id,seq,text,status,updated_at) VALUES(?1,?2,?3,?4,?5,?6)"#;
 pub const PLAN_LIST: &str = r#"SELECT seq,text,status,updated_at FROM plan_items WHERE session_id=?1 ORDER BY seq"#;
@@ -47,4 +52,5 @@ pub const SESSION_OF_REQUEST: &str = r#"SELECT session_id FROM chat_receipts WHE
 // Recovery (runs inside recording::recover's transaction, before the receipt is interrupted).
 pub const RECOVER_STEPS: &str = r#"UPDATE turn_steps SET status='interrupted',finished_at=?1 WHERE status='running'"#;
 pub const RECOVER_PERMISSIONS: &str = r#"UPDATE permission_requests SET status='expired',resolved_at=?1 WHERE status='pending'"#;
-pub const RECOVER_ACTIVITY: &str = r#"INSERT INTO activity_events(request_id,session_id,step_id,kind,payload_json,created_at) SELECT request_id,session_id,NULL,'interrupted','{}',?1 FROM chat_receipts WHERE state='generating'"#;
+pub const RECOVER_ACTIVITY: &str = r#"INSERT INTO activity_events(request_id,session_id,step_id,kind,payload_json,created_at) SELECT r.request_id,r.session_id,(SELECT s.id FROM turn_steps s WHERE s.request_id=r.request_id AND s.status='interrupted' AND s.finished_at=?1 ORDER BY s.seq DESC LIMIT 1),'interrupted','{}',?1 FROM chat_receipts r WHERE r.state='generating'"#;
+pub const RECOVER_PROVENANCE: &str = r#"INSERT INTO provenance_edges(id,request_id,source_kind,source_id,relation,target_kind,target_id,created_at) SELECT lower(hex(randomblob(16))),a.request_id,'step',a.step_id,'triggers','recovery',CAST(a.seq AS TEXT),?1 FROM activity_events a WHERE a.kind='interrupted' AND a.created_at=?1 AND a.step_id IS NOT NULL"#;

@@ -54,6 +54,9 @@ async function showReceipt(id, content, button) {
       const date = new Date(event.at); item.append(node('span', Number.isNaN(date.getTime()) ? '' : date.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}), 'muted')); timeline.append(item);
     }
     content.append(timeline);
+    const inspect = node('button', 'Inspect incident', 'secondary'); inspect.type = 'button';
+    inspect.addEventListener('click', async () => { inspect.disabled = true; try { await refreshAgentTurn(data); $('rail').hidden = false; } catch (error) { notice(error.message, true); } finally { inspect.disabled = false; } });
+    content.append(inspect);
     if (data.context) {
       content.append(node('h3', 'Context used for this turn'), node('p', 'What Harness prepared for the model—not proof of delivery or an explanation of the model’s reasoning.', 'muted'));
       for (const m of data.context.memories || []) { const card = node('div', undefined, 'receipt-memory'); card.append(node('strong', `${m.key} · revision ${m.revision}`), node('p', m.value), node('p', m.evidence?.quote || 'Original evidence unavailable', 'muted')); content.append(card); }
@@ -410,7 +413,7 @@ setInterval(() => { if (token && !document.hidden) { refreshStatus().catch(() =>
 // P1-T13: the agent activity view reads the recorded rows; the durable receipt remains the
 // source of truth, while these read-only endpoints make the current turn visible between model
 // calls. No model/tool text is inserted as HTML.
-const agentState = { requestId: null, sessionId: null, scope: null, permission: null, busyDecision: false, steps: [], changes: [], verification: null };
+const agentState = { requestId: null, sessionId: null, scope: null, permission: null, busyDecision: false, steps: [], changes: [], verification: null, incident: null, incidentNode: null };
 
 // P2-T01: the rail's transport is now the SSE feed instead of a 1 s clock. A frame only says
 // that a row was committed — the rail still re-reads the durable endpoints — so the socket can
@@ -532,6 +535,7 @@ function renderAgentSteps(steps) {
   $('steps-count').textContent = `(${steps.length})`;
   for (const step of steps) {
     const detail = node('details', undefined, `agent-step ${step.status || ''}`);
+    detail.dataset.stepId = step.id || '';
     const heading = node('summary');
     heading.append(node('span', agentIcon(step.status), 'step-icon'));
     heading.append(node('strong', step.tool_name || step.kind || 'step', 'step-tool'));
@@ -624,6 +628,7 @@ function renderAgentChanges(changes) {
   $('changes-count').textContent = `(${changes.length})`;
   for (const change of changes) {
     const card = node('div', undefined, 'diff-card');
+    card.dataset.changeId = change.id || '';
     const head = node('div', undefined, 'diff-head');
     const counts = diffCounts(change.diff);
     const stat = node('span', undefined, 'diff-stat');
@@ -661,6 +666,52 @@ async function revertChange(id, button) {
   }
 }
 
+const incidentRelations = ['supports','contradicts','depends_on','authorizes','mutates','invalidates','triggers'];
+function incidentNode(graph, id) { return (graph?.nodes || []).find(item => item.id === id); }
+function focusDurableRow(item) {
+  const selector = item.kind === 'step' ? `.agent-step[data-step-id="${CSS.escape(item.row_id)}"]` : item.kind === 'mutation' ? `.diff-card[data-change-id="${CSS.escape(item.row_id)}"]` : '';
+  const target = selector && document.querySelector(selector);
+  if (!target) return notice('This durable row is identified in the graph but has no separate rail view.');
+  if (target.tagName === 'DETAILS') target.open = true;
+  target.scrollIntoView({block:'center',behavior:'smooth'}); target.focus?.({preventScroll:true});
+}
+function renderIncidentDetail(graph, item) {
+  const detail = $('incident-detail'); detail.replaceChildren(); detail.hidden = !item;
+  if (!item) return;
+  detail.append(node('span', item.kind, `incident-kind ${item.kind}`), node('strong', item.label || item.id), node('p', `${item.status || 'recorded'} · provenance ${item.provenance || 'unknown'}`, 'muted'));
+  const relations = (graph.edges || []).filter(edge => edge.source === item.id || edge.target === item.id);
+  const list = node('ul', undefined, 'incident-links');
+  for (const edge of relations) {
+    const outward = edge.source === item.id; const other = incidentNode(graph, outward ? edge.target : edge.source);
+    const button = node('button', `${outward ? '→' : '←'} ${edge.relation} · ${other?.label || (outward ? edge.target : edge.source)}`, 'incident-link'); button.type = 'button';
+    button.addEventListener('click', () => { agentState.incidentNode = other?.id || null; renderIncident(graph); }); list.append(button);
+  }
+  if (relations.length) detail.append(list); else detail.append(node('p', 'No recorded edge. This gap is explicit, not inferred.', 'muted'));
+  if (item.kind === 'step' || item.kind === 'mutation') { const back = node('button', item.kind === 'step' ? 'Show recorded step' : 'Show file change', 'secondary'); back.type = 'button'; back.addEventListener('click', () => focusDurableRow(item)); detail.append(back); }
+  detail.append(node('code', item.row_id, 'incident-row-id'));
+}
+function renderIncident(graph) {
+  const panel = $('agent-incident'), select = $('incident-relation'), list = $('incident-nodes'); list.replaceChildren();
+  if (!graph?.nodes?.length) { panel.hidden = true; agentState.incident = null; return; }
+  panel.hidden = false; agentState.incident = graph;
+  if (select.options.length === 1) for (const relation of incidentRelations) select.append(new Option(relation.replace('_',' '), relation));
+  const relation = select.value; const edges = graph.edges || [];
+  const visibleIds = relation === 'all' ? new Set(graph.nodes.map(item => item.id)) : new Set(edges.filter(edge => edge.relation === relation).flatMap(edge => [edge.source, edge.target]));
+  const visible = graph.nodes.filter(item => visibleIds.has(item.id));
+  $('incident-count').textContent = `${visible.length} nodes · ${relation === 'all' ? edges.length : edges.filter(edge => edge.relation === relation).length} edges`;
+  const earliest = graph.earliest_known_break || {};
+  $('incident-break').textContent = earliest.known ? `Earliest known break: ${earliest.reason}` : 'Earliest break unknown';
+  if (!visible.length) list.append(node('p', 'No durable edges use this relation.', 'muted'));
+  for (const item of visible) {
+    const button = node('button', undefined, `incident-node${agentState.incidentNode === item.id ? ' active' : ''}`); button.type = 'button';
+    button.append(node('span', item.kind, `incident-kind ${item.kind}`), node('span', item.label || item.id, 'incident-label'), node('span', item.status || 'recorded', 'incident-status'));
+    button.addEventListener('click', () => { agentState.incidentNode = item.id; renderIncident(graph); }); list.append(button);
+  }
+  const selected = incidentNode(graph, agentState.incidentNode) || incidentNode(graph, earliest.node_id) || visible[0];
+  agentState.incidentNode = selected?.id || null; renderIncidentDetail(graph, selected);
+}
+$('incident-relation').addEventListener('change', () => renderIncident(agentState.incident));
+
 async function refreshAgentTurn(receipt) {
   const requestId = receipt?.request_id || pending?.request_id;
   const sessionId = receipt?.session_id || pending?.session_id || session;
@@ -673,6 +724,7 @@ async function refreshAgentTurn(receipt) {
     // A turn with no recorded changes is normal, and a server without this route is not a
     // reason to blank the rest of the rail.
     api(`/changes?request_id=${encodeURIComponent(requestId)}`).catch(() => ({changes: []})),
+    api(`/chat/requests/${encodeURIComponent(requestId)}/incident`).catch(() => null),
   ]);
   if (!token || requestId !== (pending?.request_id || requestId) || sessionId !== session) return;
   agentState.requestId = requestId; agentState.sessionId = sessionId; agentState.scope = turnScope;
@@ -687,6 +739,7 @@ async function refreshAgentTurn(receipt) {
   renderAgentPlan(data[1]);
   agentState.changes = data[3].changes || [];
   renderAgentChanges(agentState.changes);
+  renderIncident(data[4]);
   // P2 context meter placeholder: real tokens-so-far from step receipts; the budget bar lands in P3.
   const tokens = (data[0].steps || []).reduce((sum, s) => sum + (s.tokens_in || 0) + (s.tokens_out || 0), 0);
   $('context-tokens').textContent = tokens ? `${tokens.toLocaleString()} tokens so far` : 'meter lands in P3';

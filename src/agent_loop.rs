@@ -167,12 +167,24 @@ impl DbStore {
             if tx.execute(sql::STEP_FINISH, params![done.step, done.status, done.output.to_string(), done.bytes, done.truncated, done.tokens_in, done.tokens_out, done.error_code, stamp])? != 1 {
                 bail!("step {} is no longer running", done.step);
             }
+            if done.error_code.as_deref() == Some("stale_anchor") {
+                let prior_read: Option<String> = tx.query_row(
+                    "SELECT prior.id FROM turn_steps current JOIN turn_steps prior ON prior.request_id=current.request_id AND prior.seq<current.seq WHERE current.id=?1 AND prior.kind='tool_call' AND prior.tool_name='read' AND prior.status='complete' AND json_extract(prior.input_json,'$.path')=json_extract(current.input_json,'$.path') ORDER BY prior.seq DESC LIMIT 1",
+                    [&done.step], |r| r.get(0),
+                ).optional()?;
+                if let Some(read_step) = prior_read {
+                    tx.execute(sql::PROVENANCE_EDGE_INSERT,
+                        params![uid(), done.request, "step", read_step, "contradicts", "step", done.step, stamp])?;
+                }
+            }
             tx.execute(sql::EVENT, params![done.request, done.session, done.step, done.event, done.payload.to_string(), stamp])?;
             for artifact in &done.artifacts {
                 match artifact {
                     Artifact::FileChange { path, action, before_hash, after_hash, diff, plus, minus } => {
                         let change = uid();
                         tx.execute(sql::FILE_CHANGE, params![change, done.request, done.step, path, action, before_hash, after_hash, diff, 1, stamp])?;
+                        tx.execute(sql::PROVENANCE_EDGE_INSERT,
+                            params![uid(), done.request, "step", done.step, "mutates", "mutation", change, stamp])?;
                         tx.execute(sql::EVENT, params![done.request, done.session, done.step, "file_changed",
                             json!({"change_id":change,"path":path,"action":action,"plus":plus,"minus":minus}).to_string(), stamp])?;
                     }
@@ -223,6 +235,7 @@ impl DbStore {
             let stamp = now();
             let expires = (chrono::Utc::now() + chrono::Duration::seconds(ask.ttl_seconds)).to_rfc3339();
             tx.execute(sql::PERMISSION_CREATE, params![id, ask.request, ask.step, ask.tool, ask.summary, ask.args.to_string(), stamp, expires])?;
+            tx.execute(sql::PROVENANCE_EDGE_INSERT, params![uid(), ask.request, "step", ask.step, "depends_on", "permission", id, stamp])?;
             tx.execute(sql::EVENT, params![ask.request, ask.session, ask.step, "permission_requested",
                 json!({"permission_id":id,"tool":ask.tool,"summary":ask.summary,"expires_at":expires}).to_string(), stamp])?;
             tx.commit()?;
@@ -298,6 +311,12 @@ impl DbStore {
             if tx.execute(sql::PERMISSION_RESOLVE, params![id, decision, stamp])? != 1 {
                 bail!("approval {id} stopped being pending inside its own transaction");
             }
+            tx.execute(
+                sql::PROVENANCE_EDGE_INSERT,
+                params![uid(), request, "permission", id,
+                    if decision == "approved" { "authorizes" } else { "triggers" },
+                    "step", step, stamp],
+            )?;
             let session: String =
                 tx.query_row(sql::SESSION_OF_REQUEST, [&request], |r| r.get(0))?;
             tx.execute(

@@ -207,6 +207,16 @@
           <div class="subhead"><strong>File changes</strong><span id="changes-count" class="muted"></span></div>
           <div id="changes-list"></div>
         </section>
+        <section id="agent-incident" class="incident-panel" hidden>
+          <div class="incident-head">
+            <div class="subhead"><strong>Incident graph</strong><span id="incident-count" class="muted"></span></div>
+            <label class="sr-only" for="incident-relation">Filter incident graph by relation</label>
+            <select id="incident-relation" aria-label="Filter incident graph by relation"><option value="all">All relations</option></select>
+          </div>
+          <p id="incident-break" class="incident-break"></p>
+          <div id="incident-nodes" class="incident-nodes" aria-label="Incident nodes"></div>
+          <div id="incident-detail" class="incident-detail" hidden></div>
+        </section>
         <section class="context-meter">
           <div class="subhead"><strong>Context</strong><span id="context-tokens" class="muted">—</span></div>
           <div class="meter" aria-hidden="true"><span class="meter-fill"></span></div>

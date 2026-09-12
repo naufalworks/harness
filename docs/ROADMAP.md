@@ -67,3 +67,15 @@ Acceptance: reconnect without duplicate generation; interrupted streams clearly 
 - **Rate-aware scheduling:** foreground generation priority, budgeted background imports, Retry-After/jitter and provider concurrency limits; do not auto-repeat potentially billed interrupted generations.
 
 These are product proposals, not claims of research novelty. Reliability and UX take precedence over feature count.
+
+## P8 · Causal observability (new direction)
+
+The next product/research thread is not another span viewer. It is a bounded causal incident graph that connects externally inspectable evidence to decisions, tool calls, permissions, state mutations, and recovery.
+
+- [ ] Define a typed provenance-edge schema and durable references to existing rows.
+- [ ] Instrument one coding turn without capturing private chain-of-thought.
+- [ ] Add a read-only incident view that starts at a failure and walks upstream/downstream dependencies.
+- [ ] Prove denial, stale-anchor, and crash-recovery attribution with real E2E fixtures.
+- [ ] Measure earliest-break localization, missing-edge rate, graph size, and reviewer time versus flat trace inspection.
+
+This is a research direction, not a completion claim. The executable backlog lives in `docs/TASKS.md`; design details live in `docs/design/causal-observability.md`.

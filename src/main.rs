@@ -574,6 +574,17 @@ async fn request_steps(State(h): State<Harness>, Path(id): Path<String>) -> ApiR
         ))?;
     Ok(Json(h.store.turn_steps(id).await.map_err(db_error)?))
 }
+/// P8-T02: bounded causal incident read model. This is diagnostic evidence, not model reasoning.
+async fn request_incident(State(h): State<Harness>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
+    Uuid::parse_str(&id).map_err(|_| invalid("Invalid request identifier"))?;
+    Ok(Json(
+        h.store
+            .incident_graph(id)
+            .await
+            .map_err(db_error)?
+            .ok_or(ApiError(StatusCode::NOT_FOUND, "Recording receipt not found"))?,
+    ))
+}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RequestQuery {
@@ -1060,6 +1071,7 @@ fn router(state: Harness) -> Router {
         .route("/permissions", get(permissions))
         .route("/permissions/{id}", post(decide_permission))
         .route("/chat/requests/{id}/steps", get(request_steps))
+        .route("/chat/requests/{id}/incident", get(request_incident))
         .route("/sessions/{id}/plan", get(session_plan))
         .route("/activity", get(activity))
         .route("/activity/stream", get(activity_stream))
