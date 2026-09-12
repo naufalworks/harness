@@ -700,3 +700,21 @@ exact failing request with the real browser origin -> 200; `https://evil.invalid
 - An unset or empty variable changes nothing, so the default posture is exactly
   as strict as before.
 
+---
+
+## 2026-09-12 (session 5) — chat submit contract fix and main consolidation
+
+**Reported.** Sending a message failed with `Unexpected response (422)` and the composer kept the draft, so chat was unusable and no retry recovered it.
+
+**Root cause.** The live binary was built at 17:49 from `20c90a3` (the P7-T06 tip), 79 seconds before the tree moved to `fix-tailnet-origin-allowlist`, and was never rebuilt. In that build `static/app.js` stores the draft identity with `generation_cursor` and spreads it into the `/chat/submit` body, but `ChatRequest` is `#[serde(deny_unknown_fields)]` and has no such field. axum answered the extractor rejection itself with a `text/plain` 422, which `api()` could not JSON-parse, so the UI fell back to `Unexpected response (<status>)` and held the draft. The cursor belongs to `GenerationQuery` (`/generation/stream?after_seq=`), never to the submit body.
+
+**Changed.**
+- `src/main.rs` — added `JsonBody<T>` implementing `FromRequest`, mapping `JsonRejection` onto `ApiError` so a JSON route can never answer `text/plain`; both chat handlers use it; the rejection detail is logged as `request_body_rejected` rather than shown to the reader.
+- `static/app.js` — `PENDING_FIELDS` is both the set of fields `/chat/submit` accepts and the only thing put on the wire; a stored identity is sanitized and re-persisted on load, so `generation_cursor` survives for reload-resume but is never sent. A stale draft from another build now self-heals instead of wedging every retry.
+- Consolidated onto `main`: fast-forwarded to `20c90a3`, then merged `fix-tailnet-origin-allowlist` (`e264d6e` origin allow-list plus the fix above). `docs/PROGRESS.md` was the only conflict; both journal entries were kept.
+
+**Verified here.** `bash scripts/verify_release.sh` -> PASS: `cargo test --locked`, `cargo clippy --locked --all-targets`, `cargo build --locked`, 60 Python tests OK, migrations `001 -> 002 -> 003 -> 004 -> 005` (`user_version=5`), tool schemas 13 files, both mock-provider integration suites PASS, `node --check static/app.js`, and the browser suites (`recording_ui.cjs` 18 checks including `generation_cursor_resume` and `reload_recovers_without_resend`, `ui_smoke.cjs` 24 checks). Deployed with `systemctl restart harness` (PID 56749 -> 61297); the served `app.js` then matched the tree (`cde612f0`). Live probes: the exact failing payload and malformed JSON both return `400 application/json` `{"error":"Message payload was not accepted. Reload this tab, then send again"}`; an empty prompt still returns `Prompt must contain 1-16000 UTF-8 bytes`; the tailnet origin is accepted; a foreign origin still gets `403 Origin not allowed`; a missing token still gets `401 Bearer token required`.
+
+**Confirmed by owner.** End-to-end chat, including the real provider round-trip, working on the restarted service (2026-09-12 09:07 +07). No provider turn was sent from the agent side.
+
+**Next.** Six `Json<...>` extractors remain (`confirm`, `candidates`, scope patch, decision, memory ingest); converting them to `JsonBody` would make every JSON route answer JSON uniformly. `tests/integration_smoke.py:84` already accepts `400` or `422`, so that change needs no test edit. Also still open from earlier sessions: `development-mcp` has no git repository, and `harness` is monolithic (`agent_loop.rs`, `main.rs`, `storage.rs`).
