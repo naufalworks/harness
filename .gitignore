@@ -12,7 +12,6 @@ data/
 __pycache__/
 *.pyc
 node_modules/
-package-lock.json
 .DS_Store
 docs/qa/
 docs/previous-delivery/
