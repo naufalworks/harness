@@ -666,3 +666,37 @@ Suggested first message to an AI continuing this work:
 **Decisions.**
 - The browser suites stay out of the default `verify_release.sh` path but run automatically when the runtime is present. A bare host should not fail the release gate over an optional browser install, and a provisioned host should not silently skip coverage.
 - `verify_browser.sh` resolves Chromium from Playwright instead of a fixed path, so the repo carries no machine-specific assumption.
+
+---
+
+## 2026-09-12 — tailnet origin allow-list
+
+**Goal:** make the deployed instance usable from a tailnet browser, which the
+origin guard was rejecting with `Origin not allowed`.
+
+**Root cause:** `authenticate` compared the request `Origin` against three
+loopback strings built from `HARNESS_ADDR`'s port. A browser reaching the app
+through `tailscale serve` sends `https://<machine>.<tailnet>.ts.net:8443`, which
+could never match, so every authenticated call failed regardless of a valid
+token. The guard itself is correct — arbitrary origins must not be accepted,
+since the page sends the bearer token.
+
+**Change:** `Harness` gained `origins: Arc<Vec<String>>`, seeded with the same
+three loopback defaults and extended by an optional comma-separated
+`HARNESS_ALLOWED_ORIGINS`. The hardcoded inline array is gone; the comparison
+now reads the configured list.
+
+**Verified here.** `cargo test --locked` -> 166 passed, 0 failed (up from 165;
+new `configured_origin_is_allowed`, existing `foreign_origin_is_rejected`
+still passes). Release binary rebuilt and the unit restarted. Replayed the
+exact failing request with the real browser origin -> 200; `https://evil.invalid`
+-> 403; `http://127.0.0.1:8080` -> 200, so the defaults are intact.
+
+**Decisions.**
+- The extra origins come from configuration, not a hardcoded hostname. The
+  tailnet name is deployment-specific and must not live in source.
+- Loopback defaults stay unconditional: local use should never require config,
+  and removing them would break the documented `cargo run` path.
+- An unset or empty variable changes nothing, so the default posture is exactly
+  as strict as before.
+

@@ -1,6 +1,6 @@
 use anyhow::{bail, Result};
 use axum::{
-    extract::{DefaultBodyLimit, Path, Query, Request, State},
+    extract::{rejection::JsonRejection, DefaultBodyLimit, FromRequest, Path, Query, Request, State},
     http::{header, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -35,6 +35,7 @@ struct Harness {
     agents: MemoryAgents,
     token: Arc<String>,
     port: u16,
+    origins: Arc<Vec<String>>,
     api_limit: Arc<Semaphore>,
 }
 struct ApiError(StatusCode, &'static str);
@@ -58,6 +59,32 @@ fn default_scope() -> String {
     "global".into()
 }
 
+// axum answers extractor rejections itself, with a text/plain 422 the browser cannot parse; the UI
+// then reports "Unexpected response (<status>)" and keeps the draft. Map those rejections onto
+// ApiError so every failure on a JSON route stays a JSON {"error": ...} the UI can show verbatim.
+struct JsonBody<T>(T);
+impl<S, T> FromRequest<S> for JsonBody<T>
+where
+    Json<T>: FromRequest<S, Rejection = JsonRejection>,
+    S: Send + Sync,
+{
+    type Rejection = ApiError;
+    async fn from_request(request: Request, state: &S) -> ApiResult<Self> {
+        match Json::<T>::from_request(request, state).await {
+            Ok(Json(value)) => Ok(Self(value)),
+            Err(rejection) => {
+                eprintln!(
+                    "{}",
+                    json!({"event":"request_body_rejected","detail":rejection.body_text()})
+                );
+                Err(invalid(
+                    "Message payload was not accepted. Reload this tab, then send again",
+                ))
+            }
+        }
+    }
+}
+
 #[allow(deprecated)]
 fn valid_token(expected: &str, actual: &str) -> bool {
     ring::constant_time::verify_slices_are_equal(expected.as_bytes(), actual.as_bytes()).is_ok()
@@ -76,15 +103,10 @@ async fn authenticate(State(h): State<Harness>, request: Request, next: Next) ->
             .into_response();
     }
     if let Some(origin) = request.headers().get(header::ORIGIN) {
-        let allowed = [
-            format!("http://127.0.0.1:{}", h.port),
-            format!("http://localhost:{}", h.port),
-            format!("http://[::1]:{}", h.port),
-        ];
         if !origin
             .to_str()
             .ok()
-            .is_some_and(|o| allowed.iter().any(|a| a == o))
+            .is_some_and(|o| h.origins.iter().any(|a| a == o))
         {
             return (
                 StatusCode::FORBIDDEN,
@@ -185,7 +207,7 @@ async fn admit_chat(h: &Harness, req: ChatRequest) -> ApiResult<Value> {
 }
 async fn submit_chat(
     State(h): State<Harness>,
-    Json(req): Json<ChatRequest>,
+    JsonBody(req): JsonBody<ChatRequest>,
 ) -> ApiResult<(StatusCode, Json<Value>)> {
     let receipt = admit_chat(&h, req).await?;
     let code = if receipt["state"] == "captured" || receipt["state"] == "generating" {
@@ -199,7 +221,7 @@ async fn submit_chat(
 // 202 receipt. Disconnecting never owns/cancels the generation worker.
 async fn chat(
     State(h): State<Harness>,
-    Json(req): Json<ChatRequest>,
+    JsonBody(req): JsonBody<ChatRequest>,
 ) -> ApiResult<(StatusCode, Json<Value>)> {
     let mut receipt = admit_chat(&h, req).await?;
     let request = receipt["request_id"].as_str().unwrap().to_string();
@@ -1066,11 +1088,24 @@ async fn main() -> Result<()> {
         &key,
         &env::var("HARNESS_MODEL").unwrap_or_else(|_| "LongCat-2.0".into()),
     )?;
+    let mut origins = vec![
+        format!("http://127.0.0.1:{}", addr.port()),
+        format!("http://localhost:{}", addr.port()),
+        format!("http://[::1]:{}", addr.port()),
+    ];
+    if let Ok(extra) = env::var("HARNESS_ALLOWED_ORIGINS") {
+        for candidate in extra.split(',').map(str::trim).filter(|c| !c.is_empty()) {
+            if !origins.iter().any(|o| o == candidate) {
+                origins.push(candidate.to_string());
+            }
+        }
+    }
     let state = Harness {
         store: store.clone(),
         agents: agents.clone(),
         token: Arc::new(token),
         port: addr.port(),
+        origins: Arc::new(origins),
         api_limit: Arc::new(Semaphore::new(8)),
     };
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -1092,6 +1127,11 @@ mod tests {
             agents: MemoryAgents::new("http://127.0.0.1:9", "synthetic", "test").unwrap(),
             token: Arc::new("x".repeat(32)),
             port: 8080,
+            origins: Arc::new(vec![
+                "http://127.0.0.1:8080".into(),
+                "http://localhost:8080".into(),
+                "http://[::1]:8080".into(),
+            ]),
             api_limit: Arc::new(Semaphore::new(8)),
         })
     }
@@ -1118,6 +1158,29 @@ mod tests {
                 axum::http::Request::builder()
                     .uri("/memory/status")
                     .header("Authorization", format!("Bearer {}", "x".repeat(32)))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+    #[tokio::test]
+    async fn configured_origin_is_allowed() {
+        let state = Harness {
+            store: DbStore::init(":memory:").unwrap(),
+            agents: MemoryAgents::new("http://127.0.0.1:9", "synthetic", "test").unwrap(),
+            token: Arc::new("x".repeat(32)),
+            port: 8080,
+            origins: Arc::new(vec!["https://upcloud-dev.example.ts.net:8443".into()]),
+            api_limit: Arc::new(Semaphore::new(8)),
+        };
+        let response = router(state)
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/memory/status")
+                    .header("Authorization", format!("Bearer {}", "x".repeat(32)))
+                    .header("Origin", "https://upcloud-dev.example.ts.net:8443")
                     .body(Body::empty())
                     .unwrap(),
             )

@@ -6,7 +6,17 @@ let session = sessionStorage.getItem('harness_session') || crypto.randomUUID();
 let busy = false, epoch = 0, historyCursor = null, sessionsCursor = null;
 let pending = null, pendingPrompt = null;
 try { pending = JSON.parse(sessionStorage.getItem('harness_pending') || 'null'); } catch { sessionStorage.removeItem('harness_pending'); }
-if (pending && (typeof pending.request_id !== 'string' || pending.session_id !== session || pending.scope !== scope)) pending = null;
+// PENDING_FIELDS is exactly what /chat/submit accepts, so it is also all that goes on the wire: a
+// draft identity stored by another build can carry keys the server rejects, and posting those back
+// made every send fail with a 422 the UI could not parse. generation_cursor is kept because P7-T03
+// resumes the generation stream after a reload, but it stays in this tab and is never sent.
+const PENDING_FIELDS = ['request_id', 'session_id', 'scope'];
+if (pending && typeof pending === 'object') {
+  const kept = Object.fromEntries(PENDING_FIELDS.filter(key => typeof pending[key] === 'string').map(key => [key, pending[key]]));
+  if (Number.isFinite(pending.generation_cursor)) kept.generation_cursor = pending.generation_cursor;
+  pending = kept; sessionStorage.setItem('harness_pending', JSON.stringify(pending));
+}
+if (pending && (typeof pending.request_id !== 'string' || pending.session_id !== session || pending.scope !== scope)) { pending = null; sessionStorage.removeItem('harness_pending'); }
 $('scope').value = scope;
 function notice(text, error = false) { $('notice').textContent = text; $('notice').classList.toggle('error', error); }
 function captureLabel(text) { $('capturestatus').textContent = text; }
@@ -275,7 +285,9 @@ async function sendAttempt(retry = false) {
   let admitted = false;
   const myEpoch = epoch; setBusy(true); captureLabel('Sending…');
   try {
-    const result = await api('/chat/submit', {prompt, ...pending}); admitted = true;
+    const body = {prompt};
+    if (pending) for (const key of PENDING_FIELDS) { if (typeof pending[key] === 'string') body[key] = pending[key]; }
+    const result = await api('/chat/submit', body); admitted = true;
     if (token && myEpoch === epoch) await followReceipt(result, myEpoch);
   } catch (error) {
     if (token && myEpoch === epoch) {
