@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# Builds and tests the debug profile. The systemd unit starts target/release/harness, so this
+# script does not produce the deployed artifact: deploy with scripts/deploy.sh, which builds the
+# release profile and proves the live process is the binary it just built.
 command -v cargo >/dev/null || { echo 'BLOCKED: Rust/cargo required; Python contracts alone do not validate this release.' >&2; exit 2; }
 cargo test --locked
 cargo clippy --locked --all-targets

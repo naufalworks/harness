@@ -94,6 +94,19 @@ HTTP suites use temporary DBs and a synthetic loopback provider — no paid
 inference. The suites spawn real server processes, including SIGKILL/restart
 recovery checks.
 
+## Deploy
+
+```sh
+bash scripts/deploy.sh   # release build -> restart harness -> prove the live process is that build
+```
+
+The unit starts `target/release/harness`, while the gate above builds and tests the
+debug profile, so `systemctl restart` on its own can relaunch a binary older than the
+change being deployed. `deploy.sh` builds the release profile, restarts the unit,
+compares the md5 of `/proc/<pid>/exe` with the binary it just built, and smoke-tests
+that the API answers and that a non-object body is refused before reporting success.
+Override the unit name with `HARNESS_UNIT`.
+
 ## Data
 
 - DB at `HARNESS_DB` (default `data/harness_v2.db`), mode 0600, WAL.
