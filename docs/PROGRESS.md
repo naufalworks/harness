@@ -1,5 +1,12 @@
 # PROGRESS — journal
 
+## 2026-09-13 · Notion AI via Local · P9-T01 closed incident projection
+
+- Fixed the bounded incident read model so truncation cannot leave dangling edge or adjacency references.
+- Added explicit node/edge truncation metadata and a 401-node regression.
+- Verified: `cargo test --locked storage` passed, 11 tests.
+- Next: P9-T02, close Python SQLite test connections and make `ResourceWarning` fatal in its gate.
+
 ## 2026-09-12 · ClickUp Brain via Local MCP · P8-T04 incident graph UI
 
 - Added an inline incident graph to the activity rail, not a modal: relation filtering, earliest-break summary, node selection, edge traversal, explicit known/unknown provenance, and durable row IDs.

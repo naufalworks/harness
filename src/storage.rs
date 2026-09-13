@@ -1108,15 +1108,28 @@ impl DbStore {
                 let (id, source_kind, source_id, relation, target_kind, target_id) = row?;
                 let source = node_id(&source_kind, &source_id);
                 let target = node_id(&target_kind, &target_id);
-                linked.insert(source.clone());
-                linked.insert(target.clone());
-                downstream.entry(source.clone()).or_default().push(target.clone());
-                upstream.entry(target.clone()).or_default().push(source.clone());
                 add(&source_kind, &source_id, format!("{source_kind} {source_id}"), "known".into(), true);
                 add(&target_kind, &target_id, format!("{target_kind} {target_id}"), "known".into(), true);
                 edges.push(json!({"id":id,"source":source,"target":target,"relation":relation}));
             }
             drop(add);
+            let total_nodes = nodes.len();
+            let total_edges = edges.len();
+            nodes.truncate(400);
+            let visible = nodes.iter().filter_map(|node| node["id"].as_str().map(str::to_string)).collect::<HashSet<_>>();
+            edges.retain(|edge| {
+                edge["source"].as_str().is_some_and(|id| visible.contains(id))
+                    && edge["target"].as_str().is_some_and(|id| visible.contains(id))
+            });
+            edges.truncate(2000);
+            for edge in &edges {
+                let Some(source) = edge["source"].as_str() else { continue };
+                let Some(target) = edge["target"].as_str() else { continue };
+                linked.insert(source.to_string());
+                linked.insert(target.to_string());
+                downstream.entry(source.to_string()).or_default().push(target.to_string());
+                upstream.entry(target.to_string()).or_default().push(source.to_string());
+            }
             let mut unknown = Vec::new();
             for node in &mut nodes {
                 let id = node["id"].as_str().unwrap_or_default().to_string();
@@ -1129,8 +1142,9 @@ impl DbStore {
             }
             breaks.sort_by_key(|item| item.0);
             let earliest = breaks.first().map(|(_, kind, id, reason)| json!({"node_id":node_id(kind,id),"kind":kind,"row_id":id,"reason":safety::redact(reason),"known":true})).unwrap_or_else(|| json!({"node_id":Value::Null,"kind":"unknown","row_id":Value::Null,"reason":"no recorded failure or recovery break was found","known":false}));
-            nodes.truncate(400); edges.truncate(2000); unknown.truncate(400);
-            Ok(Some(json!({"request":{"request_id":request,"session_id":session,"scope":scope,"state":state,"updated_at":updated_at},"nodes":nodes,"edges":edges,"unknown_provenance":unknown,"earliest_known_break":earliest,"bounds":{"max_nodes":400,"max_edges":2000}})))
+            unknown.truncate(400);
+            let truncation = json!({"nodes":total_nodes > nodes.len(),"edges":total_edges > edges.len()});
+            Ok(Some(json!({"request":{"request_id":request,"session_id":session,"scope":scope,"state":state,"updated_at":updated_at},"nodes":nodes,"edges":edges,"unknown_provenance":unknown,"earliest_known_break":earliest,"bounds":{"max_nodes":400,"max_edges":2000},"truncated":truncation})))
         }).await
     }
 
@@ -1445,6 +1459,42 @@ mod tests {
             "request".into(), "step".into(), "missing".into(), "supports".into(),
             "permission".into(), "permit".into(),
         ).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn bounded_incident_graph_never_returns_dangling_references() {
+        let db = DbStore::init(":memory:").unwrap();
+        db.run(|c| {
+            let stamp = now();
+            c.execute("INSERT INTO sessions(id,scope,created_at) VALUES('session','global',?1)",[&stamp])?;
+            c.execute("INSERT INTO messages(id,session_id,role,content,status,created_at) VALUES('request','session','user','hi','pending',?1)",[&stamp])?;
+            c.execute("INSERT INTO chat_receipts(request_id,session_id,scope,model,signature,redacted,state,captured_at,updated_at) VALUES('request','session','global','main','sig',0,'generating',?1,?1)",[&stamp])?;
+            for seq in 0..200 {
+                let step = format!("step-{seq:03}");
+                let permit = format!("permit-{seq:03}");
+                c.execute(crate::agentic_sql::STEP_BEGIN,params![step,"request",None::<String>,seq,"tool_call","edit",format!("call-{seq}"),"{}",stamp])?;
+                c.execute(crate::agentic_sql::PERMISSION_CREATE,params![permit,"request",step,"edit","edit","{}",stamp,stamp])?;
+                c.execute(crate::agentic_sql::PROVENANCE_EDGE_INSERT,params![format!("edge-{seq:03}"),"request","step",step,"depends_on","permission",permit,stamp])?;
+            }
+            Ok(())
+        }).await.unwrap();
+
+        let graph = db.incident_graph("request".into()).await.unwrap().unwrap();
+        let nodes = graph["nodes"].as_array().unwrap();
+        let node_ids = nodes.iter().map(|node| node["id"].as_str().unwrap()).collect::<HashSet<_>>();
+        assert_eq!(nodes.len(), 400);
+        assert_eq!(graph["truncated"], json!({"nodes":true,"edges":true}));
+        for edge in graph["edges"].as_array().unwrap() {
+            assert!(node_ids.contains(edge["source"].as_str().unwrap()));
+            assert!(node_ids.contains(edge["target"].as_str().unwrap()));
+        }
+        for node in nodes {
+            for direction in ["upstream", "downstream"] {
+                for endpoint in node[direction].as_array().unwrap() {
+                    assert!(node_ids.contains(endpoint.as_str().unwrap()));
+                }
+            }
+        }
     }
 
     #[tokio::test]

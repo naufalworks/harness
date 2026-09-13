@@ -509,3 +509,22 @@ Each task has: `status`, `depends`, `design` (doc section), `files` (touched),
 - done-when: the dashboard can filter an incident, select a node, show its evidence and state transition, and link back to the original durable rows without implying hidden reasoning access.
 - verify: scripts/verify_browser.sh && node --check static/app.js
 - note (2026-09-12, done): the activity rail now loads the bounded incident projection, highlights the earliest known break, filters by all seven typed relations, lets reviewers traverse linked nodes, exposes provenance status and durable row identity, and jumps from step/mutation nodes to their recorded step or file-change view. Saved message receipts can reopen historical incidents. `scripts/verify_browser.sh && node --check static/app.js` passed; the real `scripts/verify_e2e.sh` gate also passed after the UI change.
+
+## P9 · Review hardening
+
+### P9-T01 · Keep bounded incident graphs closed
+- status: done
+- depends: P8-T04
+- design: docs/design/causal-observability.md#bounded-projection-integrity
+- files: src/storage.rs, docs/design/causal-observability.md
+- done-when: every returned edge and adjacency endpoint exists in the bounded node projection, and truncation is reported explicitly.
+- verify: cargo test --locked storage
+- note (2026-09-13, done): The incident projection now selects its bounded node set first, removes edges with omitted endpoints, rebuilds adjacency only from retained edges, and reports node/edge truncation. A 401-node regression proves every edge and adjacency identifier resolves inside the response. Exact verification passed: 11 storage tests.
+
+### P9-T02 · Close Python SQLite test connections
+- status: todo
+- depends: P9-T01
+- design: docs/PLAN.md#p0--release-gates
+- files: tests/test_agentic_sql.py, tests/test_migrations.py, tests/test_recording_contracts.py, tests/test_sql_contracts.py
+- done-when: the Python contract suite exits without unclosed-SQLite `ResourceWarning` output.
+- verify: PYTHONWARNINGS=error::ResourceWarning python3 -m unittest discover -s tests -p 'test_*.py'

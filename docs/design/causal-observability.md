@@ -52,3 +52,7 @@ Inject one stale memory or stale file anchor into a recorded coding turn. Compar
 ## Success criteria
 
 For a denial, stale anchor, or crash-recovery run, a reviewer can navigate from the incident to the exact request, step, evidence, permission, state mutation, and recovery event. The system identifies the earliest known causal break and distinguishes missing evidence from contradictory evidence.
+
+## Bounded projection integrity
+
+The read model is a closed bounded graph, not independently truncated node and edge lists. It selects at most 400 nodes, retains only edges whose source and target are both selected, rebuilds adjacency from those retained edges, and reports whether either collection was truncated. Therefore every identifier exposed through an edge or an upstream/downstream list resolves to a node in the same response.
