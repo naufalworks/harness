@@ -522,9 +522,10 @@ Each task has: `status`, `depends`, `design` (doc section), `files` (touched),
 - note (2026-09-13, done): The incident projection now selects its bounded node set first, removes edges with omitted endpoints, rebuilds adjacency only from retained edges, and reports node/edge truncation. A 401-node regression proves every edge and adjacency identifier resolves inside the response. Exact verification passed: 11 storage tests.
 
 ### P9-T02 · Close Python SQLite test connections
-- status: todo
+- status: done
 - depends: P9-T01
 - design: docs/PLAN.md#p0--release-gates
-- files: tests/test_agentic_sql.py, tests/test_migrations.py, tests/test_recording_contracts.py, tests/test_sql_contracts.py
+- files: scripts/backup.py, tests/test_agentic_sql.py, tests/test_migrations.py, tests/test_sql_contracts.py
 - done-when: the Python contract suite exits without unclosed-SQLite `ResourceWarning` output.
 - verify: PYTHONWARNINGS=error::ResourceWarning python3 -m unittest discover -s tests -p 'test_*.py'
+- note (2026-09-13, done): unittest fixtures now register per-test cleanup, migration tests close every tracked in-memory database, SQLite context blocks close rather than only commit, and the backup helper closes both endpoints. The warnings-as-errors gate passed all 61 Python tests with no `ResourceWarning` output.

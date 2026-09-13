@@ -15,6 +15,7 @@ MIG = ROOT / "migrations"
 CHAIN = ["001_core.sql", "002_recording.sql", "003_agentic.sql", "004_memory_kinds.sql", "005_generation_stream.sql", "006_provenance_edges.sql"]
 VERSIONS = [name.split("_", 1)[0] for name in CHAIN]
 LATEST_VERSION = int(VERSIONS[-1])
+OPEN_CONNECTIONS = []
 
 EXPECTED_TABLES = {
     1: {"sessions", "messages", "sources", "jobs", "candidates", "memories", "memory_revisions", "settings"},
@@ -28,8 +29,14 @@ EXPECTED_TABLES = {
 
 def fresh():
     c = sqlite3.connect(":memory:")
+    OPEN_CONNECTIONS.append(c)
     c.execute("PRAGMA foreign_keys=ON")
     return c
+
+
+def close_connections():
+    while OPEN_CONNECTIONS:
+        OPEN_CONNECTIONS.pop().close()
 
 
 def tables(c):
@@ -227,17 +234,20 @@ def test_006_provenance_constraints():
 
 
 def main():
-    check_fts5()
-    test_full_chain()
-    test_v2_to_v3()
-    test_populated_v3_to_v4()
-    test_004_memory_categories_and_embedding_constraints()
-    test_003_constraints()
-    test_006_provenance_constraints()
-    print(
-        f"migrations OK: {' -> '.join(VERSIONS)}, "
-        f"user_version={LATEST_VERSION}, data/FTS/FKs preserved"
-    )
+    try:
+        check_fts5()
+        test_full_chain()
+        test_v2_to_v3()
+        test_populated_v3_to_v4()
+        test_004_memory_categories_and_embedding_constraints()
+        test_003_constraints()
+        test_006_provenance_constraints()
+        print(
+            f"migrations OK: {' -> '.join(VERSIONS)}, "
+            f"user_version={LATEST_VERSION}, data/FTS/FKs preserved"
+        )
+    finally:
+        close_connections()
 
 
 class Suite(unittest.TestCase):

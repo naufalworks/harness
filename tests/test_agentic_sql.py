@@ -29,6 +29,10 @@ def seed_turn(c, request="r1", session="s1", scope="proj"):
 
 
 class AgenticSql(unittest.TestCase):
+    def setUp(self):
+        self.c = connect()
+        self.addCleanup(self.c.close)
+
     def test_all_constants_present(self):
         for name in ["SCOPE_GET", "SCOPE_UPSERT", "SCOPES_LIST", "STEP_BEGIN", "STEP_FINISH", "STEP_NEXT_SEQ", "STEPS_LIST", "VERIFICATION_LATEST", "EVENT", "EVENTS_AFTER",
                      "PERMISSION_CREATE", "PERMISSION_GET", "PERMISSION_RESOLVE", "PERMISSION_STATUS", "PERMISSIONS_PENDING", "PERMISSION_EXPIRE",
@@ -39,7 +43,7 @@ class AgenticSql(unittest.TestCase):
             self.assertIn(name, SQL)
 
     def test_scope_roundtrip(self):
-        c = connect()
+        c = self.c
         c.execute(SQL["SCOPE_UPSERT"], ("proj", "/tmp/x", "ask", None, None, None, None, NOW))
         c.execute(SQL["SCOPE_UPSERT"], ("proj", "/tmp/y", "auto_edit", "cargo check", 50, 100000, 600, LATER))
         row = c.execute(SQL["SCOPE_GET"], ("proj",)).fetchone()
@@ -53,7 +57,7 @@ class AgenticSql(unittest.TestCase):
             c.execute(SQL["SCOPE_UPSERT"], ("proj", None, "yolo", None, None, None, None, NOW))
 
     def test_step_lifecycle_and_listing(self):
-        c = connect(); seed_turn(c)
+        c = self.c; seed_turn(c)
         self.assertEqual(c.execute(SQL["STEP_NEXT_SEQ"], ("r1",)).fetchone()[0], 0)
         c.execute(SQL["STEP_BEGIN"], ("st0", "r1", None, 0, "model_call", None, None, json.dumps({"messages": []}), NOW))
         self.assertEqual(c.execute(SQL["STEP_NEXT_SEQ"], ("r1",)).fetchone()[0], 1)
@@ -72,7 +76,7 @@ class AgenticSql(unittest.TestCase):
     # P5-T03: a sub-agent's steps stay inside the parent's request and seq sequence, and are
     # reached through the `task` tool-call step that spawned them.
     def test_subagent_steps_hang_off_their_parent(self):
-        c = connect(); seed_turn(c)
+        c = self.c; seed_turn(c)
         c.execute(SQL["STEP_BEGIN"], ("st0", "r1", None, 0, "tool_call", "task", "call_1", "{}", NOW))
         c.execute(SQL["STEP_BEGIN"], ("sub", "r1", "st0", 1, "subagent", None, None, "{}", NOW))
         c.execute(SQL["STEP_BEGIN"], ("sub_model", "r1", "sub", 2, "model_call", None, None, "{}", NOW))
@@ -88,7 +92,7 @@ class AgenticSql(unittest.TestCase):
             c.execute(SQL["STEP_BEGIN"], ("orphan", "r1", "missing", 4, "model_call", None, None, "{}", NOW))
 
     def test_events_cursor(self):
-        c = connect(); seed_turn(c)
+        c = self.c; seed_turn(c)
         for k in ("turn_started", "model_call_started", "answer_saved"):
             c.execute(SQL["EVENT"], ("r1", "s1", None, k, "{}", NOW))
         rows = c.execute(SQL["EVENTS_AFTER"], ("s1", 1)).fetchall()
@@ -96,7 +100,7 @@ class AgenticSql(unittest.TestCase):
         self.assertEqual(c.execute(SQL["SESSION_OF_REQUEST"], ("r1",)).fetchone()[0], "s1")
 
     def test_latest_verification_is_bounded_and_request_scoped(self):
-        c = connect(); seed_turn(c)
+        c = self.c; seed_turn(c)
         c.execute(SQL["STEP_BEGIN"], ("v1", "r1", None, 0, "verification", None, None, "{}", NOW))
         report = json.dumps({"status": "verified", "claims": [], "skipped_diagnostics": []})
         c.execute(SQL["STEP_FINISH"], ("v1", "complete", report, len(report), 0, 10, 2, None, LATER))
@@ -112,7 +116,7 @@ class AgenticSql(unittest.TestCase):
                          ("v2", "failed", 32768, "verification_failed", 1))
 
     def test_permission_flow(self):
-        c = connect(); seed_turn(c)
+        c = self.c; seed_turn(c)
         c.execute(SQL["STEP_BEGIN"], ("st1", "r1", None, 0, "tool_call", "edit", "call_1", "{}", NOW))
         c.execute(SQL["PERMISSION_CREATE"], ("p1", "r1", "st1", "edit", "edit a.rs (+1 -1)", json.dumps({"diff": "-a\n+b"}), NOW, LATER))
         pend = c.execute(SQL["PERMISSIONS_PENDING"], ("proj",)).fetchall()
@@ -127,7 +131,7 @@ class AgenticSql(unittest.TestCase):
         self.assertEqual(c.execute(SQL["PERMISSION_EXPIRE"], ("p2", LATER)).rowcount, 1)
 
     def test_file_changes_and_plan(self):
-        c = connect(); seed_turn(c)
+        c = self.c; seed_turn(c)
         c.execute(SQL["STEP_BEGIN"], ("st1", "r1", None, 0, "tool_call", "edit", "call_1", "{}", NOW))
         c.execute(SQL["FILE_CHANGE"], ("fc1", "r1", "st1", "src/a.rs", "modify", "aaaa", "bbbb", "-x\n+y", 1, NOW))
         with self.assertRaises(sqlite3.IntegrityError):
@@ -146,7 +150,7 @@ class AgenticSql(unittest.TestCase):
 
     # P2-T03: the undo reads one change together with its turn's scope, and can only fire once.
     def test_revert_marks_a_change_once(self):
-        c = connect(); seed_turn(c)
+        c = self.c; seed_turn(c)
         c.execute(SQL["STEP_BEGIN"], ("st1", "r1", None, 0, "tool_call", "edit", "call_1", "{}", NOW))
         c.execute(SQL["FILE_CHANGE"], ("fc1", "r1", "st1", "notes.md", "modify", "aaaa", "bbbb", "-x\n+y", 1, NOW))
         row = c.execute(SQL["FILE_CHANGE_GET"], ("fc1",)).fetchone()
@@ -161,7 +165,7 @@ class AgenticSql(unittest.TestCase):
         self.assertEqual([r[0] for r in c.execute("SELECT kind FROM activity_events WHERE request_id=?", ("r1",))], ["file_reverted"])
 
     def test_provenance_edges_resolve_real_rows(self):
-        c = connect(); seed_turn(c)
+        c = self.c; seed_turn(c)
         c.execute(SQL["STEP_BEGIN"], ("step", "r1", None, 0, "tool_call", "edit", "call", "{}", NOW))
         c.execute(SQL["PERMISSION_CREATE"], ("permit", "r1", "step", "edit", "edit", "{}", NOW, LATER))
         c.execute(SQL["PROVENANCE_EDGE_INSERT"], ("edge", "r1", "step", "step", "depends_on", "permission", "permit", NOW))
@@ -171,7 +175,7 @@ class AgenticSql(unittest.TestCase):
             c.execute(SQL["PROVENANCE_EDGE_INSERT"], ("orphan", "r1", "step", "missing", "supports", "permission", "permit", NOW))
 
     def test_recovery(self):
-        c = connect(); seed_turn(c)
+        c = self.c; seed_turn(c)
         c.execute(SQL["STEP_BEGIN"], ("st1", "r1", None, 0, "tool_call", "bash", "call_1", "{}", NOW))
         c.execute(SQL["PERMISSION_CREATE"], ("p1", "r1", "st1", "bash", "x", "{}", NOW, LATER))
         c.execute("BEGIN IMMEDIATE")

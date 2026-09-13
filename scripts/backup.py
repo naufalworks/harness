@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Consistent SQLite online backup, including committed WAL state. Never overwrites a target."""
 import argparse, os, sqlite3
+from contextlib import closing
 from pathlib import Path
 
 def backup(source, destination):
@@ -10,7 +11,7 @@ def backup(source, destination):
     destination.parent.mkdir(parents=True,exist_ok=True)
     fd=os.open(destination,os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600);os.close(fd)
     try:
-        with sqlite3.connect(source.as_uri()+'?mode=ro',uri=True) as src, sqlite3.connect(destination) as dst:
+        with closing(sqlite3.connect(source.as_uri()+'?mode=ro',uri=True)) as src, closing(sqlite3.connect(destination)) as dst:
             src.backup(dst,pages=256,sleep=0.05)
             result=dst.execute('PRAGMA integrity_check').fetchone()[0]
             if result!='ok':raise RuntimeError('Backup integrity check failed')

@@ -1,5 +1,12 @@
 # PROGRESS — journal
 
+## 2026-09-13 · Notion AI via Local · P9-T02 closed SQLite handles
+
+- Registered deterministic cleanup for every Python test SQLite connection, including migration helpers and online backup endpoints.
+- Replaced misleading SQLite transaction context usage with explicit closing contexts where ownership ends locally.
+- Verified: `PYTHONWARNINGS=error::ResourceWarning python3 -m unittest discover -s tests -p 'test_*.py'` passed, 61 tests, with no resource-warning output.
+- Next: run the complete release gate, push both review fixes, and redeploy.
+
 ## 2026-09-13 · Notion AI via Local · P9-T01 closed incident projection
 
 - Fixed the bounded incident read model so truncation cannot leave dangling edge or adjacency references.

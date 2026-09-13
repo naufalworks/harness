@@ -3,6 +3,7 @@ with a Python transaction driver mirroring Rust orchestration. They do not compi
 or execute the Rust implementation; the Rust/HTTP release gates remain separate.
 """
 import importlib.util,json,re,sqlite3,sys,tempfile,time,unittest,uuid
+from contextlib import closing
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'scripts'))
@@ -94,19 +95,20 @@ class Contracts(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             src=Path(d)/'source.db';dst=Path(d)/'backup.db';c=sqlite3.connect(src);c.execute('PRAGMA journal_mode=WAL');c.execute('CREATE TABLE example(value)');c.execute('INSERT INTO example VALUES(42)');c.commit()
             backup(src,dst)
-            with sqlite3.connect(dst) as out:self.assertEqual(out.execute('SELECT value FROM example').fetchone()[0],42)
+            with closing(sqlite3.connect(dst)) as out:self.assertEqual(out.execute('SELECT value FROM example').fetchone()[0],42)
             with self.assertRaises(FileExistsError):backup(src,dst)
             c.close()
     def test_legacy_migration_is_quarantined_and_filters_secrets(self):
         with tempfile.TemporaryDirectory() as d:
             src=Path(d)/'old.db';dst=Path(d)/'new.db'
-            with sqlite3.connect(src) as old:
+            with closing(sqlite3.connect(src)) as old:
                 old.execute('CREATE TABLE memories(key,value,category,status)');old.executemany('INSERT INTO memories VALUES(?,?,?,?)',[('language','Rust','preference','active'),('api_key','synthetic','credential','active'),('project','old','fact','archived')])
+                old.commit()
             result=migrate(src,dst)
             self.assertEqual(result,{'candidates_imported':1,'sensitive_skipped':1,'invalid_skipped':0,'inactive_skipped':1})
-            with sqlite3.connect(dst) as new:
+            with closing(sqlite3.connect(dst)) as new:
                 self.assertEqual(new.execute('SELECT count(*) FROM memories').fetchone()[0],0);self.assertEqual(new.execute('SELECT scope,status FROM candidates').fetchone(),('legacy-review','pending'))
             with self.assertRaises(ValueError):migrate(src,dst)
-            with sqlite3.connect(src) as old:self.assertEqual(old.execute('SELECT count(*) FROM memories').fetchone()[0],3)
+            with closing(sqlite3.connect(src)) as old:self.assertEqual(old.execute('SELECT count(*) FROM memories').fetchone()[0],3)
 
 if __name__=='__main__':unittest.main(verbosity=2)
