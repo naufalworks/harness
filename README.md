@@ -1,8 +1,6 @@
 # Harness
 
-Single-user, local Rust chat service with a durable memory layer. Every accepted
-message is recorded before the model runs; memories are extracted, reviewed, and
-recalled into future conversations via local FTS5. Agentic turns may make multiple bounded model calls while recorded tools execute between them.
+Single-user, loopback-first Rust coding agent with durable SQLite receipts and reviewed memory. Every accepted message is recorded before the provider runs; bounded agentic turns use recorded, permission-gated project tools, publish redacted durable events, verify final claims against tool evidence, and queue memory extraction separately.
 
 ## Run
 
@@ -42,13 +40,13 @@ behind nothing but the token.
 
 | Path | Purpose |
 |---|---|
-| `src/` | Rust service: recording, storage, ingest, safety, memory agents |
-| `migrations/` | Versioned SQLite schema (v1 core, v2 recording) |
+| `src/` | Rust service: API/auth, agent loop, tools, recording, memory, provenance, archive |
+| `migrations/` | Append-only SQLite schema, currently migrations 001–007 |
 | `static/` | Single-page UI served at `/` |
-| `tests/` | SQL contracts, live HTTP suites, mocked-browser UI suites |
-| `scripts/` | Online backup, session import CLI, legacy migration tools |
+| `tests/` | Rust-adjacent contracts, live HTTP/fault suites, mocked and real browser E2E |
+| `scripts/` | Local/release verification, encrypted backup/restore, deployment/rollback, imports |
 | `docs/` | ARCHITECTURE, RECORDING_PROTOCOL, ROADMAP |
-| `reference/renewed-ui-original/` | Preferred UI source, pending merge |
+| `reference/renewed-ui-original/` | Historical UI reference; its theme has been ported to `static/` |
 
 ## How it behaves
 
@@ -61,8 +59,10 @@ behind nothing but the token.
 - **Review-first memory.** Chat extractions and imports create pending
   candidates; nothing enters recall until approved. Rejection never deletes
   chat history — recording and memory are separate pipelines.
-- **Recall.** Local FTS5 (BM25, no extra model call) over approved active
-  memories in the conversation scope plus global.
+- **Recall.** Hybrid FTS5 plus deterministic local feature-hashing vectors over approved active memories in the conversation scope plus global; no embedding API call or model download.
+- **Recorded coding tools.** Read/search, anchored edit/write, bash, plan/think, skill, read-only task sub-agent, Rust AST rewrite, LSP, and CDP browser calls are durable steps. Side effects follow per-scope permission modes.
+- **Resumable evidence.** Activity and generation feeds use database cursors; final answers can be verified against a bounded evidence manifest and causal incident graph.
+- **Operational recovery.** One process owns each database. SIGINT/SIGTERM drain claimed work within a bounded timeout; abrupt restart interrupts claimed generation without replay.
 
 ## Browser suites
 
@@ -101,18 +101,14 @@ recovery checks.
 bash scripts/deploy.sh   # release build -> restart harness -> prove the live process is that build
 ```
 
-The unit starts `target/release/harness`, while the gate above builds and tests the
-debug profile, so `systemctl restart` on its own can relaunch a binary older than the
-change being deployed. `deploy.sh` builds the release profile, restarts the unit,
-compares the SHA-256 of `/proc/<pid>/exe` with the binary it just built, and smoke-tests
-that the API answers and that a non-object body is refused before reporting success.
-Override the unit name with `HARNESS_UNIT`.
+Deployment is a separate promotion action, never part of either verification gate. `deploy.sh` rejects a dirty tree unless explicitly overridden, snapshots the currently served executable and identity, builds the release candidate, and verifies its commit, SHA-256, schema, worker readiness, API response, and JSON-object boundary. A failed candidate restores the previous executable only when the live schema is compatible. If the schema advanced or cannot be read, the service stops and database recovery requires explicit owner approval; the script never restores a database automatically. Override the unit with `HARNESS_UNIT`.
 
 ## Data
 
 - DB at `HARNESS_DB` (default `data/harness_v2.db`), mode 0600, WAL.
   Plaintext sanitized content: keep it out of source control.
-- One process per DB. Startup recovers interrupted generations; never run two.
+- One process per DB. Startup recovers interrupted generations and running extraction jobs; it never replays claimed provider/tool work.
+- Graceful shutdown timeout: `HARNESS_SHUTDOWN_TIMEOUT_SECONDS` (default 30, range 1–300).
 - Backups: `python3 scripts/backup.py create <db> <backup-dir> --key-file <owner-only-key>`
   creates a rotating AES-256-GCM archive from a verified online SQLite snapshot,
   including committed WAL state, and proves a clean restore before rotation. Generate
@@ -121,7 +117,7 @@ Override the unit name with `HARNESS_UNIT`.
 
 ## Legacy memory migration
 
-One-time, already applied to the live DB. For provenance/re-runs:
+Historical procedure retained for provenance and deliberate reruns into a new database. Its presence does not attest to current production state:
 
 ```sh
 sqlite3 harness_memory.db ".backup 'backup.db'"   # or scripts/backup.py
@@ -152,7 +148,7 @@ project root) and writes nothing. Reverting a file the turn created deletes it a
 Live feed: `GET /activity/stream?session_id=…&after_seq=N` (`text/event-stream`,
 `id: <seq>` per frame, `: heartbeat` every 15 s). Use `fetch` with the
 `Authorization` header, not `EventSource`, and reconnect with the last `id` you
-received; delivery is exactly-once because the cursor is the database sequence.
+received. The database sequence plus the client cursor guard makes replay idempotent; the network transport itself is not claimed to be exactly-once.
 Full behavior: `docs/RECORDING_PROTOCOL.md`.
 
 ## Remaining work
@@ -161,13 +157,9 @@ The active plan is `docs/PLAN.md`, sequencing and priority live in
 `docs/ROADMAP.md`, executable work lives in `docs/TASKS.md`, and every state
 change is journaled newest-first in `docs/PROGRESS.md`. Start at `AGENTS.md`.
 
-P1–P9 are implemented and release-verified: the current system has the recorded
-tool loop, permission gate, context management, hybrid memory, durable generation,
-browser E2E coverage, and causal incident graph. The P10–P18 continuation roadmap
-covers correctness, operations, performance, maintainability, security, UX, memory,
-observability, and the Memory Wind Tunnel. Independent tasks may run in separate
+P0–P10 are historical completed phases in the executable task ledger. The current baseline includes the recorded tool loop, permission gate, bounded context/compaction, hybrid reviewed memory, durable incremental generation, browser E2E, causal incident graphs, single-process ownership, readiness/build identity, encrypted backup drills, graceful shutdown, schema-aware rollback, and disposable fault injection. These are capability statements, not fresh release evidence; rerun the strict gate for a current claim.
+
+P11–P18 are the active continuation covering performance, maintainability, remaining security/tool boundaries, daily workflow, memory governance, observability, the Memory Wind Tunnel, and optional platform evolution. Independent tasks may run in separate
 worktrees only when their task metadata explicitly permits parallel execution.
 
-Security posture: loopback bind enforced, Bearer auth, Origin checks, no
-server-side file paths, conservative secret filtering before storage/provider.
-Single trusted user — not a multi-tenant service.
+Security posture: loopback bind enforced; current/previous bearer-token rotation; short-lived memory-only browser sessions; delayed authentication failures; Origin, body-size, per-route rate, session-cap, and session-recursion controls; opt-in trusted-proxy identity; conditional HSTS; conservative redaction before storage/provider; encrypted opt-in exact archive and backups with external keys. This remains a single-trusted-user service, not multi-tenant. Browser, command, and final-write policy hardening remains explicit backlog work.

@@ -743,7 +743,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - verify: bash scripts/verify_release.sh && scripts/verify_e2e.sh
 
 ### P12-T07a · Reconcile the documented baseline
-- status: todo
+- status: done
 - priority: high
 - blocker: release-blocker
 - lane: docs-baseline

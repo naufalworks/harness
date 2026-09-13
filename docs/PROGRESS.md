@@ -1,5 +1,22 @@
 # PROGRESS — journal
 
+## 2026-09-13 · Notion AI via Local · P12-T07a completed
+
+- Task: P12-T07a; priority: high; blocker: release-blocker; lane: docs-baseline. Status: `doing` → `done`.
+- Reconciled the three entry documents with the compiled baseline: P0–P10 are explicitly historical/completed; P11–P18 are active continuation whose exact status comes from `docs/TASKS.md`. Removed stale P1 pending labels, v2-only schema text, unmerged-UI text, ONNX wording, and incomplete tool/runtime/security/deployment descriptions.
+- `README.md` now distinguishes capabilities from fresh evidence, local from strict verification, verification from promotion, cursor-idempotent replay from transport guarantees, and historical migration procedure from current production state.
+- `AGENTS.md` now prioritizes release blockers, fail-closed evidence, separate schema-aware deployment, current tools/migrations, and the no-replay recording contract. `docs/PLAN.md` now separates current architecture from historical acceptance scope and active continuation.
+- Verification: `git diff --check`, focused entry-document baseline assertions, and the strict non-deploying release gate passed on the task branch. The strict gate is rerun after integration; documentation-only work does not justify a production restart.
+- Next release blocker by the current priority contract: P14-T04a fail-closed spend ceilings; P13-T03 remains dependency-unblocked and is also required for the daily-use boundary.
+
+
+## 2026-09-13 · Notion AI via Local · P12-T07a started
+
+- Task: P12-T07a; priority: high; blocker: release-blocker; lane: docs-baseline.
+- Scope: reconcile `README.md`, `AGENTS.md`, and `docs/PLAN.md` with the compiled P0–P10 baseline and active P11–P18 backlog; label historical phase/evidence prose and remove stale pending claims.
+- Evidence source: current routes, tool registry, migrations 001–007, verification scripts, and completed task metadata. Historical journal counts and deployment identities will not be recast as current evidence.
+
+
 ## 2026-09-13 · Notion AI via Local · P10-T06 completed
 
 - Task: P10-T06; priority: high; lane: reliability-tests. Status: `doing` → `done`.
