@@ -40,6 +40,10 @@ Startup acquires a kernel-backed exclusive process lock for the normalized datab
 
 SIGINT/SIGTERM stop HTTP admission and notify both durable workers. A claimed generation or extraction is allowed to finish its current durable boundary; idle workers stop immediately. Shutdown waits up to `HARNESS_SHUTDOWN_TIMEOUT_SECONDS` (30 by default, constrained to 1–300) and emits explicit start/complete/timeout events. Abrupt termination still uses startup recovery, which marks claimed generation interrupted and never replays its provider/tool side effects.
 
+Fault-injection verification is destructive only inside disposable temporary directories. It kills helper processes at pre/post-commit boundaries, constrains SQLite pages to force `SQLITE_FULL`, opens databases with `mode=ro`, damages WAL frame checksums and database pages, reconciles committed-but-unacknowledged admission by request signature, saturates admission/extraction queues, and restarts around a detached command. Tests accept either explicit corruption rejection or a clean state that ignores an invalid WAL frame; they never treat silent partial state as success.
+
+Detached bash commands intentionally outlive the Harness server after their tool result is durably complete. Startup does not replay completed steps or relaunch their processes. Their PID and project-local log are observational handles rather than a promise that Harness supervises them across restart.
+
 Deployment snapshots the currently served executable and identity before building. Candidate readiness must match commit, SHA-256, schema, database, and worker health. A failed candidate automatically restores the previous executable only when the live `PRAGMA user_version` is no newer than the previous release's schema. If schema advanced, the service is stopped and database recovery requires explicit owner approval after reviewing backup age and writes accepted since that backup; deployment never restores a database automatically.
 
 ## Conversation flow

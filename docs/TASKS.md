@@ -595,7 +595,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - verify: scripts/verify_e2e.sh && python3 tests/deploy_rollback.py
 
 ### P10-T06 · Add crash, disk and SQLite fault injection
-- status: todo
+- status: done
 - priority: high
 - lane: reliability-tests
 - parallel: yes

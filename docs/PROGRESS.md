@@ -1,5 +1,21 @@
 # PROGRESS — journal
 
+## 2026-09-13 · Notion AI via Local · P10-T06 completed
+
+- Task: P10-T06; priority: high; lane: reliability-tests. Status: `doing` → `done`.
+- Added a synthetic disposable-database fixture that kills helper processes before and after commit, reconciles a committed-but-unacknowledged admission, forces `SQLITE_FULL`, enforces URI read-only behavior, corrupts a WAL frame checksum and database page, saturates admission/extraction queues, and resets a running extraction job without losing work.
+- Extended the real recording integration with a detached bash process: the tool step and verification become durable before restart, the child finishes its side effect exactly once, and neither provider calls nor the process are replayed.
+- Verification: `python3 tests/fault_injection.py`, recording integration, `scripts/verify_e2e.sh`, denial/crash-recovery E2E, and the strict release gate all passed. All fixtures used temporary synthetic paths; production was not restarted.
+- Next release blockers: P12-T07a baseline reconciliation and P14-T04a fail-closed spend limits. P13-T03 is now dependency-unblocked.
+
+
+## 2026-09-13 · Notion AI via Local · P10-T06 started
+
+- Task: P10-T06; priority: high; lane: reliability-tests; dependency P10-T02 is complete.
+- Scope: add deterministic disposable-database crash, ENOSPC/read-only/I/O, WAL/checksum, integrity, ambiguous-admission, queue-backpressure, and detached-process lifecycle fixtures.
+- Safety: fixtures use temporary paths and synthetic data only; they do not mutate or restart production. Exact verification remains `python3 tests/fault_injection.py && scripts/verify_e2e.sh`.
+
+
 ## 2026-09-13 · Notion AI via Local · P10-T05 completed
 
 - Task: P10-T05; priority: high; blocker: release-blocker; lane: release.

@@ -175,6 +175,10 @@ def main() -> None:
             tool_calls(("budget-1", "read", {"path": "notes.md"})),
         ],
         "stream a turn": [text("Streamed answer")],
+        "background survives restart": [
+            tool_calls(("background-once", "bash", {"command": "sleep 1; printf 'once\\n' >> background-effects.txt", "description": "detached single effect", "background": True})),
+            text("Detached process launched once."),
+        ],
         "graceful drain": [
             tool_calls(("drain-sleep", "bash", {"command": "sleep 1; printf 'drained\\n'", "description": "finish before shutdown"})),
             text("Graceful shutdown drained the accepted turn."),
@@ -636,6 +640,23 @@ def main() -> None:
             assert any(event["kind"] == "budget_exhausted" for event in call("/activity?session_id=" + budget["session_id"])[1]["events"])
             configure(max_steps=40)
 
+            # A detached command is a durable completed tool step, not work the server owns or
+            # replays. Killing/restarting Harness leaves the child to finish exactly once.
+            background = submit("background survives restart")
+            wait_receipt(background["request_id"], "complete")
+            background_steps = call("/chat/requests/" + background["request_id"] + "/steps")[1]["steps"]
+            assert [(step["kind"], step["status"]) for step in background_steps] == [("model_call", "complete"), ("tool_call", "complete"), ("model_call", "complete"), ("verification", "complete")], background_steps
+            background_calls = provider.count("background survives restart")
+            app.kill()
+            app.wait(timeout=5)
+            app = start()
+            effect = root / "background-effects.txt"
+            deadline = time.time() + 5
+            while time.time() < deadline and (not effect.exists() or effect.read_text() != "once\n"):
+                time.sleep(0.05)
+            assert effect.read_text() == "once\n"
+            assert provider.count("background survives restart") == background_calls
+
             # SIGTERM stops admission but drains the already claimed foreground tool and terminal
             # receipt before the process exits. Restart must observe completion, not replay it.
             graceful = submit("graceful drain")
@@ -703,7 +724,7 @@ def main() -> None:
             with sqlite3.connect(db) as connection:
                 assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
                 assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
-            print("PASS: tool calls including approved ast_edit and multi-file lsp rename, read-only LSP queries, durable diffs, stale anchors, sandboxing, permission deny, budgets, interrupted recovery, and provider failure")
+            print("PASS: tool calls including approved ast_edit and multi-file lsp rename, read-only LSP queries, durable diffs, stale anchors, sandboxing, permission deny, budgets, detached-process recovery, interrupted recovery, and provider failure")
         finally:
             if app and app.poll() is None:
                 app.terminate()
