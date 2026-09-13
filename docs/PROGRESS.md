@@ -1,5 +1,15 @@
 # PROGRESS — journal
 
+## 2026-09-13 · Notion AI via Local · P10-T03 implementation ready
+
+- Task: P10-T03; priority: critical; lane: runtime.
+- Worktree/parallel slot: `p10-readiness` at `/root/development/harness-p10-readiness`.
+- Status transition: `todo` → `doing`.
+- Changes: embedded the source commit, calculated the running executable's SHA-256, added authenticated readiness with database/schema/queue and tracked worker state, exposed build identity in the UI with stale-client detection, and made deployment smoke fail closed on commit/hash/schema/worker/database mismatch.
+- Verification: 3 focused health tests, all 177 Rust tests, all 65 Python tests, compiled recording integration, both mocked-browser suites, JavaScript/shell syntax checks, and `git diff --check` passed.
+- Blockers/open questions: production deployment is the remaining completion gate; automatic rollback belongs to P10-T05.
+- Next: integrate the implementation, run the release deployment smoke, then mark P10-T03 done.
+
 ## 2026-09-13 · Notion AI via Local · P10-T02 completed
 
 - Task: P10-T02; priority: critical; lane: runtime.

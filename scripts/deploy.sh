@@ -32,7 +32,8 @@ esac
 
 echo "building the release profile the unit runs"
 cargo build --locked --release
-built=$(md5sum "$bin" | cut -d' ' -f1)
+built=$(sha256sum "$bin" | cut -d' ' -f1)
+expected_commit=$(git rev-parse HEAD)
 
 systemctl restart "$unit"
 for _ in 1 2 3 4 5 6 7 8 9 10; do
@@ -47,9 +48,9 @@ fi
 
 # The check that was missing: the live process must be the binary this run produced.
 pid=$(systemctl show -p MainPID --value "$unit")
-running=$(md5sum "/proc/$pid/exe" | cut -d' ' -f1)
+running=$(sha256sum "/proc/$pid/exe" | cut -d' ' -f1)
 if [ "$built" != "$running" ]; then
-	echo "FAILED: pid $pid runs md5 $running, not the binary just built ($built)" >&2
+	echo "FAILED: pid $pid runs sha256 $running, not the binary just built ($built)" >&2
 	exit 1
 fi
 
@@ -59,6 +60,17 @@ set -a
 set +a
 base="http://${HARNESS_ADDR:-127.0.0.1:8080}"
 auth="Authorization: Bearer ${HARNESS_AUTH_TOKEN:?HARNESS_AUTH_TOKEN missing from .env}"
+health=''
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+	if health=$(curl -fsS -H "$auth" "$base/health" 2>/dev/null); then break; fi
+	sleep 1
+done
+[ -n "$health" ] || { echo 'FAILED: readiness endpoint did not become ready' >&2; exit 1; }
+[ "$(jq -r '.ready' <<<"$health")" = true ] || { echo "FAILED: service is unready: $health" >&2; exit 1; }
+[ "$(jq -r '.commit' <<<"$health")" = "$expected_commit" ] || { echo "FAILED: served commit differs from $expected_commit: $health" >&2; exit 1; }
+[ "$(jq -r '.binary_sha256' <<<"$health")" = "$built" ] || { echo "FAILED: readiness binary hash differs from $built: $health" >&2; exit 1; }
+[ "$(jq -r '.schema_version' <<<"$health")" = 6 ] || { echo "FAILED: unexpected schema version: $health" >&2; exit 1; }
+[ "$(jq -r '.database.ready and .workers.recording and .workers.extraction' <<<"$health")" = true ] || { echo "FAILED: database or worker unready: $health" >&2; exit 1; }
 curl -fsS -o /dev/null -H "$auth" "$base/scopes"
 refused=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "$auth" -H 'Content-Type: application/json' -d '[]' "$base/chat/submit")
 if [ "$refused" != 400 ]; then
@@ -66,4 +78,4 @@ if [ "$refused" != 400 ]; then
 	exit 1
 fi
 
-echo "deployed $(git rev-parse --short HEAD) to $unit: pid $pid, release md5 $built, API answering, non-object body refused with 400"
+echo "deployed $(git rev-parse --short HEAD) to $unit: pid $pid, release sha256 $built, readiness verified, API answering, non-object body refused with 400"

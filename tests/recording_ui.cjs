@@ -18,6 +18,7 @@ const root=path.resolve(__dirname,'..'), out=path.join(root,'docs/qa');fs.mkdirS
    if(staticFiles[p])return route.fulfill({contentType:p.endsWith('.js')?'text/javascript':p.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(path.join(root,'static',staticFiles[p]),'utf8')});
    if(req.headers().authorization!=='Bearer fixture-token')return route.fulfill({status:401,json:{error:'Bearer token required'}});
    if(offline&&p.startsWith('/chat/requests/'))return route.abort('failed');
+   if(p==='/health')return route.fulfill({json:{ready:true,commit:'__HARNESS_BUILD_COMMIT__',binary_sha256:'0'.repeat(64),schema_version:6,database:{ready:true},workers:{recording:true,extraction:true}}});
    if(p==='/memory/status')return route.fulfill({json:{active_memories:1,pending_confirmations:0,queued_jobs:1000,failed_jobs:0}});
    if(p==='/memory/candidates')return route.fulfill({json:{candidates:[]}});
    if(p==='/scopes')return route.fulfill({json:{scopes:[{scope:'global',root_path:null,permission_mode:'ask'}]}});

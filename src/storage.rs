@@ -792,6 +792,20 @@ impl DbStore {
             Ok(json!({"active_memories":active,"pending_confirmations":pending,"sources_stored":sources,"queued_jobs":queued,"failed_jobs":failed}))
         }).await
     }
+    pub async fn readiness(&self) -> Result<Value> {
+        self.run(|c| {
+            let schema_version:i64=c.query_row("PRAGMA user_version",[],|r|r.get(0))?;
+            let quick_check:String=c.query_row("PRAGMA quick_check(1)",[],|r|r.get(0))?;
+            let pending_jobs:i64=c.query_row("SELECT count(*) FROM jobs WHERE status='pending'",[],|r|r.get(0))?;
+            let running_jobs:i64=c.query_row("SELECT count(*) FROM jobs WHERE status='running'",[],|r|r.get(0))?;
+            let failed_jobs:i64=c.query_row("SELECT count(*) FROM jobs WHERE status='failed'",[],|r|r.get(0))?;
+            let waiting_turns:i64=c.query_row("SELECT count(*) FROM chat_receipts WHERE state='captured'",[],|r|r.get(0))?;
+            let running_turns:i64=c.query_row("SELECT count(*) FROM chat_receipts WHERE state='generating'",[],|r|r.get(0))?;
+            Ok(json!({"ready":schema_version==6&&quick_check=="ok","schema_version":schema_version,
+                "quick_check":quick_check,"queue":{"jobs_pending":pending_jobs,"jobs_running":running_jobs,
+                "jobs_failed":failed_jobs,"turns_waiting":waiting_turns,"turns_running":running_turns}}))
+        }).await
+    }
     pub async fn jobs(&self) -> Result<Value> {
         self.run(|c|{let mut stmt=c.prepare("SELECT id,scope,source_id,status,attempts,last_error FROM jobs ORDER BY created_at DESC LIMIT 100")?;
             let rows=stmt.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"scope":r.get::<_,String>(1)?,"source_id":r.get::<_,String>(2)?,"status":r.get::<_,String>(3)?,"attempts":r.get::<_,i64>(4)?,"error":r.get::<_,Option<String>>(5)?})))?;

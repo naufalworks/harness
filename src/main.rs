@@ -10,7 +10,7 @@ use axum::{
 };
 use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::{json, Value};
-use std::{collections::BTreeMap, env, net::SocketAddr, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, env, fmt::Write as _, net::SocketAddr, sync::{Arc, atomic::{AtomicBool, Ordering}}, time::Duration};
 use tokio::sync::Semaphore;
 use uuid::Uuid;
 mod agent_loop; // P1-T10 agentic turn loop: steps, tools, activity events, budgets
@@ -32,6 +32,26 @@ use memory_agents::MemoryAgents;
 use process_lock::ProcessLock;
 use storage::DbStore;
 
+const BUILD_COMMIT: &str = env!("HARNESS_GIT_COMMIT");
+
+struct RuntimeIdentity { commit: &'static str, binary_sha256: String, started_at: String }
+impl RuntimeIdentity {
+    fn current() -> Result<Self> {
+        let bytes = std::fs::read(std::env::current_exe()?)?;
+        let digest = ring::digest::digest(&ring::digest::SHA256, &bytes);
+        let mut binary_sha256 = String::with_capacity(64);
+        for byte in digest.as_ref() { write!(&mut binary_sha256, "{byte:02x}")?; }
+        Ok(Self { commit: BUILD_COMMIT, binary_sha256, started_at: chrono::Utc::now().to_rfc3339() })
+    }
+}
+
+#[derive(Default)]
+struct WorkerHealth { recording: AtomicBool, extraction: AtomicBool }
+#[cfg(test)]
+impl WorkerHealth {
+    fn ready() -> Self { Self { recording: AtomicBool::new(true), extraction: AtomicBool::new(true) } }
+}
+
 #[derive(Clone)]
 struct Harness {
     store: DbStore,
@@ -40,6 +60,8 @@ struct Harness {
     port: u16,
     origins: Arc<Vec<String>>,
     api_limit: Arc<Semaphore>,
+    identity: Arc<RuntimeIdentity>,
+    workers: Arc<WorkerHealth>,
 }
 struct ApiError(StatusCode, &'static str);
 impl IntoResponse for ApiError {
@@ -180,7 +202,7 @@ async fn index() -> impl IntoResponse {
 async fn js() -> impl IntoResponse {
     (
         [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
-        include_str!("../static/app.js"),
+        include_str!("../static/app.js").replace("__HARNESS_BUILD_COMMIT__", BUILD_COMMIT),
     )
 }
 async fn css() -> impl IntoResponse {
@@ -425,6 +447,25 @@ async fn edit_candidate(
 }
 async fn status(State(h): State<Harness>) -> ApiResult<Json<Value>> {
     Ok(Json(h.store.stats().await.map_err(db_error)?))
+}
+async fn health(State(h): State<Harness>) -> Response {
+    let recording = h.workers.recording.load(Ordering::Acquire);
+    let extraction = h.workers.extraction.load(Ordering::Acquire);
+    match h.store.readiness().await {
+        Ok(database) => {
+            let ready = database["ready"].as_bool() == Some(true) && recording && extraction;
+            let status = if ready { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE };
+            (status, Json(json!({"ready":ready,"error":if ready { Value::Null } else { json!("Harness is not ready") },"commit":h.identity.commit,
+                "binary_sha256":h.identity.binary_sha256,"started_at":h.identity.started_at,
+                "port":h.port,"schema_version":database["schema_version"],"database":database,
+                "workers":{"recording":recording,"extraction":extraction}}))).into_response()
+        }
+        Err(_) => (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"ready":false,"error":"Harness is not ready",
+            "commit":h.identity.commit,"binary_sha256":h.identity.binary_sha256,
+            "started_at":h.identity.started_at,"port":h.port,"schema_version":Value::Null,
+            "database":{"ready":false,"error":"storage probe failed"},
+            "workers":{"recording":recording,"extraction":extraction}}))).into_response(),
+    }
 }
 async fn history(
     State(h): State<Harness>,
@@ -1061,6 +1102,7 @@ fn router(state: Harness) -> Router {
         .route("/models", get(models))
         .route("/config", get(get_config).post(set_config))
         .route("/memory/status", get(status))
+        .route("/health", get(health))
         .route("/memory/candidates", get(candidates))
         .route("/memory/candidates/{id}/edit", post(edit_candidate))
         .route("/memory/confirm", post(confirm))
@@ -1153,6 +1195,8 @@ async fn main() -> Result<()> {
             }
         }
     }
+    let identity = Arc::new(RuntimeIdentity::current()?);
+    let workers = Arc::new(WorkerHealth::default());
     let state = Harness {
         store: store.clone(),
         agents: agents.clone(),
@@ -1160,10 +1204,18 @@ async fn main() -> Result<()> {
         port: addr.port(),
         origins: Arc::new(origins),
         api_limit: Arc::new(Semaphore::new(8)),
+        identity,
+        workers: workers.clone(),
     };
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    tokio::spawn(recording::worker(store.clone(), agents.clone()));
-    tokio::spawn(memory_agents::worker(store, agents));
+    workers.recording.store(true, Ordering::Release);
+    let worker_health = workers.clone();
+    let recording_store = store.clone();
+    let recording_agents = agents.clone();
+    tokio::spawn(async move { recording::worker(recording_store, recording_agents).await; worker_health.recording.store(false, Ordering::Release); });
+    workers.extraction.store(true, Ordering::Release);
+    let worker_health = workers.clone();
+    tokio::spawn(async move { memory_agents::worker(store, agents).await; worker_health.extraction.store(false, Ordering::Release); });
     println!("harness listening on http://{addr} (authenticated, single-user)");
     axum::serve(listener, router(state)).await?;
     Ok(())
@@ -1174,7 +1226,9 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use tower::ServiceExt;
-    fn app_with(store: DbStore) -> Router {
+    fn test_identity() -> Arc<RuntimeIdentity> { Arc::new(RuntimeIdentity::current().unwrap()) }
+    fn test_workers() -> Arc<WorkerHealth> { Arc::new(WorkerHealth::ready()) }
+    fn app_with_workers(store: DbStore, workers: Arc<WorkerHealth>) -> Router {
         router(Harness {
             store,
             agents: MemoryAgents::new("http://127.0.0.1:9", "synthetic", "test").unwrap(),
@@ -1186,8 +1240,11 @@ mod tests {
                 "http://[::1]:8080".into(),
             ]),
             api_limit: Arc::new(Semaphore::new(8)),
+            identity: test_identity(),
+            workers,
         })
     }
+    fn app_with(store: DbStore) -> Router { app_with_workers(store, test_workers()) }
     fn app() -> Router {
         app_with(DbStore::init(":memory:").unwrap())
     }
@@ -1219,6 +1276,65 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
     }
     #[tokio::test]
+    async fn health_reports_identity_database_queue_and_workers() {
+        let response = app()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/health")
+                    .header("Authorization", format!("Bearer {}", "x".repeat(32)))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+        let payload: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(payload["ready"], true);
+        assert_eq!(payload["commit"], BUILD_COMMIT);
+        assert_eq!(payload["binary_sha256"].as_str().unwrap().len(), 64);
+        assert_eq!(payload["schema_version"], 6);
+        assert_eq!(payload["database"]["quick_check"], "ok");
+        assert_eq!(payload["database"]["queue"]["jobs_pending"], 0);
+        assert_eq!(payload["workers"]["recording"], true);
+        assert_eq!(payload["workers"]["extraction"], true);
+    }
+    #[tokio::test]
+    async fn health_refuses_readiness_when_a_worker_is_not_running() {
+        let response = app_with_workers(
+            DbStore::init(":memory:").unwrap(),
+            Arc::new(WorkerHealth::default()),
+        )
+        .oneshot(
+            axum::http::Request::builder()
+                .uri("/health")
+                .header("Authorization", format!("Bearer {}", "x".repeat(32)))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+    #[tokio::test]
+    async fn health_contract_is_embedded_in_served_javascript() {
+        let response = app()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/app.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        let script = String::from_utf8(body.to_vec()).unwrap();
+        assert!(script.contains(BUILD_COMMIT));
+        assert!(!script.contains("__HARNESS_BUILD_COMMIT__"));
+        assert!(script.contains("Stale UI detected"));
+    }
+    #[tokio::test]
     async fn configured_origin_is_allowed() {
         let state = Harness {
             store: DbStore::init(":memory:").unwrap(),
@@ -1227,6 +1343,8 @@ mod tests {
             port: 8080,
             origins: Arc::new(vec!["https://upcloud-dev.example.ts.net:8443".into()]),
             api_limit: Arc::new(Semaphore::new(8)),
+            identity: test_identity(),
+            workers: test_workers(),
         };
         let response = router(state)
             .oneshot(

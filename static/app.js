@@ -1,5 +1,6 @@
 'use strict';
 const $ = id => document.getElementById(id);
+const EXPECTED_SERVER_COMMIT = '__HARNESS_BUILD_COMMIT__';
 let token = '';
 let scope = sessionStorage.getItem('harness_scope') || 'global';
 let session = sessionStorage.getItem('harness_session') || crypto.randomUUID();
@@ -99,10 +100,13 @@ function message(m, target = $('log')) {
   }
 }
 async function refreshStatus() {
-  const myEpoch = epoch; const data = await api('/memory/status');
+  const myEpoch = epoch; const [health, data] = await Promise.all([api('/health'), api('/memory/status')]);
   if (!token || myEpoch !== epoch) return;
+  if (!health.ready) throw new Error('Harness is not ready');
+  if (health.commit !== EXPECTED_SERVER_COMMIT) throw new Error(`Stale UI detected (${EXPECTED_SERVER_COMMIT.slice(0, 7)} != ${String(health.commit).slice(0, 7)}); reload this page`);
   $('pending').textContent = String(data.pending_confirmations);
-  $('stats').textContent = `${data.active_memories} memories remembered${data.queued_jobs ? ` · ${data.queued_jobs} jobs queued` : ''}${data.failed_jobs ? ` · ${data.failed_jobs} failed` : ''}`;
+  $('connection').textContent = `Ready · ${health.commit.slice(0, 7)}`;
+  $('stats').textContent = `${data.active_memories} memories remembered${data.queued_jobs ? ` · ${data.queued_jobs} jobs queued` : ''}${data.failed_jobs ? ` · ${data.failed_jobs} failed` : ''} · build ${health.commit.slice(0, 7)}`;
 }
 async function loadHistory(older = false) {
   const myEpoch = epoch, mySession = session;
@@ -308,7 +312,9 @@ async function sendAttempt(retry = false) {
 $('authform').addEventListener('submit', async event => {
   event.preventDefault(); token = $('token').value.trim(); const myEpoch = epoch;
   try {
-    await api('/memory/status'); if (myEpoch !== epoch) return;
+    const health = await api('/health'); if (myEpoch !== epoch) return;
+    if (!health.ready) throw new Error('Harness is not ready');
+    if (health.commit !== EXPECTED_SERVER_COMMIT) throw new Error('This page is stale; reload before connecting');
     $('auth').hidden = true; $('workspace').hidden = false; $('connection').textContent = 'Connected'; $('token').value = '';
     notice('Connected — pick up where you left off.'); persistSession(); await loadHistory(); await loadSessions(); await refreshStatus(); await refreshScopeSetup();
     rememberPending(pending); if (pending) await resumeRecording();

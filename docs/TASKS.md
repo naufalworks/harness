@@ -559,13 +559,13 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - note (2026-09-13, done): the executable now acquires a non-blocking kernel `flock` on an owner-only per-database metadata file before SQLite opens or startup recovery runs. Live contention fails explicitly; stale metadata is replaced only after kernel ownership is proven, avoiding PID-reuse guesses. Three focused tests cover live exclusion, stale recovery, and independent databases. The compiled-server regression starts a second process against an actively generating receipt, proves it exits without changing the receipt or running step, then kills the owner and proves the successor performs normal interruption recovery without replay.
 
 ### P10-T03 · Expose readiness and deployed identity
-- status: todo
+- status: doing
 - priority: critical
 - lane: runtime
 - parallel: no
 - depends: P10-T02
 - design: docs/ROADMAP.md#p10-correctness-and-operational-safety
-- files: build.rs, src/main.rs, static/app.js, scripts/deploy.sh
+- files: build.rs, src/main.rs, src/storage.rs, static/app.js, scripts/deploy.sh, tests/recording_ui.cjs, tests/ui_smoke.cjs
 - done-when: health/readiness reports commit, binary hash, schema version, queue/worker state and DB readiness; UI and deploy smoke detect a stale or unready artifact.
 - verify: cargo test --locked health && bash scripts/deploy.sh
 

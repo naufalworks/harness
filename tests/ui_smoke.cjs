@@ -30,7 +30,8 @@ const root=path.resolve(__dirname,'..');const out=process.env.QA_DIR || path.joi
    if(staticFiles[p]){return route.fulfill({contentType:p.endsWith('.css')?'text/css':p.endsWith('.js')?'text/javascript':'text/html',body:fs.readFileSync(path.join(root,'static',staticFiles[p]),'utf8')});}
    if(req.headers().authorization!=='Bearer test-token'){return route.fulfill({status:401,json:{error:'Bearer token required'}});}
    let result={};
-   if(p==='/memory/status')result={active_memories:importCandidate?1:2,pending_confirmations:Number(importCandidate)+Number(inlineCandidate&&inlineData),queued_jobs:0,failed_jobs:1};
+   if(p==='/health')result={ready:true,commit:'__HARNESS_BUILD_COMMIT__',binary_sha256:'0'.repeat(64),schema_version:6,database:{ready:true},workers:{recording:true,extraction:true}};
+   else if(p==='/memory/status')result={active_memories:importCandidate?1:2,pending_confirmations:Number(importCandidate)+Number(inlineCandidate&&inlineData),queued_jobs:0,failed_jobs:1};
    else if(p==='/scopes')result={scopes:[{scope:'global',root_path:null,permission_mode:'ask'}]};
    else if(p==='/sessions')result={sessions:[]};
    else if(p.startsWith('/sessions/'))result={scope:'global',messages:chatHistory,has_more:false};
