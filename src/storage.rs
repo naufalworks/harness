@@ -5,7 +5,7 @@ use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     sync::{Arc, Mutex},
 };
 use tokio::sync::Semaphore;
@@ -1113,9 +1113,37 @@ impl DbStore {
                 edges.push(json!({"id":id,"source":source,"target":target,"relation":relation}));
             }
             drop(add);
+            breaks.sort_by_key(|item| item.0);
+            let earliest_id = breaks.first().map(|(_, kind, id, _)| node_id(kind, id));
+            let mut neighborhood = HashMap::<String, Vec<String>>::new();
+            for edge in &edges {
+                let Some(source) = edge["source"].as_str() else { continue };
+                let Some(target) = edge["target"].as_str() else { continue };
+                neighborhood.entry(source.to_string()).or_default().push(target.to_string());
+                neighborhood.entry(target.to_string()).or_default().push(source.to_string());
+            }
+            let seed = earliest_id.as_ref().filter(|id| node_ids.contains(*id)).cloned()
+                .unwrap_or_else(|| node_id("request", &request));
+            let mut selected = HashSet::<String>::new();
+            let mut selected_order = Vec::<String>::new();
+            let mut queue = VecDeque::from([seed]);
+            while let Some(id) = queue.pop_front() {
+                if selected_order.len() == 400 || !selected.insert(id.clone()) { continue; }
+                selected_order.push(id.clone());
+                if let Some(neighbors) = neighborhood.get(&id) { queue.extend(neighbors.iter().cloned()); }
+            }
+            for node in &nodes {
+                if selected_order.len() == 400 { break; }
+                let Some(id) = node["id"].as_str() else { continue };
+                if selected.insert(id.to_string()) { selected_order.push(id.to_string()); }
+            }
             let total_nodes = nodes.len();
             let total_edges = edges.len();
-            nodes.truncate(400);
+            let mut nodes_by_id = nodes.drain(..).filter_map(|node| {
+                let id = node["id"].as_str()?.to_string();
+                Some((id, node))
+            }).collect::<HashMap<_, _>>();
+            nodes = selected_order.iter().filter_map(|id| nodes_by_id.remove(id)).collect();
             let visible = nodes.iter().filter_map(|node| node["id"].as_str().map(str::to_string)).collect::<HashSet<_>>();
             edges.retain(|edge| {
                 edge["source"].as_str().is_some_and(|id| visible.contains(id))
@@ -1140,11 +1168,16 @@ impl DbStore {
                     unknown.push(json!({"node_id":id,"reason":"no recorded provenance edge"}));
                 }
             }
-            breaks.sort_by_key(|item| item.0);
             let earliest = breaks.first().map(|(_, kind, id, reason)| json!({"node_id":node_id(kind,id),"kind":kind,"row_id":id,"reason":safety::redact(reason),"known":true})).unwrap_or_else(|| json!({"node_id":Value::Null,"kind":"unknown","row_id":Value::Null,"reason":"no recorded failure or recovery break was found","known":false}));
             unknown.truncate(400);
-            let truncation = json!({"nodes":total_nodes > nodes.len(),"edges":total_edges > edges.len()});
-            Ok(Some(json!({"request":{"request_id":request,"session_id":session,"scope":scope,"state":state,"updated_at":updated_at},"nodes":nodes,"edges":edges,"unknown_provenance":unknown,"earliest_known_break":earliest,"bounds":{"max_nodes":400,"max_edges":2000},"truncated":truncation})))
+            let returned_nodes = nodes.len();
+            let returned_edges = edges.len();
+            let omitted_nodes = total_nodes.saturating_sub(returned_nodes);
+            let omitted_edges = total_edges.saturating_sub(returned_edges);
+            let node_cursor = (omitted_nodes > 0).then(|| json!({"projection":"causal-neighborhood-v1","break_node_id":earliest_id,"after_node_id":nodes.last().and_then(|node| node["id"].as_str())}));
+            let edge_cursor = (omitted_edges > 0).then(|| json!({"projection":"causal-neighborhood-v1","break_node_id":earliest_id,"after_edge_id":edges.last().and_then(|edge| edge["id"].as_str())}));
+            let truncation = json!({"nodes":omitted_nodes > 0,"edges":omitted_edges > 0});
+            Ok(Some(json!({"request":{"request_id":request,"session_id":session,"scope":scope,"state":state,"updated_at":updated_at},"nodes":nodes,"edges":edges,"unknown_provenance":unknown,"earliest_known_break":earliest,"bounds":{"max_nodes":400,"max_edges":2000},"truncated":truncation,"counts":{"nodes":{"total":total_nodes,"returned":returned_nodes,"omitted":omitted_nodes},"edges":{"total":total_edges,"returned":returned_edges,"omitted":omitted_edges}},"expansion_cursors":{"nodes":node_cursor,"edges":edge_cursor}})))
         }).await
     }
 
@@ -1476,6 +1509,7 @@ mod tests {
                 c.execute(crate::agentic_sql::PERMISSION_CREATE,params![permit,"request",step,"edit","edit","{}",stamp,stamp])?;
                 c.execute(crate::agentic_sql::PROVENANCE_EDGE_INSERT,params![format!("edge-{seq:03}"),"request","step",step,"depends_on","permission",permit,stamp])?;
             }
+            c.execute(crate::agentic_sql::STEP_FINISH,params!["step-199","failed","{}",0,0,None::<i64>,None::<i64>,"late_failure",stamp])?;
             Ok(())
         }).await.unwrap();
 
@@ -1484,6 +1518,14 @@ mod tests {
         let node_ids = nodes.iter().map(|node| node["id"].as_str().unwrap()).collect::<HashSet<_>>();
         assert_eq!(nodes.len(), 400);
         assert_eq!(graph["truncated"], json!({"nodes":true,"edges":true}));
+        assert_eq!(graph["counts"]["nodes"], json!({"total":401,"returned":400,"omitted":1}));
+        assert_eq!(graph["counts"]["edges"], json!({"total":200,"returned":199,"omitted":1}));
+        assert_eq!(graph["earliest_known_break"]["node_id"], "step:step-199");
+        assert!(node_ids.contains("step:step-199"));
+        assert!(node_ids.contains(graph["expansion_cursors"]["nodes"]["after_node_id"].as_str().unwrap()));
+        assert!(graph["edges"].as_array().unwrap().iter().any(|edge| {
+            edge["id"] == graph["expansion_cursors"]["edges"]["after_edge_id"]
+        }));
         for edge in graph["edges"].as_array().unwrap() {
             assert!(node_ids.contains(edge["source"].as_str().unwrap()));
             assert!(node_ids.contains(edge["target"].as_str().unwrap()));

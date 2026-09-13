@@ -1,5 +1,16 @@
 # PROGRESS — journal
 
+## 2026-09-13 · Notion AI via Local · P10-T01 completed
+
+- Task: P10-T01; priority: critical; lane: incident.
+- Worktree/parallel slot: `p10-incident` at `/root/development/harness-p10-incident`.
+- Status transition: `todo` → `doing` → `done`.
+- Changes: added deterministic break-centered graph selection, closed all returned references, and exposed total/returned/omitted counts with opaque expansion anchors.
+- Verification: `cargo test --locked storage` passed 11 tests; `cargo build --locked && python3 tests/recording_integration.py` passed the compiled-server suite.
+- Files/commit: `src/storage.rs`, `tests/recording_integration.py`, `docs/design/causal-observability.md`, and task/progress journals; commit recorded with the task branch.
+- Blockers/open questions: none for P10-T01. Repository-wide `cargo fmt --check` still reports pre-existing formatting debt outside this task's files and belongs to P12-T05's ratchet work.
+- Next eligible tasks: integrate P10-T01, then P10-T02 becomes eligible; P10-T04 and P12-T05 remain isolated parallel candidates.
+
 ## 2026-09-13 · Notion AI via Local · P10–P18 roadmap accepted
 
 - Converted the full optimization, feature, security, UX, memory, observability, and research review into the active P10–P18 roadmap and executable task backlog.

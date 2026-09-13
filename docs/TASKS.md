@@ -535,7 +535,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 ## P10 · Correctness and operational safety
 
 ### P10-T01 · Close and center bounded incident projections
-- status: todo
+- status: done
 - priority: critical
 - lane: incident
 - parallel: yes
@@ -544,6 +544,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - files: src/storage.rs, tests/recording_integration.py, docs/design/causal-observability.md
 - done-when: earliest-known-break and every other returned reference resolve inside the node set; projection selects a causal neighborhood around the break and reports total/returned/omitted counts plus expansion cursors.
 - verify: cargo test --locked storage && python3 tests/recording_integration.py
+- note (2026-09-13, done): `causal-neighborhood-v1` now seeds deterministic breadth-first selection at the earliest durable break before filling remaining capacity in row order. The break, retained edges, and adjacency are closed over the returned node set; node/edge totals, returned and omitted counts, and opaque expansion anchors are explicit. The 401-node regression moves the break to the final step and proves it remains selected. Verification passed: 11 focused Rust storage tests and the compiled-server recording integration suite.
 
 ### P10-T02 · Enforce one process per database
 - status: todo

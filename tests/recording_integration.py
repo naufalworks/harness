@@ -494,6 +494,9 @@ def main() -> None:
             assert stale_edge["source"] == "step:" + read_step["id"]
             assert stale_edge["target"] == "step:" + edit_step["id"]
             assert stale_incident["earliest_known_break"]["node_id"] == "step:" + edit_step["id"]
+            assert stale_incident["counts"]["nodes"]["total"] == stale_incident["counts"]["nodes"]["returned"]
+            assert stale_incident["counts"]["nodes"]["omitted"] == 0
+            assert stale_incident["expansion_cursors"] == {"nodes": None, "edges": None}
             assert any(item["reason"] == "no recorded provenance edge" for item in stale_incident["unknown_provenance"]), stale_incident
 
             # Sandbox escape: the read is recorded as a failed tool, with no filesystem escape.
@@ -611,6 +614,9 @@ def main() -> None:
             assert incident["bounds"] == {"max_nodes": 400, "max_edges": 2000}
             assert incident["earliest_known_break"]["known"] is True
             assert incident["earliest_known_break"]["reason"] in ("denied", "permission denied")
+            assert incident["counts"]["nodes"]["returned"] == len(incident["nodes"])
+            assert incident["counts"]["edges"]["returned"] == len(incident["edges"])
+            assert incident["expansion_cursors"] == {"nodes": None, "edges": None}
             assert any(item["reason"] == "no recorded provenance edge" for item in incident["unknown_provenance"])
 
             # Budget exhaustion: one model call is allowed, then the loop answers honestly without
