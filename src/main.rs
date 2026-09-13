@@ -1,7 +1,9 @@
 use anyhow::{bail, Result};
 use axum::{
     body::Bytes,
-    extract::{rejection::JsonRejection, DefaultBodyLimit, FromRequest, Path, Query, Request, State},
+    extract::{
+        rejection::JsonRejection, DefaultBodyLimit, FromRequest, Path, Query, Request, State,
+    },
     http::{header, HeaderMap, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -10,7 +12,17 @@ use axum::{
 };
 use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::{json, Value};
-use std::{collections::{BTreeMap, HashMap, VecDeque}, env, fmt::Write as _, net::SocketAddr, sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}}, time::{Duration, Instant}};
+use std::{
+    collections::{BTreeMap, HashMap, VecDeque},
+    env,
+    fmt::Write as _,
+    net::SocketAddr,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
+    time::{Duration, Instant},
+};
 use tokio::sync::Semaphore;
 use uuid::Uuid;
 mod agent_loop; // P1-T10 agentic turn loop: steps, tools, activity events, budgets
@@ -35,22 +47,40 @@ use storage::DbStore;
 
 const BUILD_COMMIT: &str = env!("HARNESS_GIT_COMMIT");
 
-struct RuntimeIdentity { commit: &'static str, binary_sha256: String, started_at: String }
+struct RuntimeIdentity {
+    commit: &'static str,
+    binary_sha256: String,
+    started_at: String,
+}
 impl RuntimeIdentity {
     fn current() -> Result<Self> {
         let bytes = std::fs::read(std::env::current_exe()?)?;
         let digest = ring::digest::digest(&ring::digest::SHA256, &bytes);
         let mut binary_sha256 = String::with_capacity(64);
-        for byte in digest.as_ref() { write!(&mut binary_sha256, "{byte:02x}")?; }
-        Ok(Self { commit: BUILD_COMMIT, binary_sha256, started_at: chrono::Utc::now().to_rfc3339() })
+        for byte in digest.as_ref() {
+            write!(&mut binary_sha256, "{byte:02x}")?;
+        }
+        Ok(Self {
+            commit: BUILD_COMMIT,
+            binary_sha256,
+            started_at: chrono::Utc::now().to_rfc3339(),
+        })
     }
 }
 
 #[derive(Default)]
-struct WorkerHealth { recording: AtomicBool, extraction: AtomicBool }
+struct WorkerHealth {
+    recording: AtomicBool,
+    extraction: AtomicBool,
+}
 #[cfg(test)]
 impl WorkerHealth {
-    fn ready() -> Self { Self { recording: AtomicBool::new(true), extraction: AtomicBool::new(true) } }
+    fn ready() -> Self {
+        Self {
+            recording: AtomicBool::new(true),
+            extraction: AtomicBool::new(true),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -634,17 +664,25 @@ async fn health(State(h): State<Harness>) -> Response {
     match h.store.readiness().await {
         Ok(database) => {
             let ready = database["ready"].as_bool() == Some(true) && recording && extraction;
-            let status = if ready { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE };
+            let status = if ready {
+                StatusCode::OK
+            } else {
+                StatusCode::SERVICE_UNAVAILABLE
+            };
             (status, Json(json!({"ready":ready,"error":if ready { Value::Null } else { json!("Harness is not ready") },"commit":h.identity.commit,
                 "binary_sha256":h.identity.binary_sha256,"started_at":h.identity.started_at,
                 "port":h.port,"schema_version":database["schema_version"],"database":database,
                 "workers":{"recording":recording,"extraction":extraction}}))).into_response()
         }
-        Err(_) => (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"ready":false,"error":"Harness is not ready",
+        Err(_) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"ready":false,"error":"Harness is not ready",
             "commit":h.identity.commit,"binary_sha256":h.identity.binary_sha256,
             "started_at":h.identity.started_at,"port":h.port,"schema_version":Value::Null,
             "database":{"ready":false,"error":"storage probe failed"},
-            "workers":{"recording":recording,"extraction":extraction}}))).into_response(),
+            "workers":{"recording":recording,"extraction":extraction}})),
+        )
+            .into_response(),
     }
 }
 async fn history(
@@ -798,14 +836,20 @@ async fn request_steps(State(h): State<Harness>, Path(id): Path<String>) -> ApiR
     Ok(Json(h.store.turn_steps(id).await.map_err(db_error)?))
 }
 /// P8-T02: bounded causal incident read model. This is diagnostic evidence, not model reasoning.
-async fn request_incident(State(h): State<Harness>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
+async fn request_incident(
+    State(h): State<Harness>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
     Uuid::parse_str(&id).map_err(|_| invalid("Invalid request identifier"))?;
     Ok(Json(
         h.store
             .incident_graph(id)
             .await
             .map_err(db_error)?
-            .ok_or(ApiError(StatusCode::NOT_FOUND, "Recording receipt not found"))?,
+            .ok_or(ApiError(
+                StatusCode::NOT_FOUND,
+                "Recording receipt not found",
+            ))?,
     ))
 }
 #[derive(Deserialize)]
@@ -1320,14 +1364,19 @@ fn router(state: Harness) -> Router {
 
 static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 #[cfg(unix)]
-extern "C" fn request_shutdown(_: libc::c_int) { SHUTDOWN_REQUESTED.store(true, Ordering::Release); }
+extern "C" fn request_shutdown(_: libc::c_int) {
+    SHUTDOWN_REQUESTED.store(true, Ordering::Release);
+}
 async fn shutdown_signal(shutdown: tokio::sync::watch::Sender<bool>) {
-    #[cfg(unix)] unsafe {
+    #[cfg(unix)]
+    unsafe {
         let handler = request_shutdown as *const () as libc::sighandler_t;
         libc::signal(libc::SIGINT, handler);
         libc::signal(libc::SIGTERM, handler);
     }
-    while !SHUTDOWN_REQUESTED.load(Ordering::Acquire) { tokio::time::sleep(Duration::from_millis(100)).await; }
+    while !SHUTDOWN_REQUESTED.load(Ordering::Acquire) {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
     eprintln!("{}", json!({"event":"graceful_shutdown_started"}));
     let _ = shutdown.send(true);
 }
@@ -1406,7 +1455,8 @@ async fn main() -> Result<()> {
         &env::var("HARNESS_BASE_URL").unwrap_or_else(|_| "https://api.longcat.chat/openai".into()),
         &key,
         &env::var("HARNESS_MODEL").unwrap_or_else(|_| "LongCat-2.0".into()),
-    )?;
+    )?
+    .with_spend_store(store.clone());
     let mut origins = vec![
         format!("http://127.0.0.1:{}", addr.port()),
         format!("http://localhost:{}", addr.port()),
@@ -1444,17 +1494,39 @@ async fn main() -> Result<()> {
     let recording_store = store.clone();
     let recording_agents = agents.clone();
     let recording_shutdown = shutdown_rx.clone();
-    let recording_handle = tokio::spawn(async move { recording::worker(recording_store, recording_agents, recording_shutdown).await; worker_health.recording.store(false, Ordering::Release); });
+    let recording_handle = tokio::spawn(async move {
+        recording::worker(recording_store, recording_agents, recording_shutdown).await;
+        worker_health.recording.store(false, Ordering::Release);
+    });
     workers.extraction.store(true, Ordering::Release);
     let worker_health = workers.clone();
-    let extraction_handle = tokio::spawn(async move { memory_agents::worker(store, agents, shutdown_rx).await; worker_health.extraction.store(false, Ordering::Release); });
+    let extraction_handle = tokio::spawn(async move {
+        memory_agents::worker(store, agents, shutdown_rx).await;
+        worker_health.extraction.store(false, Ordering::Release);
+    });
     println!("harness listening on {{http://{addr}}} (authenticated, single-user)");
-    axum::serve(listener, router(state)).with_graceful_shutdown(shutdown_signal(shutdown_tx.clone())).await?;
+    axum::serve(listener, router(state))
+        .with_graceful_shutdown(shutdown_signal(shutdown_tx.clone()))
+        .await?;
     let _ = shutdown_tx.send(true);
-    let drain_seconds=env::var("HARNESS_SHUTDOWN_TIMEOUT_SECONDS").ok().and_then(|v|v.parse::<u64>().ok()).filter(|v|(1..=300).contains(v)).unwrap_or(30);
-    let drained=tokio::time::timeout(Duration::from_secs(drain_seconds),async {let _=recording_handle.await;let _=extraction_handle.await;}).await;
-    if drained.is_err() {eprintln!("{}",json!({"event":"graceful_shutdown_timeout","seconds":drain_seconds}));}
-    else {eprintln!("{}",json!({"event":"graceful_shutdown_complete"}));}
+    let drain_seconds = env::var("HARNESS_SHUTDOWN_TIMEOUT_SECONDS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|v| (1..=300).contains(v))
+        .unwrap_or(30);
+    let drained = tokio::time::timeout(Duration::from_secs(drain_seconds), async {
+        let _ = recording_handle.await;
+        let _ = extraction_handle.await;
+    })
+    .await;
+    if drained.is_err() {
+        eprintln!(
+            "{}",
+            json!({"event":"graceful_shutdown_timeout","seconds":drain_seconds})
+        );
+    } else {
+        eprintln!("{}", json!({"event":"graceful_shutdown_complete"}));
+    }
     Ok(())
 }
 
@@ -1463,13 +1535,22 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use tower::ServiceExt;
-    fn test_identity() -> Arc<RuntimeIdentity> { Arc::new(RuntimeIdentity::current().unwrap()) }
-    fn test_workers() -> Arc<WorkerHealth> { Arc::new(WorkerHealth::ready()) }
+    fn test_identity() -> Arc<RuntimeIdentity> {
+        Arc::new(RuntimeIdentity::current().unwrap())
+    }
+    fn test_workers() -> Arc<WorkerHealth> {
+        Arc::new(WorkerHealth::ready())
+    }
     fn app_with_workers(store: DbStore, workers: Arc<WorkerHealth>) -> Router {
         router(Harness {
             store,
             agents: MemoryAgents::new("http://127.0.0.1:9", "synthetic", "test").unwrap(),
-            auth: Arc::new(AuthState::new("x".repeat(32), None, Duration::from_secs(900), None)),
+            auth: Arc::new(AuthState::new(
+                "x".repeat(32),
+                None,
+                Duration::from_secs(900),
+                None,
+            )),
             port: 8080,
             origins: Arc::new(vec![
                 "http://127.0.0.1:8080".into(),
@@ -1482,7 +1563,9 @@ mod tests {
             hsts: false,
         })
     }
-    fn app_with(store: DbStore) -> Router { app_with_workers(store, test_workers()) }
+    fn app_with(store: DbStore) -> Router {
+        app_with_workers(store, test_workers())
+    }
     fn app() -> Router {
         app_with(DbStore::init(":memory:").unwrap())
     }
@@ -1683,12 +1766,14 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+        let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .unwrap();
         let payload: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(payload["ready"], true);
         assert_eq!(payload["commit"], BUILD_COMMIT);
         assert_eq!(payload["binary_sha256"].as_str().unwrap().len(), 64);
-        assert_eq!(payload["schema_version"], 7);
+        assert_eq!(payload["schema_version"], 8);
         assert_eq!(payload["database"]["quick_check"], "ok");
         assert_eq!(payload["database"]["queue"]["jobs_pending"], 0);
         assert_eq!(payload["workers"]["recording"], true);
@@ -1723,7 +1808,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
         let script = String::from_utf8(body.to_vec()).unwrap();
         assert!(script.contains(BUILD_COMMIT));
         assert!(!script.contains("__HARNESS_BUILD_COMMIT__"));
@@ -1734,7 +1821,12 @@ mod tests {
         let state = Harness {
             store: DbStore::init(":memory:").unwrap(),
             agents: MemoryAgents::new("http://127.0.0.1:9", "synthetic", "test").unwrap(),
-            auth: Arc::new(AuthState::new("x".repeat(32), None, Duration::from_secs(900), None)),
+            auth: Arc::new(AuthState::new(
+                "x".repeat(32),
+                None,
+                Duration::from_secs(900),
+                None,
+            )),
             port: 8080,
             origins: Arc::new(vec!["https://upcloud-dev.example.ts.net:8443".into()]),
             api_limit: Arc::new(Semaphore::new(8)),

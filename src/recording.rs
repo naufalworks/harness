@@ -490,19 +490,23 @@ pub(crate) async fn generate(
     // No provider call is allowed before context persistence succeeds.
     // The sink persists each redacted chunk before delivery, so an incremental answer is durable
     // before any client can observe it.
-    let mut sink =
-        RecordingGenerationSink::new(store, turn.request.clone(), turn.session.clone());
-    let outcome = agent_loop::run(agent_loop::Turn {
-        store,
-        agents,
-        request: turn.request.clone(),
-        session: turn.session.clone(),
-        model: turn.model.clone(),
-        scope,
-        messages,
-        tools,
-    }, &mut sink)
-    .await?;
+    let mut sink = RecordingGenerationSink::new(store, turn.request.clone(), turn.session.clone());
+    let provider_work = agent_loop::run(
+        agent_loop::Turn {
+            store,
+            agents,
+            request: turn.request.clone(),
+            session: turn.session.clone(),
+            model: turn.model.clone(),
+            scope,
+            messages,
+            tools,
+        },
+        &mut sink,
+    );
+    let outcome = agents
+        .within_spend_request(turn.request.clone(), provider_work)
+        .await?;
     if let Some(code) = sink.failure() {
         // A chunk that could not be made durable ends the turn explicitly rather than silently
         // truncating the answer the reader already saw.
@@ -526,9 +530,15 @@ pub(crate) async fn generate(
     Ok(())
 }
 
-pub async fn worker(store: DbStore, agents: MemoryAgents, mut shutdown: tokio::sync::watch::Receiver<bool>) {
+pub async fn worker(
+    store: DbStore,
+    agents: MemoryAgents,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
+) {
     loop {
-        if *shutdown.borrow() { return; }
+        if *shutdown.borrow() {
+            return;
+        }
         match store.claim_recording().await {
             Ok(Some(turn)) => {
                 let id = turn.request.clone();

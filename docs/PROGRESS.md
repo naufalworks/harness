@@ -1,5 +1,13 @@
 # PROGRESS — journal
 
+## 2026-09-13 · Notion AI via Local · P14-T04a started
+
+- Task: P14-T04a; priority: high; blocker: release-blocker; lane: provider-cost-safety. Status: `todo` → `doing`.
+- Worktree: `p14-cost-safety` at `/root/development/harness-p14-cost-safety`, based on `main` commit `8085a42`.
+- Scope: add configurable per-turn and UTC-day provider request/token/cost ceilings, reject before dispatch, persist refusal/unknown-usage reasons, and never count unavailable cost as zero.
+- Verification target: `cargo test --locked provider && python3 tests/recording_integration.py`, then the strict non-deploying release gate before integration.
+
+
 ## 2026-09-13 · Notion AI via Local · P12-T07a completed
 
 - Task: P12-T07a; priority: high; blocker: release-blocker; lane: docs-baseline. Status: `doing` → `done`.
@@ -963,3 +971,12 @@ exact failing request with the real browser origin -> 200; `https://evil.invalid
 **Side effect, disclosed.** The two pre-fix probes moved the live `global` row's `updated_at` to `03:02:37.425` and then `.439`. No column value changed and `created_at` is intact; with the fix deployed, a body that names no field can no longer move it.
 
 **Next.** `static/app.js` still lists `422` in its retry gate; no served route can produce one now, so it can go. The binary carries no version stamp, so `deploy.sh` proves identity by md5 rather than by commit — stamping the build would be better. Still open from earlier sessions: `development-mcp` has no git repository, and `harness` stays monolithic (`main.rs` is now ~92 KB). The local MCP bridge dropped twice today, once mid-deploy; the work resumed unchanged after waiting it out.
+
+
+---
+
+## 2026-09-13 — P14-T04a minimal fail-closed provider spend limits
+
+**Delivered.** Added schema 8's append-only `provider_calls` ledger and reserve-before-dispatch accounting for normal model calls, streamed calls, compaction, verification, sub-agent work, and memory extraction. Request caps default to 32 per turn and 500 per UTC day; token and micro-USD ceilings are opt-in. Configured token/cost ceilings refuse when earlier usage is unavailable, cost ceilings require both input/output pricing, refusal reasons are durable and visible in activity, and startup converts abandoned reservations to explicit unavailable failures.
+
+**Verified.** Exact gate: 22 provider-focused Rust tests and `tests/recording_integration.py` passed. Migration chain 001→008 passed at `user_version=8`. Strict non-deploying release gate passed: 189 Rust tests, clippy/build, 66 Python contracts, integration smoke, recording integration, JavaScript syntax, both mocked-browser suites, and the real browser-to-server success/denial/crash-recovery paths.

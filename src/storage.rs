@@ -1,4 +1,8 @@
-use crate::{ingest::Event, safety};
+use crate::{
+    ingest::Event,
+    memory_agents::{ModelUsage, SpendLimits},
+    safety,
+};
 use anyhow::{bail, Result};
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
@@ -50,10 +54,21 @@ pub struct Job {
 }
 
 pub const PROVENANCE_NODE_KINDS: [&str; 6] = [
-    "evidence", "step", "permission", "mutation", "memory", "recovery",
+    "evidence",
+    "step",
+    "permission",
+    "mutation",
+    "memory",
+    "recovery",
 ];
 pub const PROVENANCE_RELATIONS: [&str; 7] = [
-    "supports", "contradicts", "depends_on", "authorizes", "mutates", "invalidates", "triggers",
+    "supports",
+    "contradicts",
+    "depends_on",
+    "authorizes",
+    "mutates",
+    "invalidates",
+    "triggers",
 ];
 
 fn validate_provenance_edge(
@@ -440,7 +455,7 @@ impl DbStore {
                     "legacy or unknown database: use scripts/migrate_legacy.py into a NEW database"
                 );
             }
-        } else if !(1..=7).contains(&version) {
+        } else if !(1..=8).contains(&version) {
             bail!("unsupported schema version {version}");
         }
         conn.execute_batch(
@@ -467,6 +482,13 @@ impl DbStore {
         if version < 7 {
             conn.execute_batch(include_str!("../migrations/007_privacy_archive.sql"))?;
         }
+        if version < 8 {
+            conn.execute_batch(include_str!("../migrations/008_provider_spend.sql"))?;
+        }
+        conn.execute(
+            "UPDATE provider_calls SET state='failed',usage_status='unavailable',reason='process_restarted_with_call_reserved',finished_at=?1 WHERE state='reserved'",
+            [Utc::now().to_rfc3339()],
+        )?;
         let foreign_key_errors: i64 =
             conn.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| {
                 r.get(0)
@@ -804,7 +826,7 @@ impl DbStore {
             let failed_jobs:i64=c.query_row("SELECT count(*) FROM jobs WHERE status='failed'",[],|r|r.get(0))?;
             let waiting_turns:i64=c.query_row("SELECT count(*) FROM chat_receipts WHERE state='captured'",[],|r|r.get(0))?;
             let running_turns:i64=c.query_row("SELECT count(*) FROM chat_receipts WHERE state='generating'",[],|r|r.get(0))?;
-            Ok(json!({"ready":schema_version==7&&quick_check=="ok","schema_version":schema_version,
+            Ok(json!({"ready":schema_version==8&&quick_check=="ok","schema_version":schema_version,
                 "quick_check":quick_check,"queue":{"jobs_pending":pending_jobs,"jobs_running":running_jobs,
                 "jobs_failed":failed_jobs,"turns_waiting":waiting_turns,"turns_running":running_turns}}))
         }).await
@@ -943,6 +965,98 @@ impl DbStore {
     /// The session's activity feed after `after_seq`, capped at 200 rows by `EVENTS_AFTER`.
     /// `next_after_seq` is the cursor to send back; it only moves when rows were returned, so a
     /// poll that finds nothing cannot skip an event that commits a moment later.
+
+    /// Atomically reserve one provider dispatch after checking persisted per-turn and UTC-day
+    /// request, token, and cost totals. Refusals are durable and are never sent to the provider.
+    pub async fn reserve_provider_call(
+        &self,
+        request_id: Option<String>,
+        kind: String,
+        model: String,
+        limits: SpendLimits,
+    ) -> Result<String> {
+        let call_id = uid();
+        let returned = call_id.clone();
+        let day_start = format!("{}T00:00:00+00:00", Utc::now().date_naive());
+        let decision = self.run(move |c| {
+            let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let totals = |request: Option<&str>| -> Result<(i64,i64,i64,i64)> {
+                let (where_sql, request_param) = if request.is_some() {
+                    ("created_at>=?1 AND request_id=?2", request)
+                } else {
+                    ("created_at>=?1", None)
+                };
+                let sql = format!("SELECT count(*),COALESCE(sum(prompt_tokens+completion_tokens),0),COALESCE(sum(cost_microusd),0),COALESCE(sum(CASE WHEN state IN ('complete','failed') AND (usage_status!='reported') THEN 1 ELSE 0 END),0) FROM provider_calls WHERE state IN ('reserved','complete','failed') AND {where_sql}");
+                if let Some(value)=request_param {
+                    Ok(tx.query_row(&sql, params![day_start,value], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?)
+                } else {
+                    Ok(tx.query_row(&sql, params![day_start], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?)
+                }
+            };
+            let day=totals(None)?;
+            let turn=if let Some(request)=request_id.as_deref(){totals(Some(request))?}else{(0,0,0,0)};
+            let reason = if turn.0 >= limits.requests_per_turn as i64 { Some("turn_request_limit") }
+                else if day.0 >= limits.requests_per_day as i64 { Some("daily_request_limit") }
+                else if turn.3 > 0 && (limits.tokens_per_turn.is_some() || limits.cost_microusd_per_turn.is_some()) { Some("turn_usage_unavailable") }
+                else if day.3 > 0 && (limits.tokens_per_day.is_some() || limits.cost_microusd_per_day.is_some()) { Some("daily_usage_unavailable") }
+                else if limits.tokens_per_turn.is_some_and(|v| turn.1 >= v as i64) { Some("turn_token_limit") }
+                else if limits.tokens_per_day.is_some_and(|v| day.1 >= v as i64) { Some("daily_token_limit") }
+                else if limits.cost_microusd_per_turn.is_some_and(|v| turn.2 >= v as i64) { Some("turn_cost_limit") }
+                else if limits.cost_microusd_per_day.is_some_and(|v| day.2 >= v as i64) { Some("daily_cost_limit") }
+                else if (limits.cost_microusd_per_turn.is_some() || limits.cost_microusd_per_day.is_some()) && !limits.has_pricing() { Some("cost_pricing_unavailable") }
+                else { None };
+            let stamp=now();
+            if let Some(reason)=reason {
+                tx.execute("INSERT INTO provider_calls(call_id,request_id,kind,model,state,usage_status,reason,created_at,finished_at) VALUES(?1,?2,?3,?4,'refused','unavailable',?5,?6,?6)",params![call_id,request_id,kind,model,reason,stamp])?;
+                if let Some(request)=request_id.as_deref() {
+                    if let Some(session)=tx.query_row("SELECT session_id FROM chat_receipts WHERE request_id=?1",[request],|r|r.get::<_,String>(0)).optional()? {
+                        tx.execute(crate::agentic_sql::EVENT,params![request,session,None::<String>,"provider_spend_refused",json!({"reason":reason}).to_string(),stamp])?;
+                    }
+                }
+                tx.commit()?;
+                return Ok(Err(reason.to_string()));
+            }
+            tx.execute("INSERT INTO provider_calls(call_id,request_id,kind,model,state,usage_status,created_at) VALUES(?1,?2,?3,?4,'reserved','pending',?5)",params![call_id,request_id,kind,model,stamp])?;
+            tx.commit()?;
+            Ok(Ok(()))
+        }).await?;
+        match decision {
+            Ok(()) => Ok(returned),
+            Err(reason) => bail!("provider spend refused: {reason}"),
+        }
+    }
+
+    pub async fn finish_provider_call(
+        &self,
+        call_id: String,
+        usage: ModelUsage,
+        limits: SpendLimits,
+        failed_reason: Option<String>,
+    ) -> Result<()> {
+        let prompt = usage.prompt_tokens.map(|v| v as i64);
+        let completion = usage.completion_tokens.map(|v| v as i64);
+        let reported = prompt.is_some() && completion.is_some();
+        let cost = if reported {
+            limits.cost_for(&usage).map(|v| v as i64)
+        } else {
+            None
+        };
+        let failed = failed_reason.is_some();
+        let reason = failed_reason
+            .or_else(|| usage.unavailable_reason.clone())
+            .or_else(|| {
+                if cost.is_none() {
+                    Some("cost_pricing_unavailable".into())
+                } else {
+                    None
+                }
+            });
+        self.run(move|c|{
+            if c.execute("UPDATE provider_calls SET state=?2,prompt_tokens=?3,completion_tokens=?4,cost_microusd=?5,usage_status=?6,reason=?7,finished_at=?8 WHERE call_id=?1 AND state='reserved'",params![call_id,if failed{"failed"}else{"complete"},prompt,completion,cost,if reported{"reported"}else{"unavailable"},reason,now()])?!=1 { bail!("provider call reservation is not active"); }
+            Ok(())
+        }).await
+    }
+
     /// Durable assistant generation chunks. The producer writes these rows before transport.
     pub async fn append_generation(
         &self,
@@ -1495,21 +1609,47 @@ mod tests {
             c.execute(crate::agentic_sql::PERMISSION_CREATE,params!["permit","request","step","edit","edit","{}",now(),now()])?;
             Ok(())
         }).await.unwrap();
-        let id = db.record_provenance_edge(
-            "request".into(), "step".into(), "step".into(), "depends_on".into(),
-            "permission".into(), "permit".into(),
-        ).await.unwrap();
+        let id = db
+            .record_provenance_edge(
+                "request".into(),
+                "step".into(),
+                "step".into(),
+                "depends_on".into(),
+                "permission".into(),
+                "permit".into(),
+            )
+            .await
+            .unwrap();
         let edges = db.provenance_edges("request".into()).await.unwrap();
-        assert_eq!((edges["edges"][0]["id"].as_str(), edges["edges"][0]["relation"].as_str()),
-                   (Some(id.as_str()), Some("depends_on")));
-        assert!(db.record_provenance_edge(
-            "request".into(), "claim".into(), "x".into(), "supports".into(),
-            "step".into(), "step".into(),
-        ).await.is_err());
-        assert!(db.record_provenance_edge(
-            "request".into(), "step".into(), "missing".into(), "supports".into(),
-            "permission".into(), "permit".into(),
-        ).await.is_err());
+        assert_eq!(
+            (
+                edges["edges"][0]["id"].as_str(),
+                edges["edges"][0]["relation"].as_str()
+            ),
+            (Some(id.as_str()), Some("depends_on"))
+        );
+        assert!(db
+            .record_provenance_edge(
+                "request".into(),
+                "claim".into(),
+                "x".into(),
+                "supports".into(),
+                "step".into(),
+                "step".into(),
+            )
+            .await
+            .is_err());
+        assert!(db
+            .record_provenance_edge(
+                "request".into(),
+                "step".into(),
+                "missing".into(),
+                "supports".into(),
+                "permission".into(),
+                "permit".into(),
+            )
+            .await
+            .is_err());
     }
 
     #[tokio::test]
@@ -1533,17 +1673,32 @@ mod tests {
 
         let graph = db.incident_graph("request".into()).await.unwrap().unwrap();
         let nodes = graph["nodes"].as_array().unwrap();
-        let node_ids = nodes.iter().map(|node| node["id"].as_str().unwrap()).collect::<HashSet<_>>();
+        let node_ids = nodes
+            .iter()
+            .map(|node| node["id"].as_str().unwrap())
+            .collect::<HashSet<_>>();
         assert_eq!(nodes.len(), 400);
         assert_eq!(graph["truncated"], json!({"nodes":true,"edges":true}));
-        assert_eq!(graph["counts"]["nodes"], json!({"total":401,"returned":400,"omitted":1}));
-        assert_eq!(graph["counts"]["edges"], json!({"total":200,"returned":199,"omitted":1}));
+        assert_eq!(
+            graph["counts"]["nodes"],
+            json!({"total":401,"returned":400,"omitted":1})
+        );
+        assert_eq!(
+            graph["counts"]["edges"],
+            json!({"total":200,"returned":199,"omitted":1})
+        );
         assert_eq!(graph["earliest_known_break"]["node_id"], "step:step-199");
         assert!(node_ids.contains("step:step-199"));
-        assert!(node_ids.contains(graph["expansion_cursors"]["nodes"]["after_node_id"].as_str().unwrap()));
-        assert!(graph["edges"].as_array().unwrap().iter().any(|edge| {
-            edge["id"] == graph["expansion_cursors"]["edges"]["after_edge_id"]
-        }));
+        assert!(node_ids.contains(
+            graph["expansion_cursors"]["nodes"]["after_node_id"]
+                .as_str()
+                .unwrap()
+        ));
+        assert!(graph["edges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|edge| { edge["id"] == graph["expansion_cursors"]["edges"]["after_edge_id"] }));
         for edge in graph["edges"].as_array().unwrap() {
             assert!(node_ids.contains(edge["source"].as_str().unwrap()));
             assert!(node_ids.contains(edge["target"].as_str().unwrap()));
@@ -1873,5 +2028,98 @@ mod tests {
             Ok(stored)
         })
         .await
+    }
+
+    fn spend_limits() -> SpendLimits {
+        SpendLimits {
+            requests_per_turn: 2,
+            requests_per_day: 20,
+            tokens_per_turn: Some(100),
+            tokens_per_day: Some(1000),
+            cost_microusd_per_turn: Some(100),
+            cost_microusd_per_day: Some(1000),
+            input_microusd_per_million: Some(1_000_000),
+            output_microusd_per_million: Some(1_000_000),
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_spend_reservations_fail_closed_and_persist_reasons() {
+        let db = DbStore::init(":memory:").unwrap();
+        let limits = spend_limits();
+        let first = db
+            .reserve_provider_call(
+                Some("request".into()),
+                "model_call".into(),
+                "model".into(),
+                limits.clone(),
+            )
+            .await
+            .unwrap();
+        db.finish_provider_call(
+            first,
+            ModelUsage {
+                prompt_tokens: Some(60),
+                completion_tokens: Some(40),
+                unavailable_reason: None,
+            },
+            limits.clone(),
+            None,
+        )
+        .await
+        .unwrap();
+        let error = db
+            .reserve_provider_call(
+                Some("request".into()),
+                "model_call".into(),
+                "model".into(),
+                limits.clone(),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("turn_token_limit"));
+        let refused:i64=db.run(|c|Ok(c.query_row("SELECT count(*) FROM provider_calls WHERE state='refused' AND reason='turn_token_limit'",[],|r|r.get(0))?)).await.unwrap();
+        assert_eq!(refused, 1);
+    }
+
+    #[tokio::test]
+    async fn unknown_usage_and_missing_pricing_are_not_counted_as_zero() {
+        let db = DbStore::init(":memory:").unwrap();
+        let limits = spend_limits();
+        let first = db
+            .reserve_provider_call(
+                Some("unknown".into()),
+                "model_call".into(),
+                "model".into(),
+                limits.clone(),
+            )
+            .await
+            .unwrap();
+        db.finish_provider_call(first, ModelUsage::default(), limits.clone(), None)
+            .await
+            .unwrap();
+        let error = db
+            .reserve_provider_call(
+                Some("unknown".into()),
+                "model_call".into(),
+                "model".into(),
+                limits.clone(),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("turn_usage_unavailable"));
+        let db = DbStore::init(":memory:").unwrap();
+        let mut no_price = limits;
+        no_price.input_microusd_per_million = None;
+        let error = db
+            .reserve_provider_call(
+                Some("price".into()),
+                "model_call".into(),
+                "model".into(),
+                no_price,
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("cost_pricing_unavailable"));
     }
 }

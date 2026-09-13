@@ -7,7 +7,7 @@ use anyhow::{bail, Context, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{collections::HashSet, future::Future, pin::Pin, time::Duration};
+use std::{collections::HashSet, env, future::Future, pin::Pin, time::Duration};
 
 /// Boxed future returned by the async generation-sink methods. A durable publisher must commit
 /// each chunk *before* the transport can deliver it, which a synchronous sink cannot express.
@@ -57,13 +57,91 @@ pub struct MemoryAgents {
     base_url: String,
     api_key: String,
     pub model: String,
+    spend_store: Option<DbStore>,
+    spend_limits: SpendLimits,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
+pub struct SpendLimits {
+    pub requests_per_turn: u64,
+    pub requests_per_day: u64,
+    pub tokens_per_turn: Option<u64>,
+    pub tokens_per_day: Option<u64>,
+    pub cost_microusd_per_turn: Option<u64>,
+    pub cost_microusd_per_day: Option<u64>,
+    pub input_microusd_per_million: Option<u64>,
+    pub output_microusd_per_million: Option<u64>,
+}
+impl SpendLimits {
+    fn env_u64(name: &str, default: Option<u64>) -> Result<Option<u64>> {
+        match env::var(name) {
+            Ok(value) => {
+                let parsed = value
+                    .parse::<u64>()
+                    .with_context(|| format!("{name} must be an unsigned integer"))?;
+                if parsed == 0 {
+                    bail!("{name} must be greater than zero");
+                }
+                Ok(Some(parsed))
+            }
+            Err(env::VarError::NotPresent) => Ok(default),
+            Err(error) => Err(error.into()),
+        }
+    }
+    pub fn from_env() -> Result<Self> {
+        Ok(Self {
+            requests_per_turn: Self::env_u64("HARNESS_MAX_PROVIDER_REQUESTS_PER_TURN", Some(32))?
+                .unwrap(),
+            requests_per_day: Self::env_u64("HARNESS_MAX_PROVIDER_REQUESTS_PER_DAY", Some(500))?
+                .unwrap(),
+            tokens_per_turn: Self::env_u64("HARNESS_MAX_PROVIDER_TOKENS_PER_TURN", None)?,
+            tokens_per_day: Self::env_u64("HARNESS_MAX_PROVIDER_TOKENS_PER_DAY", None)?,
+            cost_microusd_per_turn: Self::env_u64(
+                "HARNESS_MAX_PROVIDER_COST_MICROUSD_PER_TURN",
+                None,
+            )?,
+            cost_microusd_per_day: Self::env_u64(
+                "HARNESS_MAX_PROVIDER_COST_MICROUSD_PER_DAY",
+                None,
+            )?,
+            input_microusd_per_million: Self::env_u64(
+                "HARNESS_PROVIDER_INPUT_MICROUSD_PER_MILLION_TOKENS",
+                None,
+            )?,
+            output_microusd_per_million: Self::env_u64(
+                "HARNESS_PROVIDER_OUTPUT_MICROUSD_PER_MILLION_TOKENS",
+                None,
+            )?,
+        })
+    }
+    pub fn has_pricing(&self) -> bool {
+        self.input_microusd_per_million.is_some() && self.output_microusd_per_million.is_some()
+    }
+    pub fn cost_for(&self, usage: &ModelUsage) -> Option<u64> {
+        let input = usage.prompt_tokens? as u128 * self.input_microusd_per_million? as u128;
+        let output = usage.completion_tokens? as u128 * self.output_microusd_per_million? as u128;
+        u64::try_from((input + output + 999_999) / 1_000_000).ok()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelUsage {
     pub prompt_tokens: Option<u64>,
     pub completion_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unavailable_reason: Option<String>,
 }
+impl Default for ModelUsage {
+    fn default() -> Self {
+        Self {
+            prompt_tokens: None,
+            completion_tokens: None,
+            unavailable_reason: Some("provider_omitted_usage".into()),
+        }
+    }
+}
+
+tokio::task_local! { static SPEND_REQUEST_ID: String; }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolCall {
@@ -133,7 +211,6 @@ impl GenerationSink for BufferedGeneration {
     }
 }
 
-
 #[derive(Deserialize)]
 struct Completion {
     choices: Vec<Choice>,
@@ -168,7 +245,48 @@ impl MemoryAgents {
             base_url: base_url.trim_end_matches('/').into(),
             api_key: api_key.into(),
             model: model.into(),
+            spend_store: None,
+            spend_limits: SpendLimits::from_env()?,
         })
+    }
+    pub fn with_spend_store(mut self, store: DbStore) -> Self {
+        self.spend_store = Some(store);
+        self
+    }
+    pub async fn within_spend_request<F: Future>(
+        &self,
+        request_id: String,
+        future: F,
+    ) -> F::Output {
+        SPEND_REQUEST_ID.scope(request_id, future).await
+    }
+    async fn reserve_spend(&self, kind: &str, model: &str) -> Result<Option<String>> {
+        let Some(store) = &self.spend_store else {
+            return Ok(None);
+        };
+        let request = SPEND_REQUEST_ID.try_with(Clone::clone).ok();
+        store
+            .reserve_provider_call(
+                request,
+                kind.to_string(),
+                model.to_string(),
+                self.spend_limits.clone(),
+            )
+            .await
+            .map(Some)
+    }
+    async fn finish_spend(
+        &self,
+        reservation: Option<String>,
+        usage: ModelUsage,
+        error: Option<String>,
+    ) -> Result<()> {
+        if let (Some(store), Some(call_id)) = (&self.spend_store, reservation) {
+            store
+                .finish_provider_call(call_id, usage, self.spend_limits.clone(), error)
+                .await?;
+        }
+        Ok(())
     }
     async fn response_json(&self, mut response: reqwest::Response) -> Result<Value> {
         let status = response.status();
@@ -189,7 +307,8 @@ impl MemoryAgents {
         serde_json::from_slice(&bytes).context("provider returned invalid JSON")
     }
     fn decode_stream_delta(frame: &Value) -> Option<&str> {
-        frame.get("choices")
+        frame
+            .get("choices")
             .and_then(Value::as_array)
             .and_then(|choices| choices.first())
             .and_then(|choice| choice.get("delta"))
@@ -208,16 +327,27 @@ impl MemoryAgents {
     pub(crate) fn parse_sse_event(buffer: &mut Vec<u8>) -> Result<Option<String>> {
         loop {
             let lf = buffer.windows(2).position(|w| w == b"\n\n").map(|p| (p, 2));
-            let crlf = buffer.windows(4).position(|w| w == b"\r\n\r\n").map(|p| (p, 4));
+            let crlf = buffer
+                .windows(4)
+                .position(|w| w == b"\r\n\r\n")
+                .map(|p| (p, 4));
             let Some((end, delimiter)) = lf.into_iter().chain(crlf).min_by_key(|p| p.0) else {
                 return Ok(None);
             };
             // Decode complete events, never arbitrary network chunks.
             let event = std::str::from_utf8(&buffer[..end]).context("invalid stream UTF-8")?;
-            let data = event.lines().filter_map(|line| {
-                line.strip_prefix("data:").map(|v| v.strip_prefix(' ').unwrap_or(v))
-            }).collect::<Vec<_>>();
-            let data = if data.is_empty() { None } else { Some(data.join("\n")) };
+            let data = event
+                .lines()
+                .filter_map(|line| {
+                    line.strip_prefix("data:")
+                        .map(|v| v.strip_prefix(' ').unwrap_or(v))
+                })
+                .collect::<Vec<_>>();
+            let data = if data.is_empty() {
+                None
+            } else {
+                Some(data.join("\n"))
+            };
             buffer.drain(..end + delimiter);
             if data.is_some() {
                 return Ok(data);
@@ -259,11 +389,15 @@ impl MemoryAgents {
                     sink.complete(&usage).await;
                     return Ok(());
                 }
-                let frame: Value = serde_json::from_str(&event).context("invalid provider stream frame")?;
+                let frame: Value =
+                    serde_json::from_str(&event).context("invalid provider stream frame")?;
                 if frame.get("error").is_some() {
                     bail!("provider stream reported an error");
                 }
-                let choices = frame.get("choices").and_then(Value::as_array).context("invalid stream choices")?;
+                let choices = frame
+                    .get("choices")
+                    .and_then(Value::as_array)
+                    .context("invalid stream choices")?;
                 if let Some(choice) = choices.first() {
                     let delta = choice.get("delta").context("invalid stream delta")?;
                     if delta.get("tool_calls").is_some() || delta.get("function_call").is_some() {
@@ -281,8 +415,16 @@ impl MemoryAgents {
                     }
                 }
                 if let Some(value) = frame.get("usage").filter(|v| !v.is_null()) {
-                    let parsed: UsageWire = serde_json::from_value(value.clone()).context("invalid stream usage")?;
-                    usage = ModelUsage { prompt_tokens: parsed.prompt_tokens, completion_tokens: parsed.completion_tokens };
+                    let parsed: UsageWire =
+                        serde_json::from_value(value.clone()).context("invalid stream usage")?;
+                    usage = ModelUsage {
+                        prompt_tokens: parsed.prompt_tokens,
+                        completion_tokens: parsed.completion_tokens,
+                        unavailable_reason: usage_reason(
+                            parsed.prompt_tokens,
+                            parsed.completion_tokens,
+                        ),
+                    };
                 }
                 if let Some(delta) = Self::parse_stream_frame(&event)? {
                     if text.len().saturating_add(delta.len()) > MAX_PROVIDER_TEXT {
@@ -316,8 +458,16 @@ impl MemoryAgents {
         }
         Ok(body)
     }
-    async fn complete(&self, model: &str, messages: Vec<Value>, seconds: u64) -> Result<String> {
-        let turn = self.complete_turn(model, messages, None, seconds).await?;
+    async fn complete(
+        &self,
+        model: &str,
+        messages: Vec<Value>,
+        seconds: u64,
+        kind: &str,
+    ) -> Result<String> {
+        let turn = self
+            .complete_turn(model, messages, None, seconds, kind)
+            .await?;
         if !turn.tool_calls.is_empty() {
             bail!("tool calls are not supported by this text-only adapter");
         }
@@ -331,27 +481,42 @@ impl MemoryAgents {
         messages: Vec<Value>,
         tools: Option<&[Value]>,
         seconds: u64,
+        kind: &str,
     ) -> Result<ModelTurn> {
         if model.trim().is_empty() || model.len() > 128 || model.chars().any(char::is_control) {
             bail!("invalid model identifier");
         }
+        let reservation = self.reserve_spend(kind, model).await?;
         let request = completion_request(model, messages, tools);
-        let response = self
-            .http
-            .post(format!("{}/chat/completions", self.base_url))
-            .bearer_auth(&self.api_key)
-            .timeout(Duration::from_secs(seconds))
-            .json(&request)
-            .send()
-            .await?;
-        let body: Completion = serde_json::from_value(self.response_json(response).await?)
-            .context("invalid completion shape")?;
-        let choice = body
-            .choices
-            .into_iter()
-            .next()
-            .context("provider returned no choices")?;
-        decode_model_turn(choice.message, body.usage)
+        let response_result: Result<ModelTurn> = async {
+            let response = self
+                .http
+                .post(format!("{}/chat/completions", self.base_url))
+                .bearer_auth(&self.api_key)
+                .timeout(Duration::from_secs(seconds))
+                .json(&request)
+                .send()
+                .await?;
+            let body: Completion = serde_json::from_value(self.response_json(response).await?)
+                .context("invalid completion shape")?;
+            let choice = body
+                .choices
+                .into_iter()
+                .next()
+                .context("provider returned no choices")?;
+            decode_model_turn(choice.message, body.usage)
+        }
+        .await;
+        let usage = response_result
+            .as_ref()
+            .map(|turn| turn.usage.clone())
+            .unwrap_or_default();
+        let error = response_result
+            .as_ref()
+            .err()
+            .map(|error| safety::redact(&error.to_string()));
+        self.finish_spend(reservation, usage, error).await?;
+        response_result
     }
 
     pub async fn stream_turn<S: GenerationSink>(
@@ -363,34 +528,52 @@ impl MemoryAgents {
         if model.trim().is_empty() || model.len() > 128 || model.chars().any(char::is_control) {
             bail!("invalid model identifier");
         }
-        let request = completion_stream_request(model, messages);
-        let response = self
-            .http
-            .post(format!("{}/chat/completions", self.base_url))
-            .bearer_auth(&self.api_key)
-            .timeout(Duration::from_secs(90))
-            .json(&request)
-            .send()
-            .await?;
-        if !response
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .is_some_and(|v| v.contains("text/event-stream"))
-        {
-            let body: Completion = serde_json::from_value(self.response_json(response).await?)
-                .context("invalid completion shape")?;
-            let choice = body.choices.into_iter().next().context("provider returned no choices")?;
-            let turn = decode_model_turn(choice.message, body.usage)?;
-            if !turn.tool_calls.is_empty() {
-                bail!("tool calls are not supported by this text-only adapter");
+        let reservation = self.reserve_spend("model_call", model).await?;
+        let result: Result<()> = async {
+            let request = completion_stream_request(model, messages);
+            let response = self
+                .http
+                .post(format!("{}/chat/completions", self.base_url))
+                .bearer_auth(&self.api_key)
+                .timeout(Duration::from_secs(90))
+                .json(&request)
+                .send()
+                .await?;
+            if !response
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|v| v.contains("text/event-stream"))
+            {
+                let body: Completion = serde_json::from_value(self.response_json(response).await?)
+                    .context("invalid completion shape")?;
+                let choice = body
+                    .choices
+                    .into_iter()
+                    .next()
+                    .context("provider returned no choices")?;
+                let turn = decode_model_turn(choice.message, body.usage)?;
+                if !turn.tool_calls.is_empty() {
+                    bail!("tool calls are not supported by this text-only adapter");
+                }
+                let text = turn
+                    .text
+                    .filter(|v| !v.trim().is_empty())
+                    .context("provider returned no text")?;
+                sink.delta(&safety::redact(&text)).await;
+                sink.complete(&turn.usage).await;
+                return Ok(());
             }
-            let text = turn.text.filter(|v| !v.trim().is_empty()).context("provider returned no text")?;
-            sink.delta(&safety::redact(&text)).await;
-            sink.complete(&turn.usage).await;
-            return Ok(());
+            self.consume_stream_response(response, sink).await
         }
-        self.consume_stream_response(response, sink).await
+        .await;
+        let usage = sink.usage().cloned().unwrap_or_default();
+        let error = result
+            .as_ref()
+            .err()
+            .map(|error| safety::redact(&error.to_string()));
+        self.finish_spend(reservation, usage, error).await?;
+        result
     }
     pub async fn complete_with_tools(
         &self,
@@ -400,8 +583,14 @@ impl MemoryAgents {
     ) -> Result<ModelTurn> {
         let definitions = if tools.is_empty() { None } else { Some(tools) };
         match definitions {
-            Some(tools) => self.complete_turn(model, messages, Some(&tools), 90).await,
-            None => self.complete_turn(model, messages, None, 90).await,
+            Some(tools) => {
+                self.complete_turn(model, messages, Some(&tools), 90, "model_call")
+                    .await
+            }
+            None => {
+                self.complete_turn(model, messages, None, 90, "model_call")
+                    .await
+            }
         }
     }
     /// Summarize an older provider-window prefix. The transcript is serialized as quoted data in
@@ -412,7 +601,9 @@ impl MemoryAgents {
             json!({"role":"system","content":system}),
             json!({"role":"user","content":serde_json::to_string(transcript)?}),
         ];
-        let turn = self.complete_turn(model, messages, None, 45).await?;
+        let turn = self
+            .complete_turn(model, messages, None, 45, "compaction")
+            .await?;
         if !turn.tool_calls.is_empty() {
             bail!("compaction model returned a tool call");
         }
@@ -439,7 +630,9 @@ impl MemoryAgents {
             json!({"role":"system","content":VERIFICATION_SYSTEM}),
             json!({"role":"user","content":serde_json::to_string(&input)?}),
         ];
-        let turn = self.complete_turn(model, messages, None, 45).await?;
+        let turn = self
+            .complete_turn(model, messages, None, 45, "verification")
+            .await?;
         if !turn.tool_calls.is_empty() {
             bail!("verification model returned a tool call");
         }
@@ -476,6 +669,7 @@ impl MemoryAgents {
                     json!({"role":"user","content":serde_json::to_string(&input)?}),
                 ],
                 45,
+                "extraction",
             )
             .await?;
         let text = response.trim();
@@ -562,6 +756,15 @@ fn completion_stream_request(model: &str, messages: Vec<Value>) -> Value {
     json!({"model": model, "messages": messages, "stream": true})
 }
 
+fn usage_reason(prompt: Option<u64>, completion: Option<u64>) -> Option<String> {
+    match (prompt, completion) {
+        (Some(_), Some(_)) => None,
+        (None, Some(_)) => Some("provider_omitted_prompt_tokens".into()),
+        (Some(_), None) => Some("provider_omitted_completion_tokens".into()),
+        (None, None) => Some("provider_omitted_usage".into()),
+    }
+}
+
 fn decode_model_turn(message: Value, usage: Option<UsageWire>) -> Result<ModelTurn> {
     let object = message
         .as_object()
@@ -614,6 +817,7 @@ fn decode_model_turn(message: Value, usage: Option<UsageWire>) -> Result<ModelTu
         .map(|value| ModelUsage {
             prompt_tokens: value.prompt_tokens,
             completion_tokens: value.completion_tokens,
+            unavailable_reason: usage_reason(value.prompt_tokens, value.completion_tokens),
         })
         .unwrap_or_default();
     Ok(ModelTurn {
@@ -624,16 +828,24 @@ fn decode_model_turn(message: Value, usage: Option<UsageWire>) -> Result<ModelTu
     })
 }
 
-pub async fn worker(store: DbStore, agents: MemoryAgents, mut shutdown: tokio::sync::watch::Receiver<bool>) {
+pub async fn worker(
+    store: DbStore,
+    agents: MemoryAgents,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
+) {
     loop {
-        if *shutdown.borrow() { return; }
+        if *shutdown.borrow() {
+            return;
+        }
         match store.claim_job().await {
             Ok(Some(job)) => {
                 let id = job.id.clone();
                 let attempts = job.attempts;
                 let result = async {
                     let model = store.role_model("extraction", &agents.model).await?;
-                    let proposals = agents.extract(&model, &job.events).await?;
+                    let request = job.source_id.clone();
+                    let extraction = agents.extract(&model, &job.events);
+                    let proposals = agents.within_spend_request(request, extraction).await?;
                     store.finish_job(job, proposals).await
                 }
                 .await;
@@ -704,7 +916,10 @@ mod provider_tests {
     #[test]
     fn provider_stream_frames_decode_content_deltas() {
         let delta = r#"{"choices":[{"delta":{"content":"hello"}}]}"#;
-        assert_eq!(MemoryAgents::parse_stream_frame(delta).unwrap(), Some("hello".into()));
+        assert_eq!(
+            MemoryAgents::parse_stream_frame(delta).unwrap(),
+            Some("hello".into())
+        );
         assert_eq!(MemoryAgents::parse_stream_frame("[DONE]").unwrap(), None);
     }
 
@@ -717,10 +932,16 @@ mod provider_tests {
             "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":1}}\n\n",
             "data: [DONE]\n\n"
         );
-        let response = axum::http::Response::builder().body(body.to_string()).unwrap().into();
+        let response = axum::http::Response::builder()
+            .body(body.to_string())
+            .unwrap()
+            .into();
         let agents = MemoryAgents::new("http://127.0.0.1", "test", "test").unwrap();
         let mut sink = BufferedGeneration::default();
-        agents.consume_stream_response(response, &mut sink).await.unwrap();
+        agents
+            .consume_stream_response(response, &mut sink)
+            .await
+            .unwrap();
         assert_eq!(sink.text, "hello");
         assert_eq!(sink.usage.unwrap().completion_tokens, Some(1));
     }
@@ -728,10 +949,16 @@ mod provider_tests {
     #[tokio::test]
     async fn streaming_crlf_and_multiline_data_are_supported() {
         let body = "data: {\"choices\":\r\ndata: [{\"delta\":{\"content\":\"café\"}}]}\r\n\r\ndata: [DONE]\r\n\r\n";
-        let response = axum::http::Response::builder().body(body.to_string()).unwrap().into();
+        let response = axum::http::Response::builder()
+            .body(body.to_string())
+            .unwrap()
+            .into();
         let agents = MemoryAgents::new("http://127.0.0.1", "test", "test").unwrap();
         let mut sink = BufferedGeneration::default();
-        agents.consume_stream_response(response, &mut sink).await.unwrap();
+        agents
+            .consume_stream_response(response, &mut sink)
+            .await
+            .unwrap();
         assert_eq!(sink.text, "café");
     }
 
@@ -753,10 +980,16 @@ mod provider_tests {
     #[tokio::test]
     async fn streaming_split_secret_is_redacted_before_sink_delivery() {
         let body = "data: {\"choices\":[{\"delta\":{\"content\":\"pass\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"word=hidden\"}}]}\n\ndata: [DONE]\n\n";
-        let response = axum::http::Response::builder().body(body.to_string()).unwrap().into();
+        let response = axum::http::Response::builder()
+            .body(body.to_string())
+            .unwrap()
+            .into();
         let agents = MemoryAgents::new("http://127.0.0.1", "test", "test").unwrap();
         let mut sink = BufferedGeneration::default();
-        agents.consume_stream_response(response, &mut sink).await.unwrap();
+        agents
+            .consume_stream_response(response, &mut sink)
+            .await
+            .unwrap();
         assert_eq!(sink.text, safety::redact("password=hidden"));
     }
 
@@ -767,19 +1000,32 @@ mod provider_tests {
             let mut buffer = frame[..split].to_vec();
             assert_eq!(MemoryAgents::parse_sse_event(&mut buffer).unwrap(), None);
             buffer.extend_from_slice(&frame[split..]);
-            assert_eq!(MemoryAgents::parse_sse_event(&mut buffer).unwrap(), Some("café 😀".into()));
+            assert_eq!(
+                MemoryAgents::parse_sse_event(&mut buffer).unwrap(),
+                Some("café 😀".into())
+            );
             assert!(buffer.is_empty());
         }
     }
 
     #[tokio::test]
     async fn streaming_limits_and_invalid_utf8_fail_without_delivery() {
-        let oversized = format!("data: {}\n\ndata: [DONE]\n\n", json!({"choices":[{"delta":{"content":"a".repeat(MAX_PROVIDER_TEXT + 1)}}]}));
-        for bytes in [oversized.into_bytes(), vec![b'a'; MAX_PROVIDER_BODY + 1], b"data: \xff\n\n".to_vec()] {
+        let oversized = format!(
+            "data: {}\n\ndata: [DONE]\n\n",
+            json!({"choices":[{"delta":{"content":"a".repeat(MAX_PROVIDER_TEXT + 1)}}]})
+        );
+        for bytes in [
+            oversized.into_bytes(),
+            vec![b'a'; MAX_PROVIDER_BODY + 1],
+            b"data: \xff\n\n".to_vec(),
+        ] {
             let response = axum::http::Response::builder().body(bytes).unwrap().into();
             let agents = MemoryAgents::new("http://127.0.0.1", "test", "test").unwrap();
             let mut sink = BufferedGeneration::default();
-            assert!(agents.consume_stream_response(response, &mut sink).await.is_err());
+            assert!(agents
+                .consume_stream_response(response, &mut sink)
+                .await
+                .is_err());
             assert!(sink.text.is_empty());
         }
     }
@@ -808,8 +1054,14 @@ mod provider_tests {
         let mut buffer = b"data: one\n".to_vec();
         assert_eq!(MemoryAgents::parse_sse_event(&mut buffer).unwrap(), None);
         buffer.extend_from_slice(b"\ndata: two\n\n");
-        assert_eq!(MemoryAgents::parse_sse_event(&mut buffer).unwrap(), Some("one".into()));
-        assert_eq!(MemoryAgents::parse_sse_event(&mut buffer).unwrap(), Some("two".into()));
+        assert_eq!(
+            MemoryAgents::parse_sse_event(&mut buffer).unwrap(),
+            Some("one".into())
+        );
+        assert_eq!(
+            MemoryAgents::parse_sse_event(&mut buffer).unwrap(),
+            Some("two".into())
+        );
     }
 
     #[test]

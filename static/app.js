@@ -48,7 +48,7 @@ async function exchangeBrowserSession(masterToken) {
 function node(tag, text, cls) { const element = document.createElement(tag); if (text !== undefined) element.textContent = text; if (cls) element.className = cls; return element; }
 function persistSession() { sessionStorage.setItem('harness_scope', scope); sessionStorage.setItem('harness_session', session); }
 const stateLabels = { captured: 'Sent · waiting for answer', generating: 'Thinking…', complete: 'Done', failed: 'Saved · answer failed', interrupted: 'Saved · answer interrupted' };
-const eventLabels = { captured: 'Message saved locally', generation_started: 'Answer started', context_saved: 'Context receipt saved', answer_saved: 'Answer saved locally', generation_failed: 'Answer did not complete', interrupted: 'Server restarted; no automatic resend', extraction_queued: 'Memory review queued' };
+const eventLabels = { captured: 'Message saved locally', generation_started: 'Answer started', context_saved: 'Context receipt saved', answer_saved: 'Answer saved locally', generation_failed: 'Answer did not complete', interrupted: 'Server restarted; no automatic resend', extraction_queued: 'Memory review queued', provider_spend_refused: 'Provider call refused by spend limit' };
 async function showReceipt(id, content, button) {
   const myEpoch = epoch; button.disabled = true;
   try {

@@ -847,7 +847,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - verify: cargo test --locked tools && scripts/verify_e2e.sh
 
 ### P14-T04a · Enforce minimal fail-closed spend limits
-- status: todo
+- status: done
 - priority: high
 - blocker: release-blocker
 - lane: provider-cost-safety

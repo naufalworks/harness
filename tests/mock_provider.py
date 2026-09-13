@@ -14,7 +14,7 @@ from typing import Any
 
 
 def text(content: str) -> dict[str, Any]:
-    return {"status": 200, "payload": {"choices": [{"message": {"role": "assistant", "content": content}}]}}
+    return {"status": 200, "payload": {"choices": [{"message": {"role": "assistant", "content": content}}], "usage": {"prompt_tokens": 11, "completion_tokens": 7}}}
 
 
 def tool_calls(*calls: tuple[str, str, dict[str, Any]], text_content: str | None = None) -> dict[str, Any]:

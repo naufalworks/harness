@@ -41,7 +41,7 @@ behind nothing but the token.
 | Path | Purpose |
 |---|---|
 | `src/` | Rust service: API/auth, agent loop, tools, recording, memory, provenance, archive |
-| `migrations/` | Append-only SQLite schema, currently migrations 001–007 |
+| `migrations/` | Append-only SQLite schema, currently migrations 001–008 |
 | `static/` | Single-page UI served at `/` |
 | `tests/` | Rust-adjacent contracts, live HTTP/fault suites, mocked and real browser E2E |
 | `scripts/` | Local/release verification, encrypted backup/restore, deployment/rollback, imports |
@@ -150,6 +150,10 @@ Live feed: `GET /activity/stream?session_id=…&after_seq=N` (`text/event-stream
 `Authorization` header, not `EventSource`, and reconnect with the last `id` you
 received. The database sequence plus the client cursor guard makes replay idempotent; the network transport itself is not claimed to be exactly-once.
 Full behavior: `docs/RECORDING_PROTOCOL.md`.
+
+## Provider spend safety
+
+Every provider dispatch, including model turns, compaction, verification, and memory extraction, is reserved in the durable `provider_calls` ledger before HTTP dispatch. Request caps default to 32 per turn and 500 per UTC day. Token and micro-USD ceilings are opt-in through `.env`; configured ceilings fail closed when prior usage is unavailable, and cost ceilings also require both per-million-token prices. Reservations left by a process restart are recovered as failed with unavailable usage rather than counted as zero.
 
 ## Remaining work
 

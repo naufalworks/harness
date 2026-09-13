@@ -12,7 +12,7 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MIG = ROOT / "migrations"
-CHAIN = ["001_core.sql", "002_recording.sql", "003_agentic.sql", "004_memory_kinds.sql", "005_generation_stream.sql", "006_provenance_edges.sql", "007_privacy_archive.sql"]
+CHAIN = ["001_core.sql", "002_recording.sql", "003_agentic.sql", "004_memory_kinds.sql", "005_generation_stream.sql", "006_provenance_edges.sql", "007_privacy_archive.sql", "008_provider_spend.sql"]
 VERSIONS = [name.split("_", 1)[0] for name in CHAIN]
 LATEST_VERSION = int(VERSIONS[-1])
 OPEN_CONNECTIONS = []
@@ -25,6 +25,7 @@ EXPECTED_TABLES = {
     5: {"generation_events"},
     6: {"provenance_edges"},
     7: {"exact_archives", "source_privacy_state", "privacy_events"},
+    8: {"provider_calls"},
 }
 
 
