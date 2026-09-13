@@ -1290,14 +1290,17 @@ fn apply_workspace(ctx: &ToolCtx, new_name: &str, changes: Vec<PendingChange>) -
     }
     let mut applied = Vec::new();
     for (index, change) in changes.iter().enumerate() {
-        if let Err(error) = atomic_write(&change.path, &ctx.step_id, &change.after) {
+        if let Err(error) = atomic_write(&ctx.root, &change.path, &ctx.step_id, &change.after) {
             let mut rollback_errors = Vec::new();
             for applied_index in applied.iter().rev().copied() {
                 let prior: &PendingChange = &changes[applied_index];
                 if let Some(before) = prior.before.as_deref() {
-                    if let Err(rollback) =
-                        atomic_write(&prior.path, &format!("{}-rollback", ctx.step_id), before)
-                    {
+                    if let Err(rollback) = atomic_write(
+                        &ctx.root,
+                        &prior.path,
+                        &format!("{}-rollback", ctx.step_id),
+                        before,
+                    ) {
                         rollback_errors.push(format!("{}: {rollback}", prior.display));
                     }
                 }

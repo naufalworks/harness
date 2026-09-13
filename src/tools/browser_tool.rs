@@ -144,10 +144,35 @@ fn parse_bool(args: &Value, key: &str, default: bool) -> BrowserResult<bool> {
     }
 }
 
-fn parse_open_url(raw: &str) -> BrowserResult<String> {
-    if raw.is_empty() || raw.len() > URL_MAX || raw.contains('\0') {
-        return Err(Failure::invalid("url must be 1-2048 bytes with no NUL"));
+fn private_destination_allowed() -> bool {
+    matches!(
+        std::env::var("HARNESS_BROWSER_ALLOW_PRIVATE_NETWORK").as_deref(),
+        Ok("1") | Ok("true")
+    )
+}
+
+fn forbidden_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(ip) => {
+            ip.is_private()
+                || ip.is_loopback()
+                || ip.is_link_local()
+                || ip.is_unspecified()
+                || ip.is_multicast()
+                || ip.octets()[0] == 0
+                || (ip.octets()[0] == 100 && (64..=127).contains(&ip.octets()[1]))
+        }
+        std::net::IpAddr::V6(ip) => {
+            ip.is_loopback()
+                || ip.is_unspecified()
+                || ip.is_multicast()
+                || (ip.segments()[0] & 0xfe00) == 0xfc00
+                || (ip.segments()[0] & 0xffc0) == 0xfe80
+        }
     }
+}
+
+fn validate_destination(raw: &str) -> BrowserResult<Url> {
     let url = Url::parse(raw).map_err(|error| Failure::invalid(format!("invalid url: {error}")))?;
     if !matches!(url.scheme(), "http" | "https") {
         return Err(Failure::invalid(
@@ -159,10 +184,31 @@ fn parse_open_url(raw: &str) -> BrowserResult<String> {
             "browser URLs must not contain credentials",
         ));
     }
-    if url.host_str().is_none() {
-        return Err(Failure::invalid("browser URL needs a host"));
+    let host = url
+        .host_str()
+        .ok_or_else(|| Failure::invalid("browser URL needs a host"))?
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    if !private_destination_allowed()
+        && (host == "localhost"
+            || host.ends_with(".localhost")
+            || host == "metadata.google.internal"
+            || host
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(forbidden_ip))
+    {
+        return Err(Failure::new("browser_destination_denied", "private, loopback, link-local, metadata, and special-use destinations require HARNESS_BROWSER_ALLOW_PRIVATE_NETWORK=true"));
     }
-    Ok(url.to_string())
+    Ok(url)
+}
+
+fn parse_open_url(raw: &str) -> BrowserResult<String> {
+    if raw.is_empty() || raw.len() > URL_MAX || raw.contains('\0') {
+        return Err(Failure::invalid("url must be 1-2048 bytes with no NUL"));
+    }
+    Ok(validate_destination(raw)?.to_string())
 }
 
 fn valid_snapshot_id(value: &str) -> bool {
@@ -1185,6 +1231,7 @@ impl Session {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
+        validate_destination(&url)?;
         let title = value
             .get("title")
             .and_then(Value::as_str)
@@ -2002,6 +2049,18 @@ mod tests {
                 parse_call(&args).unwrap_err().code,
                 "invalid_arguments",
                 "{args}"
+            );
+        }
+        for url in [
+            "http://127.0.0.1/admin",
+            "http://169.254.169.254/latest/meta-data",
+            "http://[::1]/",
+        ] {
+            assert_eq!(
+                parse_call(&json!({ "operation": "open", "url": url }))
+                    .unwrap_err()
+                    .code,
+                "browser_destination_denied"
             );
         }
         assert!(validate_endpoint("ws://127.0.0.1:9222/devtools/page/1").is_ok());

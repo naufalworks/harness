@@ -1,6 +1,7 @@
 //! Path sandbox. Rules: docs/design/tools.md#path-rules.
 use std::path::{Component, Path, PathBuf};
 
+#[derive(Debug)]
 pub enum PathError {
     Empty,
     Escapes,
@@ -104,6 +105,41 @@ fn canonical_inside(root: &Path, full: PathBuf) -> Result<PathBuf, PathError> {
     Ok(canon)
 }
 
+/// Re-check the destination immediately before an atomic write. The parent must still resolve
+/// inside the canonical project root, must not be a symlink, and on Unix must have the same owner
+/// as the project root. This catches approval-time TOCTOU swaps before the rename is attempted.
+pub fn verify_write_target(root: &Path, path: &Path) -> Result<(), PathError> {
+    if !path.starts_with(root) {
+        return Err(PathError::Escapes);
+    }
+    let parent = path.parent().ok_or(PathError::Invalid)?;
+    let canonical_parent = std::fs::canonicalize(parent).map_err(|_| PathError::Escapes)?;
+    if canonical_parent != parent || !canonical_parent.starts_with(root) {
+        return Err(PathError::Escapes);
+    }
+    if std::fs::symlink_metadata(parent)
+        .map_err(|_| PathError::Escapes)?
+        .file_type()
+        .is_symlink()
+    {
+        return Err(PathError::Escapes);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let root_owner = std::fs::metadata(root)
+            .map_err(|_| PathError::Escapes)?
+            .uid();
+        let parent_owner = std::fs::metadata(parent)
+            .map_err(|_| PathError::Escapes)?
+            .uid();
+        if root_owner != parent_owner {
+            return Err(PathError::Denied);
+        }
+    }
+    canonical_inside(root, path.to_path_buf()).map(|_| ())
+}
+
 /// Display form for the model/UI: relative to root with `/` separators.
 pub fn display(root: &Path, p: &Path) -> String {
     p.strip_prefix(root)
@@ -151,5 +187,19 @@ mod tests {
         let r = root();
         std::os::unix::fs::symlink("/", r.join("link")).unwrap();
         assert!(resolve(&r, "link/etc/hosts").is_err());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn final_write_gate_rejects_a_swapped_parent_symlink() {
+        let r = root();
+        let destination = resolve(&r, "new/file.txt").unwrap();
+        std::fs::create_dir_all(r.join("new")).unwrap();
+        let outside =
+            std::env::temp_dir().join(format!("harness-outside-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::remove_dir(r.join("new")).unwrap();
+        std::os::unix::fs::symlink(&outside, r.join("new")).unwrap();
+        assert!(verify_write_target(&r, &destination).is_err());
+        assert!(!outside.join("file.txt").exists());
     }
 }

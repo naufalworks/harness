@@ -980,3 +980,19 @@ exact failing request with the real browser origin -> 200; `https://evil.invalid
 **Delivered.** Added schema 8's append-only `provider_calls` ledger and reserve-before-dispatch accounting for normal model calls, streamed calls, compaction, verification, sub-agent work, and memory extraction. Request caps default to 32 per turn and 500 per UTC day; token and micro-USD ceilings are opt-in. Configured token/cost ceilings refuse when earlier usage is unavailable, cost ceilings require both input/output pricing, refusal reasons are durable and visible in activity, and startup converts abandoned reservations to explicit unavailable failures.
 
 **Verified.** Exact gate: 22 provider-focused Rust tests and `tests/recording_integration.py` passed. Migration chain 001→008 passed at `user_version=8`. Strict non-deploying release gate passed: 189 Rust tests, clippy/build, 66 Python contracts, integration smoke, recording integration, JavaScript syntax, both mocked-browser suites, and the real browser-to-server success/denial/crash-recovery paths.
+
+
+---
+
+## 2026-09-13 — P13-T03 tool-security hardening started
+
+**Scope.** Started browser destination/transfer policy, structured command and network/protected-path policy, and final write-time path ownership/TOCTOU hardening on `p13-tool-security` from `3873cd5`. Exact gate: `cargo test --locked tools && python3 tests/recording_integration.py`.
+
+
+---
+
+## 2026-09-13 — P13-T03 tool-security hardening completed
+
+**Delivered.** Browser navigation now rejects credential-bearing and non-HTTP(S) URLs, loopback/private/link-local/metadata/special-use literal destinations by default, and revalidates the captured URL after redirects and interactions; private-network access is an explicit operator opt-in and no model-facing transfer operation exists. Bash permission evidence now classifies network and protected-path access, and those classes cannot pass `auto_all` without approval. Edit, write, AST edit, LSP workspace rename/rollback, and recorded-change revert now revalidate canonical parent containment and Unix ownership immediately before atomic replacement, with a symlink-swap regression.
+
+**Verified.** Exact gate passed: 69 tool-focused Rust tests plus `tests/recording_integration.py`. Strict non-deploying release gate passed: Rust tests/clippy/build, Python contracts, integration smoke, recording integration, JavaScript syntax, both mocked-browser suites, and real browser-to-server success/denial/crash-recovery paths. `git diff --check` passed.

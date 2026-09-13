@@ -981,6 +981,7 @@ fn restore_change(
             .map_err(|_| "The parent directory could not be created; nothing was written")?;
     }
     tools::edit_tools::atomic_write(
+        root,
         &resolved,
         change["id"].as_str().unwrap_or("revert"),
         &before,

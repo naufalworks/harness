@@ -8,7 +8,10 @@
 use serde_json::{json, Value};
 
 use super::edit_tools::run_capped;
-use super::{is_dangerous_command, paths, truncate_chars, Tool, ToolCtx, ToolResult, MAX_OUTPUT};
+use super::{
+    command_touches_protected_path, command_uses_network, is_dangerous_command, paths,
+    truncate_chars, Tool, ToolCtx, ToolResult, MAX_OUTPUT,
+};
 
 pub const DEFAULT_TIMEOUT: u64 = 120;
 pub const MAX_TIMEOUT: u64 = 600;
@@ -214,6 +217,9 @@ impl Tool for Bash {
                 "timeout_seconds": call.timeout,
                 "background": call.background,
                 "dangerous": is_dangerous_command(&call.command),
+                "network": command_uses_network(&call.command),
+                "protected_path": command_touches_protected_path(&call.command),
+                "policy": if command_uses_network(&call.command) { "network" } else if command_touches_protected_path(&call.command) { "protected_path" } else if is_dangerous_command(&call.command) { "destructive" } else { "project_local" },
             }),
             Err(refusal) => json!({ "command": args.get("command"), "error": refusal.error_code }),
         }

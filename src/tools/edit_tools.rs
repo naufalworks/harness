@@ -251,7 +251,15 @@ fn plan_write(ctx: &ToolCtx, args: &Value) -> Result<PendingChange, ToolResult> 
 /// or the new one, never a half-written one. Existing permissions are preserved.
 /// `pub(crate)` since P2-T03: reverting a diff card puts the recorded previous content back and
 /// must land the same way an edit did, never as a half-written file.
-pub(crate) fn atomic_write(path: &Path, step: &str, content: &str) -> std::io::Result<()> {
+pub(crate) fn atomic_write(
+    root: &Path,
+    path: &Path,
+    step: &str,
+    content: &str,
+) -> std::io::Result<()> {
+    paths::verify_write_target(root, path).map_err(|error| {
+        std::io::Error::new(std::io::ErrorKind::PermissionDenied, error.detail())
+    })?;
     let parent = path.parent().unwrap_or(Path::new("."));
     let name = path
         .file_name()
@@ -317,7 +325,7 @@ pub(crate) fn apply(ctx: &ToolCtx, verb: &str, change: PendingChange) -> ToolRes
             );
         }
     }
-    if let Err(e) = atomic_write(&change.path, &ctx.step_id, &change.after) {
+    if let Err(e) = atomic_write(&ctx.root, &change.path, &ctx.step_id, &change.after) {
         return ToolResult::err("write_failed", format!("{}: {e}", change.display));
     }
 

@@ -790,7 +790,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - verify: python3 tests/test_migrations.py && cargo test --locked archive
 
 ### P13-T03 · Strengthen browser, command and path policies
-- status: todo
+- status: done
 - priority: high
 - lane: tool-security
 - parallel: yes

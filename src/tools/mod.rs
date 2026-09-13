@@ -324,8 +324,44 @@ impl Registry {
 
 /// Deny-list from docs/design/tools.md#bash: these always ask, even in `auto_all`.
 /// Lives here (not in bash_tool) so the permission gate compiles before P1-T08 lands.
+pub fn command_uses_network(cmd: &str) -> bool {
+    let c = cmd.to_ascii_lowercase();
+    [
+        "curl ",
+        "wget ",
+        "ssh ",
+        "scp ",
+        "sftp ",
+        "nc ",
+        "ncat ",
+        "telnet ",
+        "git clone ",
+        "git fetch",
+        "git pull",
+        "git push",
+        "npm publish",
+        "cargo publish",
+    ]
+    .iter()
+    .any(|pattern| c.contains(pattern))
+}
+
+pub fn command_touches_protected_path(cmd: &str) -> bool {
+    let c = cmd.to_ascii_lowercase();
+    [
+        "/etc/", "/root/", "/home/", "/proc/", "/sys/", "/dev/", "~/.ssh", "/.ssh/", ".env",
+        ".netrc", ".npmrc", ".pypirc",
+    ]
+    .iter()
+    .any(|pattern| c.contains(pattern))
+}
+
 pub fn is_dangerous_command(cmd: &str) -> bool {
-    let c = cmd.split_whitespace().collect::<Vec<_>>().join(" ");
+    let c = cmd
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
     const PATTERNS: &[&str] = &[
         "rm -rf /",
         "rm -rf ~",
@@ -337,13 +373,15 @@ pub fn is_dangerous_command(cmd: &str) -> bool {
         "mkfs",
         "dd if=",
         "> /dev/sd",
-        "chmod -R 777 /",
+        "chmod -r 777 /",
         "curl | sh",
         "wget | sh",
         ":(){",
     ];
     PATTERNS.iter().any(|p| c.contains(p))
         || c.contains("| sh") && (c.contains("curl ") || c.contains("wget "))
+        || command_uses_network(&c)
+        || command_touches_protected_path(&c)
 }
 
 /// First 4 hex chars of SHA-256 over the right-trimmed line. Anchors are `line:hash` pairs.
@@ -402,5 +440,17 @@ mod tests {
     fn scopes_with_a_root_path_still_reject_unknown_tools() {
         let unknown = Registry::standard().invoke(Some(&ctx()), "teleport", json!({}));
         assert_eq!(unknown.error_code, Some("unknown_tool"));
+    }
+    #[test]
+    fn command_policy_gates_network_and_protected_paths() {
+        for command in [
+            "curl https://example.test",
+            "cat /etc/passwd",
+            "git push origin main",
+            "cp x ~/.ssh/y",
+        ] {
+            assert!(is_dangerous_command(command), "{command}");
+        }
+        assert!(!is_dangerous_command("cargo test --locked"));
     }
 }
