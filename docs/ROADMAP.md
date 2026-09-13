@@ -1,81 +1,78 @@
-# Continuation roadmap
+# Harness continuation roadmap
 
-> Superseded 2026-09-09 by `docs/PLAN.md` + `docs/TASKS.md` (agentic tool loop, activity UI, context manager, memory kinds). This file is kept for history. Its P0 gate is still required and is tracked as `P0-T01` in TASKS.md; items below that are not in TASKS.md live in its "Ideas parking lot".
+Status: active from 2026-09-13. `docs/PLAN.md` defines principles, this file defines sequencing and coverage, `docs/TASKS.md` is the executable backlog, and `docs/PROGRESS.md` is the append-only journal.
 
-Status: only Recording receipts is implemented in this checkpoint; native validation remains blocked. This document records future work, not completion claims.
+## Priority and parallelism
 
-## P0 · Native verification / release gate
-- [ ] Compile with locked dependencies; run 21 Rust tests, Clippy and both live mock-provider HTTP suites.
-- [ ] Fix any compiler/lifetime/API issues; regenerate lockfile only if Cargo requires it and review the diff.
-- [ ] Exercise actual disk/permission errors, connection drops, process restart and duplicate concurrent submissions against the compiled server.
-- [ ] Confirm provider-specific compatibility and timeouts on the user's local installation.
-- [ ] Treat the inherited backup/permissions/single-process limitations as real; never upgrade the user's only DB copy.
+Priority order is `critical` → `high` → `medium` → `low` → `research`.
 
-## P1 · Exact-original archive and artifact safety
-Three distinct layers: encrypted exact originals → sanitized searchable history → selected active memory.
-- [ ] Explicitly opt into storing exact originals, including secret-looking text; explain unlocked-app/key-compromise risks.
-- [ ] Use a reviewed AEAD implementation and versioned encrypted envelopes, unique nonces, key IDs, authenticated metadata, OS-backed key storage where available. No home-grown crypto or keys next to the DB.
-- [ ] Store binary artifacts by content digest, preserve names/media types/source associations and version history; stream bounded uploads with checksums and atomic commit.
-- [ ] Archive supported-size files BEFORE parser/indexer work. Unsupported parsers report “Archived; could not index” only when archive commit actually succeeded.
-- [ ] Keep original bytes out of provider calls and routine indexes. Handle sensitive outputs as well as inputs.
-- [ ] Encrypt backups; test restore onto a clean machine, missing keys, corruption, quota exhaustion and interrupted uploads. Define retention, explicit deletion and key rotation.
-- [ ] Finish legacy artifact/conversation migration, not only memories.
-Acceptance: an accepted artifact survives parser failure, extraction backlog and process restart; byte-for-byte equality after authorized decryption/restore. No silent rejection or exact-original claim for sanitized-only records.
+A task may run in parallel only when its `parallel: yes` metadata is present, every dependency is done, it uses a different lane from other active work, and its declared files do not overlap. Each parallel task uses its own branch/worktree. Commits are merged one at a time, rebased before merge, and the task's exact verification plus the release gate are rerun after integration. One agent still owns only one task at a time.
 
-## P2 · Trust-aware legacy migration
-- [ ] Read a user-generated LOCAL audit / protected DB backup; never request credentials pasted into chat.
-- [ ] Reconcile true counts. Match legacy key/value/category to confirmed pending_confirmations and inspect subsequent overwrites. Confidence 1.0 alone is not approval.
-- [ ] Carry demonstrably approved, screened records as active with “Previously approved — legacy” provenance.
-- [ ] Batch adoption preview for unconfirmed records: category groups, duplicate/conflict flags, deselection and auditable consent. Do not invent quotes.
-- [ ] Flag sensitive records without exposing their content; preserve protected originals separately.
-- [ ] Keep global preferences recallable; do not strand all records in legacy-review.
-- [ ] Source-preserving, deterministic dry run, idempotence, reconciled counts, rollback and restore tests.
-Acceptance: no hundreds of redundant approvals; every activation has a defensible approval/adoption event and original backup remains unchanged.
+## Execution waves
 
-## P3 · Renewed UI + balanced memory interaction
-Use `reference/renewed-ui-original/static/index.html` as the visual/interaction reference, NOT as trusted security architecture.
-- [ ] Port clean chat layout, responsive sidebar, light/dark theme control, safe Markdown/code rendering and copy controls.
-- [ ] Extract inline scripts/styles to local files; preserve strict CSP. Auth on all APIs and streams.
-- [ ] Server history replaces localStorage transcripts. Keep theme preferences local; keep tokens ephemeral unless adopting a reviewed session-auth design.
-- [ ] Inline suggestion tray linked to source request: Save / Edit / Dismiss; quote on expansion. Inbox remains for imports/backlog.
-- [ ] Structured “Remember selected text” action = authorization for that exact validated fact. Do not infer authorization from quoted prompt text.
-- [ ] Suppress redundant suggestions; conflicts show old/new values before replacing anything. Rejecting a suggestion must not delete its source conversation.
-- [ ] Optional narrow auto-save for clear low-risk preferences with visible activity/undo; not based on model confidence alone. No sensitive inference or silent overwrites.
-- [ ] Resolve unknown-save states gracefully; no forced “check forever” flow. Preserve the current Leave for later escape hatch.
-Acceptance: keyboard/mobile/dark/light QA, no XSS, no hidden history, no redundant approval for explicit save, no legacy UI route reintroducing arbitrary server-path imports.
+| Wave | Goal | Phases | Parallel lanes |
+|---|---|---|---|
+| A | Close correctness and operational safety gaps | P10 | incident, runtime, backup, release |
+| B | Remove avoidable latency and storage pressure | P11 | streams, database, assets |
+| C | Make change safer and faster | P12 | architecture, API, CI, docs |
+| D | Harden the exposed deployment | P13 | auth, privacy, tools, audit |
+| E | Improve daily product use | P14 | workflow, frontend, providers, languages |
+| F | Make memory inspectable and controllable | P15 | retrieval, governance, history |
+| G | Turn traces into measurable diagnosis | P16 | incident UX, metrics, deployment provenance |
+| H | Build the Memory Wind Tunnel | P17 | capsules, replay, experiments, reports |
+| I | Optional scale and ecosystem work | P18 | workers, plugins, portability |
 
-## P4 · Durable streaming (not fake typewriter animation)
-- [ ] Authenticated fetch/SSE transport, ordered event sequence and resumable receipt cursor.
-- [ ] Persist received chunks BEFORE displaying them; separate completed/interrupted/truncated states.
-- [ ] Handle split UTF-8, JSON/SSE frames, timeouts, disconnect/reconnect and provider errors.
-- [ ] Security boundary: do not send/display an unredacted prefix while waiting to learn that a later suffix identifies a secret. Line/window buffering and exact-original vault policy need explicit design.
-- [ ] Complete answer + extraction intent independent of queue capacity; never downgrade acknowledged durable events.
-Acceptance: reconnect without duplicate generation; interrupted streams clearly labeled; tests show byte/order preservation and no credential leakage from split frames.
+Critical tasks in Wave A start first. Independent CI/docs/backup work may proceed beside runtime work. Schema-writing tasks never run in parallel with another schema-writing task.
 
-## P5 · History can help without becoming permanent memory
-- [ ] FTS5 over sanitized conversations and artifacts, scoped with message/artifact citations.
-- [ ] Distinguish dated historical evidence from active/current preference. Never send the entire archive to the model.
-- [ ] Follow context receipts back to memory revisions and source artifacts; inspect what was included/excluded under explicit budgets.
-- [ ] Undo/archive memory as a new revision, with clear separate actions for “forget preference” versus “delete source”.
+## P10 — Correctness and operational safety
 
-## P6 · Optional distinctive ideas (NOT implemented)
-- **Memory branches:** try a new preference within one project without overwriting global behavior; promote after explicit approval.
-- **Decision timeline:** distinguish “we considered X” from “we chose X”, and show when a decision was superseded, with dated evidence.
-- **Memory rehearsal:** preview how a proposed memory changes retrieved context before approving it. Start with deterministic retrieval diffs, not unsupported causal claims about model behavior.
-- **Quiet expiry:** time-bound temporary preferences and ask one compact question when evidence conflicts; don't auto-erase the source archive.
-- **Portable continuation packet:** export a user-selected, sanitized project checkpoint with source links, unresolved questions and model-context receipts, with audience review before sharing.
-- **Rate-aware scheduling:** foreground generation priority, budgeted background imports, Retry-After/jitter and provider concurrency limits; do not auto-repeat potentially billed interrupted generations.
+Close the bounded-graph reference gap; use causal rather than insertion-order projection; enforce one process per DB; expose readiness/build/schema identity; automate encrypted backup rotation and clean restore drills; add graceful shutdown, deployment rollback, and fault/crash-point tests. This includes WAL integrity, disk-full/read-only/corruption behavior, request reconciliation, queue/backpressure visibility, background-process lifecycle, and stale-deployment detection.
 
-These are product proposals, not claims of research novelty. Reliability and UX take precedence over feature count.
+## P11 — Runtime and storage performance
 
-## P8 · Causal observability (new direction)
+Replace 200 ms per-connection SQLite polling with commit notifications plus cursor replay; share fan-out where useful; separate serialized writes from bounded reads; reuse prepared statements; audit indexes and query plans; benchmark production-sized histories; manage WAL/vacuum/retention; compact old generation chunks; consolidate hidden-tab polling; compress and fingerprint static assets; split lazy frontend features; deduplicate unchanged output; review optional tool features, TLS choice, and duplicate dependencies.
 
-The next product/research thread is not another span viewer. It is a bounded causal incident graph that connects externally inspectable evidence to decisions, tool calls, permissions, state mutations, and recovery.
+## P12 — Maintainability, API, CI, and release engineering
 
-- [ ] Define a typed provenance-edge schema and durable references to existing rows.
-- [ ] Instrument one coding turn without capturing private chain-of-thought.
-- [ ] Add a read-only incident view that starts at a failure and walks upstream/downstream dependencies.
-- [ ] Prove denial, stale-anchor, and crash-recovery attribution with real E2E fixtures.
-- [ ] Measure earliest-break localization, missing-edge rate, graph size, and reviewer time versus flat trace inspection.
+Decompose `main.rs`, `agent_loop.rs`, `storage.rs`, `browser_tool.rs`, and `lsp_tool.rs`; introduce typed API/database DTOs and state enums; centralize bounds; remove or connect dead code; fix risky numeric conversions and nested patch options; audit production panics; standardize API errors; publish an OpenAPI contract and generated client; keep docs truthful. Add format/lint gates, warning budgets, dependency/license audits, pinned actions, Python/shell/JS lint, coverage, property/fuzz tests, fallback-tool tests, architecture checks, performance budgets, reproducible signed artifacts, SBOMs, public smoke tests, and rollback tests.
 
-This is a research direction, not a completion claim. The executable backlog lives in `docs/TASKS.md`; design details live in `docs/design/causal-observability.md`.
+## P13 — Security, privacy, and auditability
+
+Add per-route size/rate limits; short-lived browser sessions and token rotation; reverse-proxy identity options and HSTS; encrypted exact-original archive and encrypted backups with external keys; retention/deletion controls and secret-manager integration; browser network/upload/download policy; stronger path TOCTOU defense; structured command policy; sanitized audit export and optional hash-chain integrity. Preserve loopback-first and single-user assumptions until an explicit security phase changes them.
+
+## P14 — Workflow, tools, providers, and UX
+
+Add durable cancellation and safe-boundary retry; session naming/search/archive/fork; stop/regenerate controls; permission bundles/countdowns/notifications; dry-run plans; active process viewer; Git-aware changes, focused commit proposals, and checkpoints; bounded parallel read-only sub-agents; provider capability detection/fallback/circuit breakers/Retry-After/cost limits; AST/LSP language expansion and session reuse; browser screenshots/artifacts and transfer controls. Modularize and virtualize the UI; add keyboard/mobile/accessibility work, reconnect states, better diffs, context/cost/project dashboards, and optional voice input.
+
+## P15 — Memory and history
+
+Add optional semantic embeddings while retaining deterministic local recall; create recall evaluation fixtures; persist and explain inclusion/exclusion receipts; preview retrieval changes before approval; add branches, decision timelines, temporary expiry, conflict grouping, deduplication, usefulness feedback, sanitized conversation/artifact FTS, separate forget/source deletion, portable import/export, and explicitly pinned global profile entries.
+
+## P16 — Causal observability
+
+Add graph expansion/search/timeline/export and run comparison; live incident formation; missing-edge, earliest-break, graph-size, and reviewer-time metrics; confidence labels that distinguish recorded dependency from temporal proximity; graph retention; anomaly flags; and deployment/build/restart/smoke-test provenance. Reports must continue to say `unknown` when evidence is absent and must not capture private chain-of-thought.
+
+## P17 — Memory Wind Tunnel
+
+Define immutable content-addressed run capsules and deterministic assertions; freeze project/model/tool/memory/context state; validate and fork isolated treatments; implement strict, live, and hybrid replay; add no-memory, remove-one, stale, conflict, pollution, and poisoned-memory treatments; align traces by semantic step identity; report first divergence, deterministic outcomes, costs, repeated-trial uncertainty, and sanitized evidence. Remote disposable runners remain opt-in with image pinning, TTL, spend cap, kill switch, and proven cleanup.
+
+## P18 — Optional platform evolution
+
+Only after the earlier phases: leased multi-worker execution, multi-instance semantics, plugin/provider SDKs, portable continuation packets across machines, benchmark packs, signed extension manifests, and isolated remote runners. Multi-user tenancy remains a separate product/security decision rather than an accidental consequence of scaling.
+
+## Coverage contract
+
+The executable P10–P18 tasks cover every accepted audit opportunity from the 2026-09-13 review:
+
+- reliability/correctness: graph closure and projection, process ownership, crash/disk/DB recovery, queues, background jobs, graceful deployment;
+- performance: event-driven streams, DB concurrency/query plans/retention, frontend polling/assets/build footprint;
+- maintainability: module decomposition, typed contracts, warning and panic cleanup, centralized limits, documentation;
+- security/privacy: auth/rate/body boundaries, encryption/key management, deletion, browser/bash/path policy, audit integrity;
+- CI/release: format/lint/audit/coverage/fuzz/property/cross-target gates, reproducible artifacts, smoke and rollback;
+- agent/tools: cancellation, retry, policies, dry-runs, process/Git checkpoints, parallel reads, provider/language/browser improvements;
+- memory: semantic retrieval, evaluation/explanations, rehearsal, branches/timeline/expiry/conflicts/history/export/pinning;
+- observability: compare/search/timeline/export, causal metrics, anomalies, deployment provenance;
+- UX: sessions, keyboard/mobile/a11y, virtualization, connection state, approvals, diffs and dashboards;
+- research: capsules, strict/live/hybrid treatments, statistics, reports and optional remote isolation.
+
+An item may be split into smaller tasks during design, but it may not be silently removed. Mark it `dropped` in `docs/TASKS.md` with the owner's reason if it is intentionally rejected.

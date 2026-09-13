@@ -14,18 +14,27 @@ step is recorded before it is shown, and the UI makes the agent's work visible
 ## Read in this order, every session
 
 1. `docs/PLAN.md` — goal, principles, target architecture, phases and acceptance criteria.
-2. `docs/TASKS.md` — ordered task list with stable IDs. Pick the first task whose
-   `status` is `todo` and whose `depends` are all `done`.
-3. `docs/PROGRESS.md` — journal. The last entry tells you where the previous session
+2. `docs/ROADMAP.md` — active waves, priority policy and coverage contract.
+3. `docs/TASKS.md` — executable task list with stable IDs. Pick the highest-priority
+   eligible `todo`; use the earlier task ID as the tie-breaker.
+4. `docs/PROGRESS.md` — journal. The newest entry tells you where the previous session
    stopped, why, and any open questions.
-4. The design doc named in the task's `design:` line (`docs/design/*.md`).
-5. Only then read source files listed in the task's `files:` line.
+5. The design doc named in the task's `design:` line (`docs/design/*.md`).
+6. Only then read source files listed in the task's `files:` line.
 
 ## Operating rules
 
-- **One task at a time.** Set its status to `doing` in `docs/TASKS.md`, finish it,
-  run its `verify:` command, set `done`, append a `docs/PROGRESS.md` entry. If you
-  must stop mid-task, still write the PROGRESS entry (what is half-done, what is next).
+- **One task per agent/worktree.** Set its status to `doing`, finish it, run its exact
+  `verify:` command, set `done`, and add a newest-first `docs/PROGRESS.md` entry. Parallel
+  tasks are allowed only when each says `parallel: yes`, dependencies are done, lanes
+  and files do not overlap, and each task uses a separate branch/worktree. Merge one at
+  a time, rebase first, then rerun affected verification and the release gate. Schema
+  migrations and edits to the same shared contract are always serialized.
+- **Progress is part of the task.** Every `doing`, `needs-verify`, `blocked`, `done`, or
+  `dropped` transition must be reflected in `docs/PROGRESS.md` in the same change. Record
+  task ID, priority, lane, result, exact verification, branch/commit if known, blockers,
+  and the next eligible tasks. The integration coordinator owns the final merged entry
+  when parallel branches would otherwise conflict in the journal.
 - **Never mark `done` without running `verify:`.** If your environment cannot run it
   (for example no `cargo`), set `needs-verify` and say exactly which command the
   user must run.

@@ -1,5 +1,13 @@
 # PROGRESS — journal
 
+## 2026-09-13 · Notion AI via Local · P10–P18 roadmap accepted
+
+- Converted the full optimization, feature, security, UX, memory, observability, and research review into the active P10–P18 roadmap and executable task backlog.
+- Added explicit `priority`, `lane`, and `parallel` metadata. Parallel work requires completed dependencies, separate worktrees, disjoint lanes/files, serialized migrations/contracts, and integration verification after one-at-a-time merges.
+- Updated `AGENTS.md`, `PLAN.md`, `ROADMAP.md`, `TASKS.md`, and README so roadmap coverage and progress journaling are mandatory parts of every task transition.
+- Verification: docs-only structural checks (`git diff --check`, task-ID/dependency/metadata validation, and Markdown reference checks); no runtime behavior changed.
+- Next: begin critical Wave A. `P10-T01`, `P10-T04`, and `P12-T05` are the first disjoint parallel set; `P10-T02` follows `P10-T01` integration because both currently declare `src/storage.rs` and `tests/recording_integration.py`.
+
 ## 2026-09-13 · Notion AI via Local · P9-T02 closed SQLite handles
 
 - Registered deterministic cleanup for every Python test SQLite connection, including migration helpers and online backup endpoints.

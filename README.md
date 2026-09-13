@@ -153,16 +153,16 @@ Full behavior: `docs/RECORDING_PROTOCOL.md`.
 
 ## Remaining work
 
-The active plan is `docs/PLAN.md` (goals, principles, phases) with the ordered
-backlog in `docs/TASKS.md` and the journal in `docs/PROGRESS.md`. Start at
-`AGENTS.md` if you are an AI or a new contributor. `docs/ROADMAP.md` is the
-older list and is kept for history; where they differ, PLAN.md wins.
+The active plan is `docs/PLAN.md`, sequencing and priority live in
+`docs/ROADMAP.md`, executable work lives in `docs/TASKS.md`, and every state
+change is journaled newest-first in `docs/PROGRESS.md`. Start at `AGENTS.md`.
 
-Current direction: turn the single text-only provider call into a recorded,
-sandboxed tool loop (read/grep/glob/edit/write/bash) with per-step receipts and
-an approval gate, then a live activity UI, then context management and richer
-memory. Nothing in P1+ is compiled yet; run `bash scripts/verify_release.sh`
-first (P0-T01).
+P1–P9 are implemented and release-verified: the current system has the recorded
+tool loop, permission gate, context management, hybrid memory, durable generation,
+browser E2E coverage, and causal incident graph. The P10–P18 continuation roadmap
+covers correctness, operations, performance, maintainability, security, UX, memory,
+observability, and the Memory Wind Tunnel. Independent tasks may run in separate
+worktrees only when their task metadata explicitly permits parallel execution.
 
 Security posture: loopback bind enforced, Bearer auth, Origin checks, no
 server-side file paths, conservative secret filtering before storage/provider.

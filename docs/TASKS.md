@@ -1,12 +1,14 @@
 # TASKS — ordered backlog with stable IDs
 
-How to use: pick the first task with `status: todo` whose `depends:` are all `done`.
+How to use: pick the highest-priority `todo` whose `depends:` are all `done`; use the
+earlier task ID as the tie-breaker. Parallel tasks require `parallel: yes`, different
+lanes, disjoint files, separate branches/worktrees, and serialized integration.
 Change status in place. Never renumber or delete a task; mark it `dropped` with a reason.
 
 Status values: `todo` | `doing` | `done` | `needs-verify` | `blocked` | `dropped`
 
-Each task has: `status`, `depends`, `design` (doc section), `files` (touched),
-`done-when` (observable outcome), `verify` (command).
+Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`,
+`files`, `done-when`, and `verify`. Every state transition also updates PROGRESS.md.
 
 ---
 
@@ -529,3 +531,472 @@ Each task has: `status`, `depends`, `design` (doc section), `files` (touched),
 - done-when: the Python contract suite exits without unclosed-SQLite `ResourceWarning` output.
 - verify: PYTHONWARNINGS=error::ResourceWarning python3 -m unittest discover -s tests -p 'test_*.py'
 - note (2026-09-13, done): unittest fixtures now register per-test cleanup, migration tests close every tracked in-memory database, SQLite context blocks close rather than only commit, and the backup helper closes both endpoints. The warnings-as-errors gate passed all 61 Python tests with no `ResourceWarning` output.
+
+## P10 · Correctness and operational safety
+
+### P10-T01 · Close and center bounded incident projections
+- status: todo
+- priority: critical
+- lane: incident
+- parallel: yes
+- depends: P9-T01
+- design: docs/ROADMAP.md#p10-correctness-and-operational-safety
+- files: src/storage.rs, tests/recording_integration.py, docs/design/causal-observability.md
+- done-when: earliest-known-break and every other returned reference resolve inside the node set; projection selects a causal neighborhood around the break and reports total/returned/omitted counts plus expansion cursors.
+- verify: cargo test --locked storage && python3 tests/recording_integration.py
+
+### P10-T02 · Enforce one process per database
+- status: todo
+- priority: critical
+- lane: runtime
+- parallel: yes
+- depends: P9-T02
+- design: docs/ROADMAP.md#p10-correctness-and-operational-safety
+- files: src/process_lock.rs, src/main.rs, src/storage.rs, tests/recording_integration.py
+- done-when: a second live process cannot open the same DB; stale ownership is recovered safely and never resets another process's jobs or receipts.
+- verify: cargo test --locked process_lock && python3 tests/recording_integration.py
+
+### P10-T03 · Expose readiness and deployed identity
+- status: todo
+- priority: critical
+- lane: runtime
+- parallel: no
+- depends: P10-T02
+- design: docs/ROADMAP.md#p10-correctness-and-operational-safety
+- files: build.rs, src/main.rs, static/app.js, scripts/deploy.sh
+- done-when: health/readiness reports commit, binary hash, schema version, queue/worker state and DB readiness; UI and deploy smoke detect a stale or unready artifact.
+- verify: cargo test --locked health && bash scripts/deploy.sh
+
+### P10-T04 · Automate encrypted backup and restore drills
+- status: todo
+- priority: critical
+- lane: backup
+- parallel: yes
+- depends: P9-T02
+- design: docs/ROADMAP.md#p10-correctness-and-operational-safety
+- files: scripts/backup.py, scripts/restore_test.py, docs/ARCHITECTURE.md
+- done-when: rotating encrypted backups restore on a clean temporary target; missing key, corruption, quota exhaustion and interrupted writes fail explicitly without touching the source.
+- verify: python3 -m unittest discover -s tests -p 'test_*backup*.py'
+
+### P10-T05 · Graceful shutdown and automatic deployment rollback
+- status: todo
+- priority: high
+- lane: release
+- parallel: yes
+- depends: P10-T03
+- design: docs/ROADMAP.md#p10-correctness-and-operational-safety
+- files: src/main.rs, src/recording.rs, scripts/deploy.sh, tests/recording_integration.py
+- done-when: shutdown drains safe commits and process groups without replay; failed readiness/smoke restores the previous executable and proves it is serving.
+- verify: scripts/verify_e2e.sh && bash scripts/deploy.sh
+
+### P10-T06 · Add crash, disk and SQLite fault injection
+- status: todo
+- priority: high
+- lane: reliability-tests
+- parallel: yes
+- depends: P10-T02
+- design: docs/ROADMAP.md#p10-correctness-and-operational-safety
+- files: tests/fault_injection.py, tests/recording_integration.py, docs/ARCHITECTURE.md
+- done-when: deterministic tests cover crash boundaries, disk-full/read-only/I/O failure, WAL/integrity failure, ambiguous admission reconciliation, queue backpressure and background-process state without duplicate side effects.
+- verify: python3 tests/fault_injection.py && scripts/verify_e2e.sh
+
+## P11 · Runtime and storage performance
+
+### P11-T01 · Wake streams from committed events
+- status: todo
+- priority: high
+- lane: streams
+- parallel: yes
+- depends: P10-T03
+- design: docs/ROADMAP.md#p11-runtime-and-storage-performance
+- files: src/main.rs, src/storage.rs, src/recording.rs, tests/recording_integration.py
+- done-when: generation/activity streams use commit notifications and shared bounded fan-out while durable cursor replay remains authoritative after reconnect or missed notification.
+- verify: cargo test --locked streaming && python3 tests/recording_integration.py
+
+### P11-T02 · Separate serialized writes from bounded reads
+- status: todo
+- priority: high
+- lane: database
+- parallel: no
+- depends: P10-T02
+- design: docs/ROADMAP.md#p11-runtime-and-storage-performance
+- files: src/storage.rs, src/recording.rs, docs/ARCHITECTURE.md
+- done-when: one write owner preserves transactions while bounded read connections prevent long projections from blocking unrelated reads; no DB guard crosses provider awaits.
+- verify: cargo test --locked storage && scripts/verify_e2e.sh
+
+### P11-T03 · Audit query plans and storage scale
+- status: todo
+- priority: high
+- lane: performance
+- parallel: yes
+- depends: P11-T02
+- design: docs/ROADMAP.md#p11-runtime-and-storage-performance
+- files: migrations/*, benches/*, scripts/benchmark.py, docs/ARCHITECTURE.md
+- done-when: indexed plans and repeatable budgets exist for 10K sessions, 1M events, FTS recall and large incident graphs; regressions fail a dedicated benchmark gate.
+- verify: cargo test --locked storage && python3 scripts/benchmark.py --check
+
+### P11-T04 · Add retention, WAL and compaction maintenance
+- status: todo
+- priority: high
+- lane: database
+- parallel: no
+- depends: P11-T03
+- design: docs/ROADMAP.md#p11-runtime-and-storage-performance
+- files: migrations/*, src/storage.rs, scripts/maintenance.py
+- done-when: configured retention, generation-chunk compaction, WAL checkpoint monitoring, optimize/analyze and incremental vacuum preserve receipts, provenance and user deletion semantics.
+- verify: python3 tests/test_migrations.py && cargo test --locked retention
+
+### P11-T05 · Optimize frontend delivery and idle work
+- status: todo
+- priority: medium
+- lane: frontend-performance
+- parallel: yes
+- depends: P11-T01
+- design: docs/ROADMAP.md#p11-runtime-and-storage-performance
+- files: static/*, src/main.rs, tests/ui_smoke.cjs
+- done-when: redundant timers stop, hidden tabs pause nonessential work, long views are bounded/virtualized, assets are compressed/fingerprinted, and optional panels load without enlarging the initial path.
+- verify: node --check static/app.js && scripts/verify_browser.sh
+
+## P12 · Maintainability, API, CI, and releases
+
+### P12-T01 · Decompose HTTP and agent orchestration modules
+- status: todo
+- priority: high
+- lane: architecture
+- parallel: no
+- depends: P10-T03
+- design: docs/ROADMAP.md#p12-maintainability-api-ci-and-release-engineering
+- files: src/main.rs, src/api/*, src/agent_loop.rs, src/agent/*
+- done-when: routes/middleware/SSE and orchestration/budgets/permissions/tools/delegation/verification are cohesive modules with unchanged public behavior and smaller reviewable units.
+- verify: bash scripts/verify_release.sh
+
+### P12-T02 · Decompose storage, browser and LSP internals
+- status: todo
+- priority: high
+- lane: architecture-tools
+- parallel: yes
+- depends: P12-T01
+- design: docs/ROADMAP.md#p12-maintainability-api-ci-and-release-engineering
+- files: src/storage.rs, src/storage/*, src/tools/browser_tool.rs, src/tools/browser/*, src/tools/lsp_tool.rs, src/tools/lsp/*
+- done-when: repository boundaries and protocol/session/validation/apply modules replace the three oversized files without weakening caps, rollback or recording.
+- verify: bash scripts/verify_release.sh
+
+### P12-T03 · Introduce typed API and database contracts
+- status: todo
+- priority: high
+- lane: api-contracts
+- parallel: no
+- depends: P12-T01
+- design: docs/ROADMAP.md#p12-maintainability-api-ci-and-release-engineering
+- files: src/api/*, src/storage/*, static/api.js, docs/api.yaml
+- done-when: typed DTOs/enums replace external `Value` indexing, errors have stable code/status/retryability, OpenAPI is checked, and the frontend client is generated or schema-validated.
+- verify: cargo test --locked api && python3 tests/test_api_schema.py
+
+### P12-T04 · Centralize bounds and remove unsafe debt
+- status: todo
+- priority: high
+- lane: correctness-cleanup
+- parallel: yes
+- depends: P9-T02
+- design: docs/ROADMAP.md#p12-maintainability-api-ci-and-release-engineering
+- files: src/*, src/tools/*
+- done-when: shared limits replace magic values; risky numeric casts are checked; nested patch-option semantics are explicit; production panics are audited; dead code is connected or removed; no new warning class is introduced.
+- verify: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+### P12-T05 · Strengthen CI quality and supply-chain gates
+- status: todo
+- priority: high
+- lane: ci
+- parallel: yes
+- depends: P9-T02
+- design: docs/ROADMAP.md#p12-maintainability-api-ci-and-release-engineering
+- files: .github/workflows/*, scripts/verify_release.sh, Cargo.toml, package.json
+- done-when: fmt, warning budget, ResourceWarning, Rust/Python/shell/JS lint, dependency vulnerability/license policy, pinned actions and fallback-tool tests run reproducibly.
+- verify: bash scripts/verify_release.sh
+
+### P12-T06 · Add coverage, property, fuzz and release evidence
+- status: todo
+- priority: medium
+- lane: release-quality
+- parallel: yes
+- depends: P12-T05
+- design: docs/ROADMAP.md#p12-maintainability-api-ci-and-release-engineering
+- files: .github/workflows/*, fuzz/*, tests/*, scripts/release.sh
+- done-when: redaction/SSE/diff/path/graph/context properties, import/protocol fuzzing, coverage, cross-target checks, performance budgets, SBOM/checksums/signatures, public smoke and rollback tests are automated.
+- verify: bash scripts/verify_release.sh && scripts/verify_e2e.sh
+
+### P12-T07 · Keep documentation and deployment claims truthful
+- status: todo
+- priority: high
+- lane: docs
+- parallel: yes
+- depends: P9-T02
+- design: docs/ROADMAP.md#p12-maintainability-api-ci-and-release-engineering
+- files: README.md, AGENTS.md, docs/*, scripts/check_docs.py
+- done-when: routes, phases, test counts, deployment identity and limitations cannot drift silently; volatile counts are derived or removed.
+- verify: python3 scripts/check_docs.py && git diff --check
+
+## P13 · Security, privacy, and auditability
+
+### P13-T01 · Harden request authentication and abuse boundaries
+- status: todo
+- priority: critical
+- lane: auth
+- parallel: yes
+- depends: P10-T03
+- design: docs/ROADMAP.md#p13-security-privacy-and-auditability
+- files: src/main.rs, static/app.js, docs/ARCHITECTURE.md
+- done-when: per-route body/rate limits, delayed auth failures, token rotation, short-lived browser sessions, proxy identity options and HTTPS HSTS guidance are tested without putting credentials in URLs or storage.
+- verify: cargo test --locked auth && python3 tests/integration_smoke.py
+
+### P13-T02 · Add encrypted archive, backup keys and deletion policy
+- status: todo
+- priority: high
+- lane: privacy
+- parallel: no
+- depends: P10-T04
+- design: docs/ROADMAP.md#p13-security-privacy-and-auditability
+- files: migrations/*, src/archive/*, scripts/backup.py, docs/ARCHITECTURE.md
+- done-when: opt-in exact originals and backups use reviewed versioned AEAD with external key storage/rotation; forget, delete-source, purge-index and archive deletion remain distinct and auditable.
+- verify: python3 tests/test_migrations.py && cargo test --locked archive
+
+### P13-T03 · Strengthen browser, command and path policies
+- status: todo
+- priority: high
+- lane: tool-security
+- parallel: yes
+- depends: P10-T06
+- design: docs/ROADMAP.md#p13-security-privacy-and-auditability
+- files: src/tools/*, tools/schemas/*, tests/recording_integration.py
+- done-when: browser destinations/transfers, command classes/protected paths/network use, and final write-time path ownership are policy-gated with TOCTOU and symlink regressions.
+- verify: cargo test --locked tools && python3 tests/recording_integration.py
+
+### P13-T04 · Export verifiable sanitized audit bundles
+- status: todo
+- priority: medium
+- lane: audit
+- parallel: yes
+- depends: P13-T02, P16-T03
+- design: docs/ROADMAP.md#p13-security-privacy-and-auditability
+- files: src/export/*, src/main.rs, docs/ARCHITECTURE.md
+- done-when: a selected run exports only reviewed sanitized evidence with checksums and optional hash-chain integrity, without unrelated workspace data.
+- verify: cargo test --locked audit_export && scripts/verify_e2e.sh
+
+## P14 · Workflow, tools, providers, and UX
+
+### P14-T01 · Add durable cancellation and safe-boundary retry
+- status: todo
+- priority: high
+- lane: workflow
+- parallel: yes
+- depends: P10-T05
+- design: docs/ROADMAP.md#p14-workflow-tools-providers-and-ux
+- files: migrations/*, src/recording.rs, src/agent_loop.rs, src/main.rs, static/app.js
+- done-when: users can cancel generation, permission waits, sub-agents and process groups, then retry only from a recorded non-mutating boundary without replaying side effects.
+- verify: scripts/verify_e2e.sh
+
+### P14-T02 · Add session and approval workflows
+- status: todo
+- priority: medium
+- lane: product-workflow
+- parallel: yes
+- depends: P14-T01
+- design: docs/ROADMAP.md#p14-workflow-tools-providers-and-ux
+- files: migrations/*, src/main.rs, static/*
+- done-when: sessions support naming/search/archive/fork; permissions support bundles, countdowns and safe notifications; stop/regenerate states are unambiguous.
+- verify: scripts/verify_browser.sh && scripts/verify_e2e.sh
+
+### P14-T03 · Add process, Git and checkpoint controls
+- status: todo
+- priority: medium
+- lane: developer-workflow
+- parallel: yes
+- depends: P14-T01
+- design: docs/ROADMAP.md#p14-workflow-tools-providers-and-ux
+- files: src/tools/*, tools/schemas/*, static/*
+- done-when: active jobs are inspectable/cancellable; changes show Git state; checkpoint/restore and focused commit proposals are recorded and require approval before mutation/push.
+- verify: cargo test --locked tools && scripts/verify_e2e.sh
+
+### P14-T04 · Improve provider scheduling and cost controls
+- status: todo
+- priority: high
+- lane: providers
+- parallel: yes
+- depends: P11-T01
+- design: docs/ROADMAP.md#p14-workflow-tools-providers-and-ux
+- files: src/memory_agents.rs, src/recording.rs, src/storage.rs, static/*
+- done-when: capability detection, role fallback, circuit breakers, Retry-After/jitter, foreground/background fairness and per-turn/day/role cost limits fail closed and expose unavailable usage honestly.
+- verify: cargo test --locked provider && python3 tests/recording_integration.py
+
+### P14-T05 · Expand language/browser tools and modular accessible UI
+- status: todo
+- priority: medium
+- lane: experience
+- parallel: yes
+- depends: P12-T02, P11-T05
+- design: docs/ROADMAP.md#p14-workflow-tools-providers-and-ux
+- files: src/tools/*, static/*, tests/*ui*.cjs
+- done-when: configured languages gain AST/LSP discovery and bounded session reuse; browser evidence supports safe screenshots/transfers; UI has modules, keyboard/mobile/a11y, reconnect state, richer diffs, context/cost/project dashboards and optional voice input.
+- verify: scripts/verify_browser.sh && scripts/verify_e2e.sh
+
+## P15 · Memory and history
+
+### P15-T01 · Add optional semantic recall and evaluation
+- status: todo
+- priority: high
+- lane: memory-retrieval
+- parallel: yes
+- depends: P11-T03
+- design: docs/ROADMAP.md#p15-memory-and-history
+- files: src/embeddings.rs, src/storage.rs, tests/recall_eval/*
+- done-when: optional local semantic embeddings coexist with deterministic hashing; labeled fixtures measure precision, stale use, latency and context cost before enabling a model.
+- verify: cargo test --locked recall && python3 tests/recall_eval/run.py --check
+
+### P15-T02 · Persist retrieval explanations and rehearsal
+- status: todo
+- priority: high
+- lane: memory-observability
+- parallel: yes
+- depends: P15-T01
+- design: docs/ROADMAP.md#p15-memory-and-history
+- files: migrations/*, src/context.rs, src/storage.rs, static/*
+- done-when: receipts retain included/excluded candidates, scores, budget reasons and revisions; approval can preview deterministic retrieval changes without causal overclaiming.
+- verify: cargo test --locked context && scripts/verify_browser.sh
+
+### P15-T03 · Add memory governance and timelines
+- status: todo
+- priority: medium
+- lane: memory-governance
+- parallel: no
+- depends: P15-T02
+- design: docs/ROADMAP.md#p15-memory-and-history
+- files: migrations/*, src/storage.rs, static/*
+- done-when: branches, considered/chosen/superseded decisions, temporary expiry, conflict groups, deduplication, usefulness feedback and pinned profile entries preserve review/revision history.
+- verify: python3 tests/test_migrations.py && cargo test --locked memory && scripts/verify_browser.sh
+
+### P15-T04 · Search and port sanitized history
+- status: todo
+- priority: medium
+- lane: history
+- parallel: yes
+- depends: P13-T02, P15-T02
+- design: docs/ROADMAP.md#p15-memory-and-history
+- files: migrations/*, src/storage.rs, src/export/*, static/*
+- done-when: scoped FTS searches sanitized conversations/artifacts with citations; forget/source-delete differ; selected memories and continuation packets import/export with stable IDs, revisions and audience review.
+- verify: python3 tests/test_migrations.py && scripts/verify_e2e.sh
+
+## P16 · Causal observability
+
+### P16-T01 · Add incident search, timeline and expansion
+- status: todo
+- priority: medium
+- lane: incident-product
+- parallel: yes
+- depends: P10-T01
+- design: docs/ROADMAP.md#p16-causal-observability
+- files: src/storage.rs, src/main.rs, static/*
+- done-when: reviewers expand bounded neighborhoods and search/filter by path/tool/relation/status/row while switching causal and chronological views.
+- verify: cargo test --locked storage && scripts/verify_browser.sh
+
+### P16-T02 · Compare runs and export causal graphs
+- status: todo
+- priority: medium
+- lane: incident-analysis
+- parallel: yes
+- depends: P16-T01
+- design: docs/ROADMAP.md#p16-causal-observability
+- files: src/storage.rs, src/main.rs, static/*
+- done-when: two runs align by semantic step identity, show first divergence, and export bounded sanitized JSON/Graphviz with explicit dependency/contradiction/temporal/unknown labels.
+- verify: cargo test --locked incident && scripts/verify_e2e.sh
+
+### P16-T03 · Measure causal coverage and deployment incidents
+- status: todo
+- priority: medium
+- lane: observability
+- parallel: yes
+- depends: P10-T03, P16-T01
+- design: docs/ROADMAP.md#p16-causal-observability
+- files: migrations/*, src/storage.rs, src/main.rs, scripts/deploy.sh, static/*
+- done-when: missing-edge, earliest-break, graph-size and reviewer-time metrics plus anomaly flags and build/deploy/restart/smoke provenance are durable, bounded and evidence-labeled.
+- verify: python3 tests/test_migrations.py && scripts/verify_e2e.sh
+
+## P17 · Memory Wind Tunnel
+
+### P17-T01 · Define and validate immutable run capsules
+- status: todo
+- priority: research
+- lane: experiment-contract
+- parallel: yes
+- depends: P12-T03, P15-T02
+- design: docs/design/memory-wind-tunnel.md#m0-experiment-contract
+- files: docs/design/memory-wind-tunnel.md, src/experiments/*, migrations/*
+- done-when: content-addressed capsules declare project/model/tool/memory/context state, assertions, unavailable evidence and strict/live/hybrid semantics; validation rejects incomplete nondeterministic boundaries.
+- verify: python3 tests/test_migrations.py && cargo test --locked capsule
+
+### P17-T02 · Freeze and fork isolated treatments
+- status: todo
+- priority: research
+- lane: experiment-isolation
+- parallel: no
+- depends: P17-T01
+- design: docs/design/memory-wind-tunnel.md#m1-freeze-and-fork
+- files: src/experiments/*, scripts/capsule.py
+- done-when: clean project and approved-memory snapshots fork immutable children without changing live DB/worktree; remove-one and no-memory treatments are supported.
+- verify: cargo test --locked treatment && scripts/verify_e2e.sh
+
+### P17-T03 · Implement strict replay and first-divergence reports
+- status: todo
+- priority: research
+- lane: experiment-replay
+- parallel: yes
+- depends: P17-T02, P16-T02
+- design: docs/design/memory-wind-tunnel.md#m2-strict-memory-wind-tunnel
+- files: src/experiments/*, static/*, tests/capsules/*
+- done-when: strict replay makes zero live provider/tool calls, aligns semantic steps, evaluates deterministic acceptance, and reports the first trace/outcome divergence.
+- verify: cargo test --locked replay && scripts/verify_e2e.sh
+
+### P17-T04 · Add live treatments, budgets and statistics
+- status: todo
+- priority: research
+- lane: experiment-live
+- parallel: yes
+- depends: P17-T03, P14-T04
+- design: docs/design/memory-wind-tunnel.md#m4-live-variance-and-research-reports
+- files: src/experiments/*, scripts/experiment.py, static/*
+- done-when: stale/conflict/pollution/poison treatments run repeatedly under hard spend/token/action limits and report paired outcomes and uncertainty rather than single-run causality.
+- verify: cargo test --locked experiment && python3 scripts/experiment.py --fixture --check
+
+### P17-T05 · Export sanitized research reports and optional remote runs
+- status: todo
+- priority: research
+- lane: experiment-reporting
+- parallel: yes
+- depends: P17-T04, P13-T04
+- design: docs/design/memory-wind-tunnel.md#m5-optional-upcloud-isolation
+- files: src/experiments/*, scripts/remote_runner.py, static/*
+- done-when: reports link sanitized evidence and limitations; remote runs require explicit opt-in, pinned image/size/region, TTL, spend cap, kill switch and confirmed cleanup.
+- verify: python3 scripts/remote_runner.py --fixture --check && scripts/verify_e2e.sh
+
+## P18 · Optional platform evolution
+
+### P18-T01 · Design leased multi-worker execution
+- status: todo
+- priority: low
+- lane: scale
+- parallel: no
+- depends: P10-T02, P11-T02, P17-T03
+- design: docs/ROADMAP.md#p18-optional-platform-evolution
+- files: docs/ARCHITECTURE.md, migrations/*, src/recording.rs
+- done-when: an approved design defines leases, fencing, recovery and no-duplicate-side-effect semantics before any second worker or instance is enabled.
+- verify: cargo test --locked recovery && python3 tests/test_migrations.py
+
+### P18-T02 · Add portable providers, plugins and benchmark packs
+- status: todo
+- priority: low
+- lane: ecosystem
+- parallel: yes
+- depends: P12-T03, P13-T04, P17-T03
+- design: docs/ROADMAP.md#p18-optional-platform-evolution
+- files: docs/*, src/plugins/*, benchmarks/*
+- done-when: signed bounded extension contracts, provider adapters, portable continuation packets and checked-in regression capsules work without weakening tool permissions or audience review.
+- verify: bash scripts/verify_release.sh

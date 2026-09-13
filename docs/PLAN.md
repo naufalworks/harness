@@ -1,8 +1,7 @@
 # PLAN — Harness as a durable coding agent
 
-Status: living document. Supersedes the ordering in `docs/ROADMAP.md` (kept for the
-inherited memory/archive backlog). Tasks live in `docs/TASKS.md`; history in
-`docs/PROGRESS.md`.
+Status: living document. `docs/ROADMAP.md` is the active continuation sequence,
+`docs/TASKS.md` is the executable backlog, and `docs/PROGRESS.md` is the journal.
 
 ## 1. Why
 
@@ -132,8 +131,33 @@ Current traces show sequence and outcome, but not the cross-component dependency
 
 Acceptance: a reviewer can start from a denial, stale-anchor failure, or crash recovery and navigate to the earliest known causal break, all affected durable rows, and the recovery action. Missing provenance is reported as unknown, not guessed.
 
+### P9 — Review hardening
+
+Closed bounded incident-graph edge/adjacency integrity and Python SQLite lifecycle
+warnings. P1–P9 form the verified baseline for continuation work.
+
+### P10–P13 — Safety, performance, maintainability, security
+
+Close remaining incident projection references; enforce one process per database;
+add health/build identity, restore drills and rollback; replace stream polling with
+commit notifications; improve SQLite read/query/retention behavior; decompose large
+modules; introduce typed contracts; strengthen CI/release gates; and harden auth,
+privacy, browser, command and path boundaries.
+
+### P14–P16 — Daily workflow, memory, and observability
+
+Add cancellation/retry, session and permission workflows, provider/tool improvements,
+modular accessible UI, inspectable retrieval and memory governance, and measurable
+causal incident comparison/search/export without hidden-reasoning capture.
+
+### P17–P18 — Memory Wind Tunnel and optional platform evolution
+
+Build immutable run capsules, strict/live/hybrid memory treatments and evidence-bound
+comparison reports. Multi-worker, plugin and remote execution remain optional and may
+start only after the earlier safety contracts are complete.
+
 ## 6. Non-goals (for now)
-Multi-user, remote bind, encrypted exact-original archive (see ROADMAP P1), OpenAI-
+Multi-user, remote bind, encrypted exact-original archive (see ROADMAP P13), OpenAI-
 compatible proxy API, autonomous background coding without a human in the loop.
 
 ## 7. Risks and mitigations
@@ -145,4 +169,4 @@ compatible proxy API, autonomous background coding without a human in the loop.
 | Path escape / destructive bash | canonicalized root check; deny-list of destructive patterns in `ask` mode; permission gate default. |
 | Provider incompatibility with tool calling | adapter validates `tool_calls` shape; text-only fallback keeps today's behavior when `tools` unsupported. |
 | Context bloat, cost | budgets in the loop from P1; compaction in P3. |
-| Scope creep | TASKS.md is the only backlog; new ideas go to "Ideas parking lot" at the bottom of TASKS.md. |
+| Scope creep | ROADMAP defines accepted coverage; TASKS is the executable backlog. New ideas must be mapped to both or explicitly dropped with a reason. |
