@@ -1,5 +1,14 @@
 # PROGRESS — journal
 
+## 2026-09-13 · Notion AI via Local · P13-T01 started
+
+- Task: P13-T01; priority: critical; lane: auth.
+- Worktree/parallel slot: `p13-auth` at `/root/development/harness-p13-auth`, based on deployed `main` commit `c576b19`.
+- Status transition: `todo` → `doing`.
+- Scope: add route-specific body/request-rate limits, uniform delayed authentication failure, restart-safe current/previous token rotation, short-lived in-memory browser sessions, explicit trusted-proxy identity configuration, and HTTPS/HSTS deployment guidance without credentials in URLs or browser storage.
+- Verification target: `cargo test --locked auth && python3 tests/integration_smoke.py` plus frontend syntax and focused browser checks.
+- Blockers/open questions: none; loopback-first remains authoritative, and proxy identity will be opt-in with explicit overwrite/strip requirements.
+
 ## 2026-09-13 · Notion AI via Local · P10-T03 completed
 
 - Task: P10-T03; priority: critical; lane: runtime.
