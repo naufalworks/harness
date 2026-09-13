@@ -585,13 +585,14 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 ### P10-T05 · Graceful shutdown and automatic deployment rollback
 - status: todo
 - priority: high
+- blocker: release-blocker
 - lane: release
 - parallel: yes
-- depends: P10-T03
+- depends: P10-T03, P12-T05a
 - design: docs/ROADMAP.md#p10-correctness-and-operational-safety
-- files: src/main.rs, src/recording.rs, scripts/deploy.sh, tests/recording_integration.py
-- done-when: shutdown drains safe commits and process groups without replay; failed readiness/smoke restores the previous executable and proves it is serving.
-- verify: scripts/verify_e2e.sh && bash scripts/deploy.sh
+- files: src/main.rs, src/recording.rs, scripts/deploy.sh, tests/deploy_rollback.py, tests/recording_integration.py, docs/ARCHITECTURE.md
+- done-when: shutdown drains safe commits and process groups without replay; a disposable deployment fixture proves backward-compatible binary rollback after a migration, and separately proves fail-closed recovery when old binaries cannot read the upgraded schema. Recovery documents backup age and writes accepted after backup; production promotion remains an explicit owner action.
+- verify: scripts/verify_e2e.sh && python3 tests/deploy_rollback.py
 
 ### P10-T06 · Add crash, disk and SQLite fault injection
 - status: todo
@@ -707,12 +708,24 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - done-when: shared limits replace magic values; risky numeric casts are checked; nested patch-option semantics are explicit; production panics are audited; dead code is connected or removed; no new warning class is introduced.
 - verify: cargo clippy --locked --all-targets --all-features -- -D warnings
 
-### P12-T05 · Strengthen CI quality and supply-chain gates
+### P12-T05a · Make release verification truthful and non-deploying
+- status: done
+- priority: critical
+- blocker: release-blocker
+- lane: release-contract
+- parallel: yes
+- depends: P9-T02
+- design: docs/ROADMAP.md#p12-maintainability-api-ci-and-release-engineering
+- files: scripts/verify_local.sh, scripts/verify_release.sh, scripts/deploy.sh, README.md, docs/PLAN.md, docs/ROADMAP.md, docs/TASKS.md, docs/PROGRESS.md, docs/design/memory-wind-tunnel.md
+- done-when: the permissive developer gate labels every omitted suite skipped; the strict release gate requires browser dependencies, runs mocked browser and real browser-to-service E2E lanes, and never restarts production; deployment rejects dirty source by default.
+- verify: bash -n scripts/verify_local.sh scripts/verify_release.sh scripts/deploy.sh && bash scripts/verify_release.sh
+
+### P12-T05b · Strengthen CI quality and supply-chain gates
 - status: todo
 - priority: high
 - lane: ci
 - parallel: yes
-- depends: P9-T02
+- depends: P12-T05a
 - design: docs/ROADMAP.md#p12-maintainability-api-ci-and-release-engineering
 - files: .github/workflows/*, scripts/verify_release.sh, Cargo.toml, package.json
 - done-when: fmt, warning budget, ResourceWarning, Rust/Python/shell/JS lint, dependency vulnerability/license policy, pinned actions and fallback-tool tests run reproducibly.
@@ -723,18 +736,30 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - priority: medium
 - lane: release-quality
 - parallel: yes
-- depends: P12-T05
+- depends: P12-T05b
 - design: docs/ROADMAP.md#p12-maintainability-api-ci-and-release-engineering
 - files: .github/workflows/*, fuzz/*, tests/*, scripts/release.sh
 - done-when: redaction/SSE/diff/path/graph/context properties, import/protocol fuzzing, coverage, cross-target checks, performance budgets, SBOM/checksums/signatures, public smoke and rollback tests are automated.
 - verify: bash scripts/verify_release.sh && scripts/verify_e2e.sh
 
-### P12-T07 · Keep documentation and deployment claims truthful
+### P12-T07a · Reconcile the documented baseline
 - status: todo
 - priority: high
-- lane: docs
+- blocker: release-blocker
+- lane: docs-baseline
 - parallel: yes
-- depends: P9-T02
+- depends: P12-T05a
+- design: docs/ROADMAP.md#p12-maintainability-api-ci-and-release-engineering
+- files: README.md, AGENTS.md, docs/PLAN.md, docs/TASKS.md, docs/PROGRESS.md
+- done-when: historical phase prose is labeled historical, completed work is not described as pending, current runtime/tool behavior is consistent across entry documents, and old evidence is not presented as a fresh run.
+- verify: git diff --check
+
+### P12-T07b · Prevent documentation and deployment claim drift
+- status: todo
+- priority: high
+- lane: docs-automation
+- parallel: yes
+- depends: P12-T07a
 - design: docs/ROADMAP.md#p12-maintainability-api-ci-and-release-engineering
 - files: README.md, AGENTS.md, docs/*, scripts/check_docs.py
 - done-when: routes, phases, test counts, deployment identity and limitations cannot drift silently; volatile counts are derived or removed.
@@ -821,15 +846,27 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - done-when: active jobs are inspectable/cancellable; changes show Git state; checkpoint/restore and focused commit proposals are recorded and require approval before mutation/push.
 - verify: cargo test --locked tools && scripts/verify_e2e.sh
 
-### P14-T04 · Improve provider scheduling and cost controls
+### P14-T04a · Enforce minimal fail-closed spend limits
+- status: todo
+- priority: high
+- blocker: release-blocker
+- lane: provider-cost-safety
+- parallel: yes
+- depends: P10-T03
+- design: docs/ROADMAP.md#p14-workflow-tools-providers-and-ux
+- files: src/memory_agents.rs, src/recording.rs, src/storage.rs, static/*
+- done-when: configurable per-turn and per-day request/token/cost ceilings reject new provider work before dispatch, record why usage is unavailable, and never silently treat unknown cost as zero.
+- verify: cargo test --locked provider && python3 tests/recording_integration.py
+
+### P14-T04b · Improve provider scheduling and resilience
 - status: todo
 - priority: high
 - lane: providers
 - parallel: yes
-- depends: P11-T01
+- depends: P11-T01, P14-T04a
 - design: docs/ROADMAP.md#p14-workflow-tools-providers-and-ux
 - files: src/memory_agents.rs, src/recording.rs, src/storage.rs, static/*
-- done-when: capability detection, role fallback, circuit breakers, Retry-After/jitter, foreground/background fairness and per-turn/day/role cost limits fail closed and expose unavailable usage honestly.
+- done-when: capability detection, role fallback, circuit breakers, Retry-After/jitter, foreground/background fairness, and role-specific budgets preserve the fail-closed limits.
 - verify: cargo test --locked provider && python3 tests/recording_integration.py
 
 ### P14-T05 · Expand language/browser tools and modular accessible UI
@@ -956,7 +993,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - depends: P17-T02, P16-T02
 - design: docs/design/memory-wind-tunnel.md#m2-strict-memory-wind-tunnel
 - files: src/experiments/*, static/*, tests/capsules/*
-- done-when: strict replay makes zero live provider/tool calls, aligns semantic steps, evaluates deterministic acceptance, and reports the first trace/outcome divergence.
+- done-when: strict replay makes zero live provider/tool calls and validates deterministic pipeline integrity. Recorded responses are matched to the actual request boundary; changed context or request stops at the first divergence and marks downstream behavioral evidence unavailable instead of reusing the original response as a counterfactual outcome.
 - verify: cargo test --locked replay && scripts/verify_e2e.sh
 
 ### P17-T04 · Add live treatments, budgets and statistics
@@ -964,7 +1001,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - priority: research
 - lane: experiment-live
 - parallel: yes
-- depends: P17-T03, P14-T04
+- depends: P17-T03, P14-T04b
 - design: docs/design/memory-wind-tunnel.md#m4-live-variance-and-research-reports
 - files: src/experiments/*, scripts/experiment.py, static/*
 - done-when: stale/conflict/pollution/poison treatments run repeatedly under hard spend/token/action limits and report paired outcomes and uncertainty rather than single-run causality.

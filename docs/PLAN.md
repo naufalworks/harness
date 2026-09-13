@@ -68,8 +68,7 @@ ends the turn with a visible "budget exhausted" answer, never a silent stop.
 ## 5. Phases
 
 ### P0 — Gate: make the current checkpoint real
-Compile and run the existing suites on the owner's machine. Nothing below is built on
-uncompiled code. **Owner action required** (no cargo in the AI sandbox).
+Historical gate, completed: the baseline compiled and its required suites ran before later phases proceeded. Current release evidence comes from the strict non-deploying release gate, not this historical statement.
 
 ### P1 — Tool loop with receipts per step
 Provider adapter accepts tool definitions and tool calls; `turn_steps`,
@@ -119,12 +118,11 @@ landed on `main`. Landed since then: per-event request attribution with proven
 multi-turn cursor/SSE replay (`P7-T02c`), truthful migration-gate reporting (`P7-T04`),
 and a chat UI that renders the durable feed with explicit complete, failed and
 interrupted states (`P7-T03`). The phase's umbrella tasks (`P7-T01`, `P7-T02`) are
-closed on that evidence. Two things remain. Publication before DONE stays deferred as
+closed on that evidence. Subsequent work completed both remaining items. Publication before DONE landed as
 `P7-T05`, now designed in `docs/design/incremental-publication.md`: the publication unit
 is a completed line, because `safety::redact` erases a matched line whole and a released
 prefix could never be retracted, and whole-answer buffering stays the active boundary
-until the Rust side lands against `tests/test_incremental_publication.py`. Running the
-browser suites still needs a host browser runtime, tracked as `P7-T06`.
+and is covered against `tests/test_incremental_publication.py`. The browser runtime and both mocked-browser suites landed as `P7-T06`; the strict release gate now additionally requires the real browser-to-service E2E lane.
 
 ### P8 — Causal observability
 Current traces show sequence and outcome, but not the cross-component dependency chain that explains why a tool call happened, which evidence supported it, what state it changed, or where a failure first became possible. P8 adds bounded, typed provenance edges across memory/evidence, model claims, tool calls, permissions, observations, mutations, and recovery. It deliberately excludes hidden chain-of-thought and starts with one coding-turn incident graph before any broad observability platform work.
@@ -157,7 +155,7 @@ comparison reports. Multi-worker, plugin and remote execution remain optional an
 start only after the earlier safety contracts are complete.
 
 ## 6. Non-goals (for now)
-Multi-user, remote bind, encrypted exact-original archive (see ROADMAP P13), OpenAI-
+Multi-user, remote bind, enabling exact-original archive by default, OpenAI-
 compatible proxy API, autonomous background coding without a human in the loop.
 
 ## 7. Risks and mitigations

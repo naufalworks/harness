@@ -4,7 +4,7 @@ Status: active from 2026-09-13. `docs/PLAN.md` defines principles, this file def
 
 ## Priority and parallelism
 
-Priority order is `critical` → `high` → `medium` → `low` → `research`.
+Priority order is `critical` → `high` → `medium` → `low` → `research`. Tasks marked `release-blocker` take precedence within an eligible priority tier; ties then use the earlier stable task ID. Execution waves describe product sequencing, but a later-wave release-contract or documentation correction may run early when it blocks truthful evidence.
 
 A task may run in parallel only when its `parallel: yes` metadata is present, every dependency is done, it uses a different lane from other active work, and its declared files do not overlap. Each parallel task uses its own branch/worktree. Commits are merged one at a time, rebased before merge, and the task's exact verification plus the release gate are rerun after integration. One agent still owns only one task at a time.
 
@@ -23,6 +23,10 @@ A task may run in parallel only when its `parallel: yes` metadata is present, ev
 | I | Optional scale and ecosystem work | P18 | workers, plugins, portability |
 
 Critical tasks in Wave A start first. Independent CI/docs/backup work may proceed beside runtime work. Schema-writing tasks never run in parallel with another schema-writing task.
+
+## Safe daily-use release boundary
+
+The first daily-use release is bounded to recovery, cancellation, tool boundaries, truthful verification, and a minimal fail-closed spend limit. Promotion requires: a strict non-deploying release gate with real browser-to-service evidence; a documented schema/rollback policy; crash and write-fault evidence; durable cancellation without replay; final-write path/command/browser policy; and a hard per-turn/day cost ceiling. Performance, research, ecosystem, optional voice, broad language expansion, and dashboard work do not block this boundary. Representative coding fixtures will report deterministic task acceptance, unsupported completion claims, stale-edit rejection, unauthorized mutations, restart/retry duplication, recall usefulness, latency, and cost; thresholds must be chosen from measured baseline and owner needs rather than invented in advance.
 
 ## P10 — Correctness and operational safety
 

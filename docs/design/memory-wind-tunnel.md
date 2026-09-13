@@ -106,7 +106,7 @@ The memory store is copied into an isolated child state. The source memory and l
 
 ### Phase 3: replay
 
-Strict mode reuses recorded provider and tool responses, so it answers: "Did the changed memory alter the agent's decision path under identical observations?" Live mode re-executes the model against a clean project and real provider, so it answers: "Does the effect survive model variance?" Hybrid mode replays the prefix and resumes live at a chosen decision boundary.
+Strict mode is an integrity and deterministic-pipeline fixture lane. Each recorded provider or tool response is keyed to the exact request/observation boundary that produced it. If changed memory changes context, request bytes, or tool arguments, strict replay records the first divergence and stops or marks downstream evidence unavailable; it never reuses the old response as evidence of a changed model decision. Live mode re-executes the model against a clean project and real provider to measure behavioral effects under variance. Hybrid mode replays only a request-identical prefix and resumes live at a declared decision boundary.
 
 ### Phase 4: compare and explain
 

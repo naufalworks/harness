@@ -2,7 +2,7 @@
 
 Single-user, local Rust chat service with a durable memory layer. Every accepted
 message is recorded before the model runs; memories are extracted, reviewed, and
-recalled into future conversations via local FTS5 — one LLM call per chat.
+recalled into future conversations via local FTS5. Agentic turns may make multiple bounded model calls while recorded tools execute between them.
 
 ## Run
 
@@ -69,7 +69,7 @@ behind nothing but the token.
 Two browser fixtures check the frontend against a mocked API (they do not run the
 Rust service): `tests/recording_ui.cjs` covers recording, the generation feed and
 resume behaviour; `tests/ui_smoke.cjs` covers the wider UI surface. Both need a real
-browser, so they are kept out of `scripts/verify_release.sh`'s default path.
+browser. The permissive developer gate may skip them explicitly; the strict release gate requires them.
 
 ```sh
 scripts/setup_browser_tests.sh   # once per machine: Playwright + Chromium + system libs
@@ -79,15 +79,16 @@ scripts/verify_browser.sh        # run both fixtures
 `setup_browser_tests.sh` needs `npm` (Debian/Ubuntu: `apt-get install -y --no-install-recommends npm`)
 and root for Chromium's system libraries. `verify_browser.sh` resolves the browser from
 Playwright itself, so no path is hard-coded; override with `CHROMIUM_PATH` if needed.
-`verify_release.sh` runs the browser suites automatically when `node_modules` is present
-and skips them with a notice when it is not.
+`verify_local.sh` reports the browser suites as skipped when `node_modules` is absent.
+`verify_release.sh` fails closed unless browser dependencies exist, runs both mocked-browser suites,
+and also runs the real browser-to-Rust-to-SQLite/filesystem E2E lane.
 
 
 ## Verify
 
 ```sh
-bash scripts/verify_release.sh   # cargo test/clippy/build, SQL contracts, both HTTP suites
-CHROMIUM_PATH=… node tests/ui_smoke.cjs && CHROMIUM_PATH=… node tests/recording_ui.cjs
+bash scripts/verify_local.sh     # permissive developer check; skipped suites are explicit
+bash scripts/verify_release.sh   # strict, non-deploying gate including mocked and real E2E browser lanes
 ```
 
 HTTP suites use temporary DBs and a synthetic loopback provider — no paid
@@ -103,7 +104,7 @@ bash scripts/deploy.sh   # release build -> restart harness -> prove the live pr
 The unit starts `target/release/harness`, while the gate above builds and tests the
 debug profile, so `systemctl restart` on its own can relaunch a binary older than the
 change being deployed. `deploy.sh` builds the release profile, restarts the unit,
-compares the md5 of `/proc/<pid>/exe` with the binary it just built, and smoke-tests
+compares the SHA-256 of `/proc/<pid>/exe` with the binary it just built, and smoke-tests
 that the API answers and that a non-object body is refused before reporting success.
 Override the unit name with `HARNESS_UNIT`.
 

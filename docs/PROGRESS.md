@@ -1,5 +1,25 @@
 # PROGRESS — journal
 
+## 2026-09-13 · Notion AI via Local · P12-T05a completed
+
+- Task: P12-T05a; priority: critical; blocker: release-blocker; lane: release-contract.
+- Status transition: `doing` → `done`.
+- Changes: split permissive local checks from strict release proof; made every suite emit RUN/PASS/FAIL/SKIPPED/BLOCKED; made release verification require mocked-browser and real browser-to-server E2E evidence without deployment; made deployment reject dirty source by default.
+- Plan review integration: added a safe daily-use release boundary and blocker ordering; strengthened rollback/schema compatibility acceptance; split baseline docs, cost safety, CI, and provider scheduling into focused tasks; narrowed strict replay to deterministic integrity and first-divergence evidence.
+- Verification: missing browser dependencies failed the strict gate with status 2 and an explicit BLOCKED result; shell syntax passed; the strict gate passed all 187 Rust tests, 66 Python contracts, integration/recording smoke, JavaScript syntax, both mocked-browser suites, and real browser→axum→SQLite→filesystem/provider E2E including denial and crash recovery. No service was restarted.
+- Next release blockers: P10-T05 rollback/schema policy, P10-T06 fault injection, P12-T07a baseline reconciliation, P14-T04a cost ceilings, then P13-T03 tool boundaries and P14-T01 cancellation as their dependencies clear.
+
+
+## 2026-09-13 · Notion AI via Local · P12-T05a started
+
+- Task: P12-T05a; priority: critical; blocker: release-blocker; lane: release-contract.
+- Worktree: `p12-release-contract` at `/root/development/harness-p12-release-contract`, based on deployed `main` commit `70aee88`.
+- Status transition: `todo` → `doing`.
+- Review decision: accepted the plan review's release-gate, rollback-policy, milestone-ordering, strict-replay, documentation, task-sizing, and daily-use-boundary findings. This task implements the smallest truthful release-contract slice and records narrower follow-ups.
+- Verification target: shell syntax plus the strict non-deploying release gate, including mocked-browser and real browser-to-server E2E lanes.
+- Blockers/open questions: production rollback semantics, baseline documentation cleanup, cancellation/tool policy, and minimal cost ceilings remain explicit release-blocker follow-ups.
+
+
 ## 2026-09-13 · Notion AI via Local · P13-T02 completed
 
 - Task: P13-T02; priority: high; lane: privacy.

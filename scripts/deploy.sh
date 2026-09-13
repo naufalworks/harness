@@ -16,8 +16,12 @@ unit=${HARNESS_UNIT:-harness}
 bin=$PWD/target/release/harness
 
 dirty=$(git status --porcelain 2>/dev/null | wc -l)
+if [ "$dirty" -gt 0 ] && [ "${HARNESS_ALLOW_DIRTY_DEPLOY:-0}" != 1 ]; then
+	echo "BLOCKED: working tree has $dirty uncommitted change(s); commit them or explicitly set HARNESS_ALLOW_DIRTY_DEPLOY=1" >&2
+	exit 2
+fi
 if [ "$dirty" -gt 0 ]; then
-	echo "WARNING: working tree has $dirty uncommitted change(s); deploying it anyway" >&2
+	echo "WARNING: explicitly deploying $dirty uncommitted change(s); commit identity does not attest the full source state" >&2
 fi
 
 # Refuse to "deploy" by building something the unit does not start.
