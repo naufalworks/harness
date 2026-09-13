@@ -175,6 +175,10 @@ def main() -> None:
             tool_calls(("budget-1", "read", {"path": "notes.md"})),
         ],
         "stream a turn": [text("Streamed answer")],
+        "graceful drain": [
+            tool_calls(("drain-sleep", "bash", {"command": "sleep 1; printf 'drained\\n'", "description": "finish before shutdown"})),
+            text("Graceful shutdown drained the accepted turn."),
+        ],
         "hold during tool": [
             tool_calls(("sleep-1", "bash", {"command": "echo started; sleep 30", "description": "hold for restart"})),
             text("This answer must never be reached after the crash."),
@@ -216,6 +220,7 @@ def main() -> None:
             "PATH": str(fake_bin) + os.pathsep + os.environ.get("PATH", ""),
         }
         app: subprocess.Popen[bytes] | None = None
+        server_log = tmp_path / "server.log"
 
         def call(path: str, body: dict | None = None, auth: bool = True, origin: str | None = None):
             headers = {"Content-Type": "application/json"}
@@ -262,7 +267,9 @@ def main() -> None:
             return frames
 
         def start() -> subprocess.Popen[bytes]:
-            process = subprocess.Popen([str(binary)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            log_handle = server_log.open("ab")
+            process = subprocess.Popen([str(binary)], env=env, stdout=subprocess.DEVNULL, stderr=log_handle)
+            log_handle.close()
             for _ in range(100):
                 if process.poll() is not None:
                     raise AssertionError("server exited during startup")
@@ -628,6 +635,20 @@ def main() -> None:
             assert provider.count("budget test") == 1
             assert any(event["kind"] == "budget_exhausted" for event in call("/activity?session_id=" + budget["session_id"])[1]["events"])
             configure(max_steps=40)
+
+            # SIGTERM stops admission but drains the already claimed foreground tool and terminal
+            # receipt before the process exits. Restart must observe completion, not replay it.
+            graceful = submit("graceful drain")
+            wait_db(graceful["request_id"], lambda rows: rows and rows[-1][3] == "bash" and rows[-1][2] == "running")
+            app.terminate()
+            app.wait(timeout=5)
+            assert app.returncode == 0, app.returncode
+            app = start()
+            drained = wait_receipt(graceful["request_id"], "complete")
+            assert drained["response"] == "Graceful shutdown drained the accepted turn."
+            assert provider.count("graceful drain") == 2, "restart must not replay a drained turn"
+            shutdown_log = server_log.read_text()
+            assert "graceful_shutdown_started" in shutdown_log and "graceful_shutdown_complete" in shutdown_log
 
             # Crash during a real bash tool: restart marks the running step interrupted and does
             # not replay it or ask the provider for another model call.

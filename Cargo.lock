@@ -552,6 +552,7 @@ dependencies = [
  "chrono",
  "dotenvy",
  "futures-core",
+ "libc",
  "reqwest",
  "ring",
  "rusqlite",

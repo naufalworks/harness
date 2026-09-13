@@ -624,8 +624,9 @@ fn decode_model_turn(message: Value, usage: Option<UsageWire>) -> Result<ModelTu
     })
 }
 
-pub async fn worker(store: DbStore, agents: MemoryAgents) {
+pub async fn worker(store: DbStore, agents: MemoryAgents, mut shutdown: tokio::sync::watch::Receiver<bool>) {
     loop {
+        if *shutdown.borrow() { return; }
         match store.claim_job().await {
             Ok(Some(job)) => {
                 let id = job.id.clone();
@@ -643,10 +644,16 @@ pub async fn worker(store: DbStore, agents: MemoryAgents) {
                     }
                 }
             }
-            Ok(None) => tokio::time::sleep(Duration::from_millis(500)).await,
+            Ok(None) => tokio::select! {
+                _ = tokio::time::sleep(Duration::from_millis(500)) => {},
+                changed = shutdown.changed() => if changed.is_err() || *shutdown.borrow() { return; },
+            },
             Err(_) => {
                 eprintln!("{{\"event\":\"job_claim_failed\"}}");
-                tokio::time::sleep(Duration::from_secs(2)).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(2)) => {},
+                    changed = shutdown.changed() => if changed.is_err() || *shutdown.borrow() { return; },
+                }
             }
         }
     }

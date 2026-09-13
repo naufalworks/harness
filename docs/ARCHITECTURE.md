@@ -38,6 +38,10 @@ Privacy operations are deliberately separate. `forget` marks memory intent, `del
 
 Startup acquires a kernel-backed exclusive process lock for the normalized database path before SQLite recovery. A second live process is rejected without mutating jobs or receipts; stale metadata is replaced only after kernel ownership is obtained. This remains a single-instance design rather than a leased multi-worker system.
 
+SIGINT/SIGTERM stop HTTP admission and notify both durable workers. A claimed generation or extraction is allowed to finish its current durable boundary; idle workers stop immediately. Shutdown waits up to `HARNESS_SHUTDOWN_TIMEOUT_SECONDS` (30 by default, constrained to 1–300) and emits explicit start/complete/timeout events. Abrupt termination still uses startup recovery, which marks claimed generation interrupted and never replays its provider/tool side effects.
+
+Deployment snapshots the currently served executable and identity before building. Candidate readiness must match commit, SHA-256, schema, database, and worker health. A failed candidate automatically restores the previous executable only when the live `PRAGMA user_version` is no newer than the previous release's schema. If schema advanced, the service is stopped and database recovery requires explicit owner approval after reviewing backup age and writes accepted since that backup; deployment never restores a database automatically.
+
 ## Conversation flow
 
 Only successfully completed prior turns are replayed. The user request is first recorded as pending; completion stores assistant output and queues memory extraction in one transaction. Provider/recall failures mark the user message failed. Database failures are reported without a successful-save claim. An abrupt cancellation may leave pending capture until restart; request reconciliation beyond restart recovery remains a release follow-up.

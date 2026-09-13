@@ -583,14 +583,14 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - note (2026-09-13, done): operational backups now use a versioned authenticated AES-256-GCM envelope with a separate owner-only 256-bit key, atomic publication, post-create clean restore drill, and configurable retention. Restore refuses overwrite and authenticates before publishing. Four focused tests prove committed WAL data survives, rotation keeps the requested count, and missing/wrong keys, corruption, quota exhaustion, interrupted writes, and unsafe key permissions fail without modifying the source or leaving output. The legacy plaintext helper remains only for short-lived migration snapshots. Verification passed: `python3 -m unittest discover -s tests -p 'test_*backup*.py'` (4 tests).
 
 ### P10-T05 · Graceful shutdown and automatic deployment rollback
-- status: todo
+- status: done
 - priority: high
 - blocker: release-blocker
 - lane: release
 - parallel: yes
 - depends: P10-T03, P12-T05a
 - design: docs/ROADMAP.md#p10-correctness-and-operational-safety
-- files: src/main.rs, src/recording.rs, scripts/deploy.sh, tests/deploy_rollback.py, tests/recording_integration.py, docs/ARCHITECTURE.md
+- files: src/main.rs, src/recording.rs, src/memory_agents.rs, Cargo.toml, scripts/deploy.sh, scripts/rollback_policy.py, tests/deploy_rollback.py, tests/recording_integration.py, docs/ARCHITECTURE.md
 - done-when: shutdown drains safe commits and process groups without replay; a disposable deployment fixture proves backward-compatible binary rollback after a migration, and separately proves fail-closed recovery when old binaries cannot read the upgraded schema. Recovery documents backup age and writes accepted after backup; production promotion remains an explicit owner action.
 - verify: scripts/verify_e2e.sh && python3 tests/deploy_rollback.py
 

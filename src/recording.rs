@@ -526,8 +526,9 @@ pub(crate) async fn generate(
     Ok(())
 }
 
-pub async fn worker(store: DbStore, agents: MemoryAgents) {
+pub async fn worker(store: DbStore, agents: MemoryAgents, mut shutdown: tokio::sync::watch::Receiver<bool>) {
     loop {
+        if *shutdown.borrow() { return; }
         match store.claim_recording().await {
             Ok(Some(turn)) => {
                 let id = turn.request.clone();
@@ -545,10 +546,16 @@ pub async fn worker(store: DbStore, agents: MemoryAgents) {
                     }
                 }
             }
-            Ok(None) => tokio::time::sleep(std::time::Duration::from_millis(200)).await,
+            Ok(None) => tokio::select! {
+                _ = tokio::time::sleep(std::time::Duration::from_millis(200)) => {},
+                changed = shutdown.changed() => if changed.is_err() || *shutdown.borrow() { return; },
+            },
             Err(_) => {
                 eprintln!("{{\"event\":\"recording_claim_failed\"}}");
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {},
+                    changed = shutdown.changed() => if changed.is_err() || *shutdown.borrow() { return; },
+                }
             }
         }
     }

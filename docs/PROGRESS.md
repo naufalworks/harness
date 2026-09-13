@@ -1,5 +1,26 @@
 # PROGRESS — journal
 
+## 2026-09-13 · Notion AI via Local · P10-T05 completed
+
+- Task: P10-T05; priority: high; blocker: release-blocker; lane: release.
+- Status transition: `doing` → `done`.
+- Runtime: SIGINT/SIGTERM stop HTTP admission, wake idle workers, and let claimed generation/extraction finish a durable boundary within a bounded shutdown window. Abrupt kill recovery remains no-replay.
+- Deployment: snapshots the served executable and identity before building; verifies candidate commit/SHA-256/schema/workers/API; atomically restores the previous binary only for schema-compatible failures. Newer or unreadable schema stops the service and requires explicit owner-approved database recovery with backup age and post-backup writes reported.
+- Verification: 11 focused recording tests passed; the recording integration proved SIGTERM drained an in-flight foreground tool and terminal receipt, restart caused no replay, and SIGKILL recovery still interrupted without duplicate side effects. The disposable rollback fixture proved compatible executable restoration and fail-closed newer/unknown-schema behavior.
+- Full strict gate: all 187 Rust tests, 66 Python contracts, integration/recording smoke, JavaScript syntax, both mocked-browser suites, and real browser-to-server E2E including denial/crash recovery passed. No production service was restarted by verification.
+- Next release blocker: P10-T06 fault injection, then P12-T07a baseline reconciliation and P14-T04a fail-closed spend limits.
+
+
+## 2026-09-13 · Notion AI via Local · P10-T05 started
+
+- Task: P10-T05; priority: high; blocker: release-blocker; lane: release.
+- Worktree: `p10-rollback` at `/root/development/harness-p10-rollback`, based on deployed `main` commit `d61fbd4`.
+- Status transition: `todo` → `doing`.
+- Scope: drain accepted HTTP requests and claimed workers on SIGTERM, add bounded shutdown, preserve no-replay recovery, and make deployment rollback schema-aware with a disposable fixture rather than using production promotion as verification.
+- Verification target: real E2E plus `tests/deploy_rollback.py`; production deployment remains a separate post-integration action.
+- Open policy: binary rollback is automatic only while the upgraded database remains readable by the previous binary. A newer schema requires explicit database recovery with backup age and post-backup writes reported; no automatic database restore.
+
+
 ## 2026-09-13 · Notion AI via Local · P12-T05a completed
 
 - Task: P12-T05a; priority: critical; blocker: release-blocker; lane: release-contract.

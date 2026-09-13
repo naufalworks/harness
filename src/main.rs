@@ -1318,6 +1318,20 @@ fn router(state: Harness) -> Router {
         .with_state(state)
 }
 
+static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
+#[cfg(unix)]
+extern "C" fn request_shutdown(_: libc::c_int) { SHUTDOWN_REQUESTED.store(true, Ordering::Release); }
+async fn shutdown_signal(shutdown: tokio::sync::watch::Sender<bool>) {
+    #[cfg(unix)] unsafe {
+        let handler = request_shutdown as *const () as libc::sighandler_t;
+        libc::signal(libc::SIGINT, handler);
+        libc::signal(libc::SIGTERM, handler);
+    }
+    while !SHUTDOWN_REQUESTED.load(Ordering::Acquire) { tokio::time::sleep(Duration::from_millis(100)).await; }
+    eprintln!("{}", json!({"event":"graceful_shutdown_started"}));
+    let _ = shutdown.send(true);
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
@@ -1424,16 +1438,23 @@ async fn main() -> Result<()> {
         hsts,
     };
     let listener = tokio::net::TcpListener::bind(addr).await?;
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     workers.recording.store(true, Ordering::Release);
     let worker_health = workers.clone();
     let recording_store = store.clone();
     let recording_agents = agents.clone();
-    tokio::spawn(async move { recording::worker(recording_store, recording_agents).await; worker_health.recording.store(false, Ordering::Release); });
+    let recording_shutdown = shutdown_rx.clone();
+    let recording_handle = tokio::spawn(async move { recording::worker(recording_store, recording_agents, recording_shutdown).await; worker_health.recording.store(false, Ordering::Release); });
     workers.extraction.store(true, Ordering::Release);
     let worker_health = workers.clone();
-    tokio::spawn(async move { memory_agents::worker(store, agents).await; worker_health.extraction.store(false, Ordering::Release); });
-    println!("harness listening on http://{addr} (authenticated, single-user)");
-    axum::serve(listener, router(state)).await?;
+    let extraction_handle = tokio::spawn(async move { memory_agents::worker(store, agents, shutdown_rx).await; worker_health.extraction.store(false, Ordering::Release); });
+    println!("harness listening on {{http://{addr}}} (authenticated, single-user)");
+    axum::serve(listener, router(state)).with_graceful_shutdown(shutdown_signal(shutdown_tx.clone())).await?;
+    let _ = shutdown_tx.send(true);
+    let drain_seconds=env::var("HARNESS_SHUTDOWN_TIMEOUT_SECONDS").ok().and_then(|v|v.parse::<u64>().ok()).filter(|v|(1..=300).contains(v)).unwrap_or(30);
+    let drained=tokio::time::timeout(Duration::from_secs(drain_seconds),async {let _=recording_handle.await;let _=extraction_handle.await;}).await;
+    if drained.is_err() {eprintln!("{}",json!({"event":"graceful_shutdown_timeout","seconds":drain_seconds}));}
+    else {eprintln!("{}",json!({"event":"graceful_shutdown_complete"}));}
     Ok(())
 }
 
