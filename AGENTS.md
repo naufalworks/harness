@@ -16,11 +16,13 @@ step is recorded before it is shown, and the UI makes the agent's work visible
 1. `docs/PLAN.md` — goal, principles, target architecture, phases and acceptance criteria.
 2. `docs/ROADMAP.md` — active waves, priority policy and coverage contract.
 3. `docs/TASKS.md` — executable task list with stable IDs. Pick the highest-priority
-   eligible `todo`; use the earlier task ID as the tie-breaker.
+   eligible `todo`. Milestone precedence (the safe-daily-use milestone) is checked before
+   priority and earlier-ID order; then use the earlier task ID as the tie-breaker.
 4. `docs/PROGRESS.md` — journal. The newest entry tells you where the previous session
    stopped, why, and any open questions.
 5. The design doc named in the task's `design:` line (`docs/design/*.md`).
-6. Only then read source files listed in the task's `files:` line.
+6. `docs/design/safe-daily-use-scorecard.md` — the release scorecard while the milestone is open.
+7. Only then read source files listed in the task's `files:` line.
 
 ## Operating rules
 
@@ -54,6 +56,13 @@ step is recorded before it is shown, and the UI makes the agent's work visible
   "Open questions" in `docs/PROGRESS.md` and choose the smallest reversible option.
 - Keep `README.md` truthful: if a feature is not compiled and tested, do not describe it
   as working.
+- **Never verify by deploying.** Production deployment (`bash scripts/deploy.sh`) promotes
+  to the live unit and is a separately approved action, never a `verify:` step. Verification
+  uses disposable or mocked deployment checks; release builds refuse a dirty tree by default.
+- **Single-owner ledger and journal.** The integration coordinator owns `docs/TASKS.md`
+  status and the merged `docs/PROGRESS.md` entry. Implementation agents report completed
+  code and evidence; the coordinator records the merged entry so parallel branches cannot
+  conflict in the journal.
 
 ## Verify commands
 
@@ -65,6 +74,13 @@ step is recorded before it is shown, and the UI makes the agent's work visible
 | SQL contract strings | `python3 -m unittest tests/test_sql_contracts.py` | python3 |
 | Tool JSON schemas are valid | `python3 tests/test_tool_schemas.py` | python3 |
 | Frontend syntax | `node --check static/app.js` | node |
+| Plan/task contract | `python3 scripts/check_plan.py` | python3 |
+
+`bash scripts/verify_release.sh` is currently the permissive developer check: it runs the
+browser suites only when `node_modules` exists, skips them otherwise, and its final line
+overstates coverage. A strict default gate that fails closed when declared coverage cannot
+run (with an explicit `--dev` opt-out) is planned as P12-T05a and is not present yet; do
+not describe it as existing until that integration is verified.
 
 ## Repo map
 
@@ -78,7 +94,7 @@ step is recorded before it is shown, and the UI makes the agent's work visible
 | `src/safety.rs` | redaction, fingerprints, validators |
 | `src/ingest.rs` | transcript import parsers |
 | `src/agentic_sql.rs` (P1) | exact SQL for steps/events/permissions/plan/recovery — contract-tested by `tests/test_agentic_sql.py` |
-| `src/tools/` (P1) | `mod.rs` registry+trait, `paths.rs` sandbox, `textdiff.rs` diff, `fs_tools.rs` read/grep/glob (written, needs-verify); edit/bash/meta pending — see `docs/design/tools.md` |
+| `src/tools/` | implemented tools: `mod.rs` registry+trait, `paths.rs` sandbox, `textdiff.rs` diff, `fs_tools.rs` read/grep/glob, edit/write with hash anchors, `bash`, `think`/`todo_write`; P6 adds ast/lsp/browser — see `docs/design/tools.md` |
 | `src/agent_loop.rs` (P1) | multi-step turn loop — see `docs/design/agentic-turn.md` |
 | `migrations/` | versioned schema; `003_agentic.sql` adds steps/permissions/changes |
 | `tools/schemas/*.json` | model-facing tool definitions (OpenAI function format) |

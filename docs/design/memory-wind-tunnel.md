@@ -54,7 +54,7 @@ Start small. One captured run should produce these conditions:
 | G | irrelevant but similar memory added | retrieval pollution |
 | H | poisoned memory added in an isolated fixture | safety and recovery |
 
-Do not claim causality from one LLM run. Run each condition multiple times when the provider is live. Strict replay is for debugging and structural comparison; live repeated trials are for behavior distributions.
+Do not claim causality from one LLM run. Strict replay is for integrity, deterministic-pipeline, and fixture-compatibility testing and cannot measure a behavioral distribution. Behavioral claims (intervention effect, stale use, memory-induced regression) require live or hybrid execution with the model in the loop, paired repeated trials, and reported uncertainty. Whenever a treatment would change the request the model sees, strict replay must record the first divergence and mark downstream outcomes `unavailable` rather than presenting the recorded response as the treatment's outcome.
 
 ## 5. Metrics
 
@@ -106,7 +106,7 @@ The memory store is copied into an isolated child state. The source memory and l
 
 ### Phase 3: replay
 
-Strict mode reuses recorded provider and tool responses, so it answers: "Did the changed memory alter the agent's decision path under identical observations?" Live mode re-executes the model against a clean project and real provider, so it answers: "Does the effect survive model variance?" Hybrid mode replays the prefix and resumes live at a chosen decision boundary.
+Strict mode replays the recorded observation prefix with zero live provider and tool calls. It is integrity, deterministic-pipeline, and fixture-compatibility testing: it proves context construction, policy, and request assembly are deterministic and that a treatment changed only the intended memory state. Before reusing a recorded response, strict mode re-matches the actual outbound request (provider/model/parameters, tool schemas, message array, budget) against the recorded request boundary. On any mismatch it records the first divergence, stops that branch, and marks all downstream outcomes `unavailable`; it must never present a replayed original output as the treatment's outcome. Because the provider responses are fixed, strict mode alone cannot show what the model would have decided under a changed memory. Live mode re-executes the model against a clean project and a real provider; hybrid mode replays the recorded prefix and resumes live at a declared decision boundary. Behavioral effects require live or hybrid execution with paired repeated trials and explicit uncertainty (§4, §6).
 
 ### Phase 4: compare and explain
 
@@ -146,7 +146,7 @@ Use an ephemeral UpCloud VM only after the local lane is green. Create it from a
 ### M0: experiment contract
 
 - Define capsule schema and content-addressed IDs.
-- Define strict, live, and hybrid replay semantics.
+- Define strict, live, and hybrid replay semantics, stating that strict replay cannot establish a behavioral effect.
 - Add deterministic outcome assertions and an explicit `unavailable` state.
 - Decide the first coding benchmark: small Rust bugfixes with compile/test acceptance.
 
@@ -167,7 +167,7 @@ Exit: two strict replays differ only when the treatment memory differs; source D
 - Align traces by step identity and show first divergence.
 - Add deterministic tests for memory inclusion/exclusion, context receipts, tool calls, permissions, diffs, and acceptance results.
 
-Exit: a captured run becomes a checked-in regression fixture with a reproducible comparison report and zero live model calls.
+Exit: a captured run becomes a checked-in regression fixture with a reproducible structural comparison report and zero live model calls. The report demonstrates deterministic pipeline and fixture compatibility, not a behavioral effect.
 
 ### M3: real E2E browser lane
 

@@ -1,5 +1,17 @@
 # PROGRESS — journal
 
+## 2026-09-13 · Notion AI via Local · P12-T07a planning correction completed
+
+- Task: P12-T07a (bounded child of P12-T07); priority: high; lane: docs.
+- Worktree/parallel slot: `review-plan-fixes` at `/root/development/harness-review-fixes`, branch `review-plan-fixes`, based on `main` at `70aee88`.
+- Status transition: `todo` → `doing` → `done` (planning-only correction).
+- Scope: reconcile stale baseline docs with the task ledger; clarify README chat vs tool loop; define strict replay honestly; add the safe-daily-use milestone and owner-signed scorecard; split overbroad tasks and add milestone/cost-control children; update the P10-T05 rollback/deploy contract; add `scripts/check_plan.py` and `tests/test_plan_contract.py`.
+- Changes: `docs/PLAN.md`, `docs/ROADMAP.md`, `docs/TASKS.md`, `README.md`, `AGENTS.md`, `docs/design/memory-wind-tunnel.md`, new `docs/design/safe-daily-use-scorecard.md`, new `scripts/check_plan.py`, new `tests/test_plan_contract.py`, this journal entry.
+- Verification: `python3 scripts/check_plan.py` and `python3 -m unittest discover -s tests -p 'test_plan_contract.py'` (read-only document/task contract checks). No runtime behavior changed, no implementation test was rerun in this edit, and no deployment was performed.
+- Coordination: task ledger and journal are single-owner (integration coordinator). Implementation agents own runtime/release code (`src/`, `scripts/verify_release.sh`, `scripts/verify_deploy.sh`, `tests/test_release_gates.py`, `tests/test_deploy_safety.py`) and report completed code; the coordinator records merged integration evidence. Those release/runtime scripts referenced by planned tasks are not present yet and are not claimed to exist.
+- Blockers/open questions: none for the documentation correction. Owner decisions still open: which optional features are outside the daily-use release; mandatory-vs-useful release evidence; which schema changes are binary-rollback-safe; production key/retention/off-host policy.
+- Next eligible tasks: milestone precedence selects P12-T05a, then P10-T05, P10-T06, P13-T03, P14-T01, P14-T04a before other high-priority work.
+
 ## 2026-09-13 · Notion AI via Local · P13-T02 completed
 
 - Task: P13-T02; priority: high; lane: privacy.

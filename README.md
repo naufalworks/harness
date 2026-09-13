@@ -2,7 +2,11 @@
 
 Single-user, local Rust chat service with a durable memory layer. Every accepted
 message is recorded before the model runs; memories are extracted, reviewed, and
-recalled into future conversations via local FTS5 — one LLM call per chat.
+recalled into future conversations via local FTS5. A chat turn drives a multi-step
+model↔tool loop (read/search/edit/run) as described in `docs/PLAN.md`; when the
+configured provider does not support tool calls, the same turn falls back to a single
+text-only model call. Memory extraction and recall are separate provider/local steps,
+not additional chat turns.
 
 ## Run
 
@@ -80,7 +84,10 @@ scripts/verify_browser.sh        # run both fixtures
 and root for Chromium's system libraries. `verify_browser.sh` resolves the browser from
 Playwright itself, so no path is hard-coded; override with `CHROMIUM_PATH` if needed.
 `verify_release.sh` runs the browser suites automatically when `node_modules` is present
-and skips them with a notice when it is not.
+and skips them with a notice when it is not — it is the permissive developer check, so a
+skipped suite is not a failure there. A strict default release gate that fails closed when
+declared coverage cannot run, with an explicit `--dev` opt-out, is planned as P12-T05a and
+is not present yet.
 
 
 ## Verify
@@ -106,6 +113,9 @@ change being deployed. `deploy.sh` builds the release profile, restarts the unit
 compares the md5 of `/proc/<pid>/exe` with the binary it just built, and smoke-tests
 that the API answers and that a non-object body is refused before reporting success.
 Override the unit name with `HARNESS_UNIT`.
+This promotes to the live unit and is not a verification step; use the disposable deploy
+check (planned, P10-T05) instead. The script currently only warns about a dirty working
+tree; P10-T05 makes the release build refuse it by default.
 
 ## Data
 
@@ -159,6 +169,12 @@ Full behavior: `docs/RECORDING_PROTOCOL.md`.
 The active plan is `docs/PLAN.md`, sequencing and priority live in
 `docs/ROADMAP.md`, executable work lives in `docs/TASKS.md`, and every state
 change is journaled newest-first in `docs/PROGRESS.md`. Start at `AGENTS.md`.
+
+The immediate release boundary is the safe-daily-use milestone in `docs/ROADMAP.md`:
+truthful strict verification, schema-safe rollback and fault tests, durable cancellation,
+tool-boundary policy, and minimal fail-closed cost limits. Its targets are owner-signed in
+`docs/design/safe-daily-use-scorecard.md`; milestone precedence overrides priority and
+task-ID order until it closes.
 
 P1–P9 are implemented and release-verified: the current system has the recorded
 tool loop, permission gate, context management, hybrid memory, durable generation,

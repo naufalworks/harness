@@ -8,6 +8,20 @@ Priority order is `critical` → `high` → `medium` → `low` → `research`.
 
 A task may run in parallel only when its `parallel: yes` metadata is present, every dependency is done, it uses a different lane from other active work, and its declared files do not overlap. Each parallel task uses its own branch/worktree. Commits are merged one at a time, rebased before merge, and the task's exact verification plus the release gate are rerun after integration. One agent still owns only one task at a time.
 
+**Milestone precedence overrides priority and earlier-ID order.** While the safe-daily-use milestone below is open, its required tasks are selected before any other eligible task, even a higher-priority or earlier-numbered one.
+
+## Safe-daily-use milestone (SDU)
+
+The first acceptable daily-use release is bounded to truthful verification, safe recovery, cancellation, tool boundaries, and a minimal spend limit. Milestone precedence is checked before priority and earlier-ID order. SDU closes only when every task below is `done` and the owner has signed `docs/design/safe-daily-use-scorecard.md`:
+
+1. a truthful strict release gate that fails closed when declared coverage cannot run (P12-T05a);
+2. schema-compatible rollback with a failing-upgrade fixture and non-destructive, disposable deploy verification (P10-T05), plus crash/disk/SQLite fault tests (P10-T06);
+3. durable cancellation at a non-mutating boundary (P14-T01);
+4. browser/command/path tool policy (P13-T03);
+5. minimal fail-closed per-turn/day/role cost limits (P14-T04a).
+
+Performance, refactor, dashboard, voice and research work are outside SDU and must not be pulled ahead of these tasks. P17 research and P18 ecosystem work remain separately gated. Release decisions are made against `docs/design/safe-daily-use-scorecard.md`; its targets are owner-signed and this roadmap invents no thresholds or results.
+
 ## Execution waves
 
 | Wave | Goal | Phases | Parallel lanes |

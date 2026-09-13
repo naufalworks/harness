@@ -67,9 +67,17 @@ ends the turn with a visible "budget exhausted" answer, never a silent stop.
 
 ## 5. Phases
 
+Sequencing is not blindly numerical: the safe-daily-use milestone in `docs/ROADMAP.md`
+takes precedence over priority and ID order until truthful verification, schema-safe
+rollback, fault recovery, cancellation, tool policy and minimal fail-closed cost limits
+are done. Release decisions are made against `docs/design/safe-daily-use-scorecard.md`.
+The phase text below records intent and history; `docs/TASKS.md` is the authoritative
+status source.
+
 ### P0 — Gate: make the current checkpoint real
 Compile and run the existing suites on the owner's machine. Nothing below is built on
-uncompiled code. **Owner action required** (no cargo in the AI sandbox).
+uncompiled code. Status: done — `docs/TASKS.md` records P0-T01 and P0-T02 as `done` with
+their compile/verify evidence. This paragraph is historical intent, not an open blocker.
 
 ### P1 — Tool loop with receipts per step
 Provider adapter accepts tool definitions and tool calls; `turn_steps`,
@@ -79,7 +87,9 @@ resolution; permission gate; minimal UI rendering of steps and permission prompt
 (polling). Acceptance: with the mock provider, a turn that reads a file, edits it via a
 hash anchor, runs `bash`, and answers, is fully recorded; killing the process mid-tool
 leaves the step `interrupted` and nothing is re-run on restart; an edit with a stale
-anchor is rejected; a path outside `root_path` is rejected.
+anchor is rejected; a path outside `root_path` is rejected. Status: implemented; P1-T01…P1-T15
+are recorded `done` in `docs/TASKS.md`. This is a ledger status, not a fresh test rerun in
+this edit.
 
 ### P2 — Streaming and activity rail
 Authenticated SSE over `activity_events` with a resumable cursor; three-pane layout;
@@ -118,13 +128,12 @@ browser-owned work. The atomic provider boundary and idempotent restart recovery
 landed on `main`. Landed since then: per-event request attribution with proven
 multi-turn cursor/SSE replay (`P7-T02c`), truthful migration-gate reporting (`P7-T04`),
 and a chat UI that renders the durable feed with explicit complete, failed and
-interrupted states (`P7-T03`). The phase's umbrella tasks (`P7-T01`, `P7-T02`) are
-closed on that evidence. Two things remain. Publication before DONE stays deferred as
-`P7-T05`, now designed in `docs/design/incremental-publication.md`: the publication unit
-is a completed line, because `safety::redact` erases a matched line whole and a released
-prefix could never be retracted, and whole-answer buffering stays the active boundary
-until the Rust side lands against `tests/test_incremental_publication.py`. Running the
-browser suites still needs a host browser runtime, tracked as `P7-T06`.
+interrupted states (`P7-T03`). The phase's umbrella tasks (`P7-T01`, `P7-T02`) and
+P7-T03…P7-T08 are recorded `done` in `docs/TASKS.md`. Landed since then: safe incremental
+publication before DONE with a boundary-aware redactor (`P7-T05`), an executable mocked
+browser suite with an in-repo setup script (`P7-T06`), the JSON-object body rule
+(`P7-T07`), and the deploy-the-artifact-the-unit-runs fix (`P7-T08`). This paragraph is a
+historical summary; current status is derived from the task ledger, which is authoritative.
 
 ### P8 — Causal observability
 Current traces show sequence and outcome, but not the cross-component dependency chain that explains why a tool call happened, which evidence supported it, what state it changed, or where a failure first became possible. P8 adds bounded, typed provenance edges across memory/evidence, model claims, tool calls, permissions, observations, mutations, and recovery. It deliberately excludes hidden chain-of-thought and starts with one coding-turn incident graph before any broad observability platform work.

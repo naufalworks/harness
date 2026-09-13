@@ -1,14 +1,40 @@
 # TASKS — ordered backlog with stable IDs
 
 How to use: pick the highest-priority `todo` whose `depends:` are all `done`; use the
-earlier task ID as the tie-breaker. Parallel tasks require `parallel: yes`, different
-lanes, disjoint files, separate branches/worktrees, and serialized integration.
+earlier task ID as the tie-breaker. **Milestone precedence overrides priority and ID
+order:** while the safe-daily-use milestone (SDU) below is open, its required tasks are
+selected before any other eligible task, even a higher-priority or earlier-ID one.
+Parallel tasks require `parallel: yes`, different lanes, disjoint files, separate
+branches/worktrees, and serialized integration. A split parent and its children keep the
+stable parent ID; a parent is `done` only when every child is `done`.
 Change status in place. Never renumber or delete a task; mark it `dropped` with a reason.
 
 Status values: `todo` | `doing` | `done` | `needs-verify` | `blocked` | `dropped`
 
 Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`,
 `files`, `done-when`, and `verify`. Every state transition also updates PROGRESS.md.
+
+## Safe-daily-use milestone (SDU) — selection precedence
+
+The first acceptable daily-use release is bounded to truthful verification, safe
+recovery, cancellation, tool boundaries, and a minimal spend limit. While SDU is open,
+its required tasks are chosen before any other eligible task (milestone precedence
+before priority and earlier-ID order). SDU closes only when every task below is `done`
+and the owner has signed `docs/design/safe-daily-use-scorecard.md`.
+
+| SDU gate | Required task | Why it is a prerequisite |
+|---|---|---|
+| Truthful strict release gate | P12-T05a | A green gate must mean the declared suites ran, not that they were skipped. |
+| Schema-compatible rollback | P10-T05 | Swapping a binary back is unsafe if the database or event contract changed incompatibly. |
+| Crash/disk/fault recovery | P10-T06 | Recovery claims need fault evidence, not only happy-path tests. |
+| Durable cancellation | P14-T01 | Work must stop at a safe boundary without replaying side effects. |
+| Tool-boundary policy | P13-T03 | Browser/command/path policy must gate side effects before daily use. |
+| Minimal fail-closed cost limits | P14-T04a | Spend must fail closed even before broader provider scheduling exists. |
+
+Performance, refactor, dashboard, voice and research work are outside SDU and must not be
+pulled ahead of these tasks. Release decisions are made against
+`docs/design/safe-daily-use-scorecard.md`; its targets are owner-signed and are not
+invented in this backlog.
 
 ---
 
@@ -569,6 +595,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - done-when: health/readiness reports commit, binary hash, schema version, queue/worker state and DB readiness; UI and deploy smoke detect a stale or unready artifact.
 - verify: cargo test --locked health && bash scripts/deploy.sh
 - note (2026-09-13, done): the authenticated readiness contract now reports the embedded source commit, runtime executable SHA-256, startup time, schema and SQLite probe, queue counts, and tracked worker liveness, returning 503 when any required component is unready. Served JavaScript embeds its expected commit and refuses a mixed/stale frontend; deployment now verifies the live process hash and readiness commit/hash/schema/workers/database before smoke-testing the API. Three focused health regressions, all 177 Rust tests, all 65 Python tests, compiled recording integration, both browser suites, and deployment smoke passed.
+- note (2026-09-13, policy): the recorded deployment smoke was a one-time, owner-approved production promotion. Production deployment is never a `verify:` step for future tasks; disposable deployment verification is owned by P10-T05 and the release lane.
 
 ### P10-T04 · Automate encrypted backup and restore drills
 - status: done
@@ -582,16 +609,17 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - verify: python3 -m unittest discover -s tests -p 'test_*backup*.py'
 - note (2026-09-13, done): operational backups now use a versioned authenticated AES-256-GCM envelope with a separate owner-only 256-bit key, atomic publication, post-create clean restore drill, and configurable retention. Restore refuses overwrite and authenticates before publishing. Four focused tests prove committed WAL data survives, rotation keeps the requested count, and missing/wrong keys, corruption, quota exhaustion, interrupted writes, and unsafe key permissions fail without modifying the source or leaving output. The legacy plaintext helper remains only for short-lived migration snapshots. Verification passed: `python3 -m unittest discover -s tests -p 'test_*backup*.py'` (4 tests).
 
-### P10-T05 · Graceful shutdown and automatic deployment rollback
+### P10-T05 · Graceful shutdown and schema-safe deployment rollback
 - status: todo
 - priority: high
 - lane: release
 - parallel: yes
 - depends: P10-T03
 - design: docs/ROADMAP.md#p10-correctness-and-operational-safety
-- files: src/main.rs, src/recording.rs, scripts/deploy.sh, tests/recording_integration.py
-- done-when: shutdown drains safe commits and process groups without replay; failed readiness/smoke restores the previous executable and proves it is serving.
-- verify: scripts/verify_e2e.sh && bash scripts/deploy.sh
+- files: src/main.rs, src/recording.rs, scripts/deploy.sh, scripts/verify_deploy.sh, tests/recording_integration.py, docs/ARCHITECTURE.md
+- done-when: shutdown drains safe commits and process groups without replay. A failed readiness/smoke check restores the previous executable only when the database and event contract stayed compatible. An explicit schema-compatibility policy states which append-only migrations are readable by the previous binary and which require an owner-approved data restore, and a failing-upgrade fixture proves the recovery path including writes accepted after the backup. Release builds refuse a dirty working tree by default (an explicitly attested dirty build is opt-in). Deployment verification is non-destructive and disposable (a disposable target/DB with stubs); production promotion is a separate owner-approved action and is never part of `verify:`.
+- verify: scripts/verify_e2e.sh && python3 tests/test_migrations.py
+- note (policy 2026-09-13): the disposable deploy check (`scripts/verify_deploy.sh --disposable`, `tests/test_deploy_safety.py`) is owned by the release lane and is not present yet; do not wire it into `verify:` or claim it exists until its integration is verified. `bash scripts/deploy.sh` promotes to the live systemd unit and must never be a verify step.
 
 ### P10-T06 · Add crash, disk and SQLite fault injection
 - status: todo
@@ -700,7 +728,8 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - status: todo
 - priority: high
 - lane: correctness-cleanup
-- parallel: yes
+- parallel: no
+- parallel-note: declared files `src/*` and `src/tools/*` overlap every runtime/tool lane; stay serialized until split into bounded sub-tasks with disjoint files.
 - depends: P9-T02
 - design: docs/ROADMAP.md#p12-maintainability-api-ci-and-release-engineering
 - files: src/*, src/tools/*
@@ -718,27 +747,154 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - done-when: fmt, warning budget, ResourceWarning, Rust/Python/shell/JS lint, dependency vulnerability/license policy, pinned actions and fallback-tool tests run reproducibly.
 - verify: bash scripts/verify_release.sh
 
-### P12-T06 · Add coverage, property, fuzz and release evidence
+### P12-T05a · Make the release gate truthful and profile-aware
+- status: todo
+- priority: high
+- lane: release
+- parallel: yes
+- depends: P9-T02
+- parent: P12-T05
+- design: docs/design/memory-wind-tunnel.md#e2e-local-required-on-every-change
+- files: scripts/verify_release.sh, scripts/verify_deploy.sh, tests/test_release_gates.py, tests/test_deploy_safety.py, README.md, AGENTS.md
+- done-when: a strict gate requires its declared runtimes, runs the real browser-to-server E2E lane, fails closed when required coverage cannot execute, and prints an explicit `passed`/`failed`/`skipped` result per suite, never labelling skipped work passed. A permissive `--dev` mode exists for local iteration; strict mode is the default. Disposable deployment-safety stubs prove the gate never promotes to production. The release lane owns these scripts and this item does not claim they exist until its integration is verified.
+- verify: python3 -m unittest discover -s tests -p 'test_release_gates.py'
+- note: strict default, `--dev` opt-in. Never require `bash scripts/deploy.sh` here.
+
+### P12-T06 · Add coverage, property, fuzz and release evidence (container)
+- status: todo
+- priority: medium
+- lane: release-quality
+- parallel: no
+- depends: P12-T05
+- design: docs/ROADMAP.md#p12-maintainability-api-ci-and-release-engineering
+- files: (container; children own their files)
+- done-when: every child below is `done`; no coverage or release-evidence claim is made before its child lands.
+- verify: python3 scripts/check_plan.py
+- note: container for a feature collection that was not safely reviewable as one change. Children keep the stable parent ID and add bounded acceptance; children that touch the same workflow files are serialized.
+
+### P12-T06a · Property tests for redaction, SSE, diff, path, graph and context
 - status: todo
 - priority: medium
 - lane: release-quality
 - parallel: yes
 - depends: P12-T05
-- design: docs/ROADMAP.md#p12-maintainability-api-ci-and-release-engineering
-- files: .github/workflows/*, fuzz/*, tests/*, scripts/release.sh
-- done-when: redaction/SSE/diff/path/graph/context properties, import/protocol fuzzing, coverage, cross-target checks, performance budgets, SBOM/checksums/signatures, public smoke and rollback tests are automated.
-- verify: bash scripts/verify_release.sh && scripts/verify_e2e.sh
+- parent: P12-T06
+- files: fuzz/*, tests/test_properties.py, src/safety.rs, src/agent_loop.rs
+- done-when: property tests assert redaction, SSE cursor, text-diff, path-sandbox, incident-graph and context-budget invariants and fail on seeded counterexamples.
+- verify: python3 -m unittest discover -s tests -p 'test_properties.py'
 
-### P12-T07 · Keep documentation and deployment claims truthful
+### P12-T06b · Measure and gate coverage
 - status: todo
+- priority: medium
+- lane: release-quality
+- parallel: no
+- depends: P12-T05
+- parent: P12-T06
+- files: .github/workflows/*, scripts/coverage.sh
+- done-when: coverage is measured reproducibly for Rust and Python and a documented floor fails the gate; no threshold is committed before an observed baseline and owner-signed target exist.
+- verify: bash scripts/coverage.sh
+
+### P12-T06c · Cross-target build checks
+- status: todo
+- priority: low
+- lane: release-quality
+- parallel: yes
+- depends: P12-T05
+- parent: P12-T06
+- files: .github/workflows/*
+- done-when: the supported target matrix builds in CI and an unsupported target fails explicitly.
+- verify: bash scripts/verify_release.sh
+
+### P12-T06d · Performance budgets
+- status: todo
+- priority: medium
+- lane: release-quality
+- parallel: no
+- depends: P11-T03, P12-T05
+- parent: P12-T06
+- files: benches/*, scripts/benchmark.py, .github/workflows/*
+- done-when: repeatable performance budgets exist for the paths P11-T03 instruments and a regression fails a dedicated gate.
+- verify: python3 scripts/benchmark.py --check
+
+### P12-T06e · Reproducible signed artifacts and SBOM
+- status: todo
+- priority: medium
+- lane: release-quality
+- parallel: yes
+- depends: P12-T05
+- parent: P12-T06
+- files: scripts/release.sh, .github/workflows/*
+- done-when: a release build is reproducible, emits checksums and an SBOM, and signature verification is checked in CI.
+- verify: python3 scripts/check_plan.py
+
+### P12-T06f · Public smoke test of the assembled artifact
+- status: todo
+- priority: low
+- lane: release-quality
+- parallel: yes
+- depends: P12-T05, P12-T05a
+- parent: P12-T06
+- files: tests/test_public_smoke.py, .github/workflows/*
+- done-when: a post-build smoke test exercises the assembled artifact through its public HTTP surface on a disposable port and fails on refusal or readiness errors without touching production.
+- verify: python3 tests/test_public_smoke.py
+
+### P12-T06g · Deployment rollback and fault tests
+- status: todo
+- priority: high
+- lane: release-quality
+- parallel: no
+- depends: P10-T05, P10-T06, P12-T05
+- parent: P12-T06
+- files: tests/test_deploy_safety.py, tests/test_rollback.py, scripts/verify_deploy.sh
+- done-when: disposable rollback/fault tests prove an incompatible schema change is refused, a compatible one rolls back, and no test touches the live service.
+- verify: python3 -m unittest discover -s tests -p 'test_deploy_safety.py'
+- note: `tests/test_deploy_safety.py` is owned by the release lane and is not present yet; do not require `bash scripts/deploy.sh` here.
+
+### P12-T07 · Keep documentation and deployment claims truthful (container)
+- status: todo
+- priority: high
+- lane: docs
+- parallel: no
+- depends: P9-T02
+- design: docs/ROADMAP.md#p12-maintainability-api-ci-and-release-engineering
+- files: README.md, AGENTS.md, docs/*, scripts/check_docs.py, scripts/check_plan.py
+- done-when: every child below is `done`; the parent is not `done` while any drift automation is still missing.
+- verify: python3 scripts/check_plan.py
+- note: the task ledger and journal are single-owner (the integration coordinator). Implementation agents report completed code; the coordinator records the merged journal entry.
+
+### P12-T07a · Reconcile stale baseline docs and add a plan-contract check
+- status: done
 - priority: high
 - lane: docs
 - parallel: yes
 - depends: P9-T02
-- design: docs/ROADMAP.md#p12-maintainability-api-ci-and-release-engineering
-- files: README.md, AGENTS.md, docs/*, scripts/check_docs.py
-- done-when: routes, phases, test counts, deployment identity and limitations cannot drift silently; volatile counts are derived or removed.
-- verify: python3 scripts/check_docs.py && git diff --check
+- parent: P12-T07
+- files: README.md, AGENTS.md, docs/PLAN.md, docs/ROADMAP.md, docs/TASKS.md, docs/PROGRESS.md, docs/design/memory-wind-tunnel.md, docs/design/safe-daily-use-scorecard.md, scripts/check_plan.py, tests/test_plan_contract.py
+- done-when: P0/P1/P7 statuses agree with the task ledger; README distinguishes the single-call chat path from the multi-step tool loop; strict replay is defined as integrity/pipeline testing; the safe-daily-use milestone, scorecard and split/child tasks exist; `python3 scripts/check_plan.py` and `python3 -m unittest discover -s tests -p 'test_plan_contract.py'` pass.
+- verify: python3 scripts/check_plan.py && python3 -m unittest discover -s tests -p 'test_plan_contract.py'
+- note (2026-09-13, done): planning-only correction in the `review-plan-fixes` worktree; no runtime behavior changed and no deployment was performed. Completion is the task-ledger and document-contract check plus the journal entry, not a rerun of implementation tests.
+
+### P12-T07b · Automate documentation drift checks
+- status: todo
+- priority: medium
+- lane: docs
+- parallel: no
+- depends: P12-T07a, P12-T05a
+- parent: P12-T07
+- files: scripts/check_docs.py, tests/test_docs_contract.py, .github/workflows/*
+- done-when: route lists, phase status, test counts and deployment identity are derived or checked so they cannot drift silently, and the check runs in the release gate.
+- verify: python3 scripts/check_docs.py
+
+### P12-T07c · State deployment identity and limitations truthfully
+- status: todo
+- priority: low
+- lane: docs
+- parallel: yes
+- depends: P12-T07a, P10-T05
+- parent: P12-T07
+- files: README.md, docs/ARCHITECTURE.md
+- done-when: the deploy section states the build/commit identity contract, the dirty-build refusal, and which schema changes are rollback-safe versus restore-required, without promising operational choices the owner has not made.
+- verify: git diff --check
 
 ## P13 · Security, privacy, and auditability
 
@@ -821,27 +977,106 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - done-when: active jobs are inspectable/cancellable; changes show Git state; checkpoint/restore and focused commit proposals are recorded and require approval before mutation/push.
 - verify: cargo test --locked tools && scripts/verify_e2e.sh
 
-### P14-T04 · Improve provider scheduling and cost controls
+### P14-T04 · Improve provider scheduling (container)
 - status: todo
 - priority: high
 - lane: providers
 - parallel: yes
-- depends: P11-T01
+- depends: P11-T01, P14-T04a
 - design: docs/ROADMAP.md#p14-workflow-tools-providers-and-ux
 - files: src/memory_agents.rs, src/recording.rs, src/storage.rs, static/*
-- done-when: capability detection, role fallback, circuit breakers, Retry-After/jitter, foreground/background fairness and per-turn/day/role cost limits fail closed and expose unavailable usage honestly.
+- done-when: capability detection, role fallback, circuit breakers, Retry-After/jitter and foreground/background fairness are implemented on top of the hard cost limits from P14-T04a.
 - verify: cargo test --locked provider && python3 tests/recording_integration.py
 
-### P14-T05 · Expand language/browser tools and modular accessible UI
+### P14-T04a · Enforce minimal fail-closed cost limits
+- status: todo
+- priority: high
+- lane: providers
+- parallel: yes
+- depends: P9-T02
+- parent: P14-T04
+- design: docs/ROADMAP.md#p14-workflow-tools-providers-and-ux
+- files: src/memory_agents.rs, src/recording.rs, src/storage.rs, migrations/*, static/*
+- done-when: per-turn, per-day and per-role spend/token caps are enforced before a request is sent, fail closed when usage is unknown or a cap is reached, and surface unavailable usage honestly. This slice must not depend on provider scheduling or stream-notification work.
+- verify: cargo test --locked provider && python3 tests/recording_integration.py
+
+### P14-T05 · Expand language/browser tools and modular accessible UI (container)
 - status: todo
 - priority: medium
 - lane: experience
-- parallel: yes
+- parallel: no
 - depends: P12-T02, P11-T05
 - design: docs/ROADMAP.md#p14-workflow-tools-providers-and-ux
-- files: src/tools/*, static/*, tests/*ui*.cjs
-- done-when: configured languages gain AST/LSP discovery and bounded session reuse; browser evidence supports safe screenshots/transfers; UI has modules, keyboard/mobile/a11y, reconnect state, richer diffs, context/cost/project dashboards and optional voice input.
-- verify: scripts/verify_browser.sh && scripts/verify_e2e.sh
+- files: (container; children own their files)
+- done-when: every child below is `done`.
+- verify: python3 scripts/check_plan.py
+- note: split from one feature collection into bounded, separately reviewable children that keep the stable parent ID.
+
+### P14-T05a · Expand AST/LSP language support with bounded session reuse
+- status: todo
+- priority: medium
+- lane: languages
+- parallel: yes
+- depends: P12-T02
+- parent: P14-T05
+- files: src/tools/ast*, src/tools/lsp*, tools/schemas/*, tests/test_tool_schemas.py
+- done-when: configured languages gain AST/LSP discovery and bounded session reuse without weakening caps, rollback or recording; model-facing schemas stay valid.
+- verify: python3 tests/test_tool_schemas.py && cargo test --locked tools
+
+### P14-T05b · Safe browser screenshots and transfer controls
+- status: todo
+- priority: medium
+- lane: browser-tools
+- parallel: yes
+- depends: P13-T03
+- parent: P14-T05
+- files: src/tools/browser*, static/*, tests/recording_integration.py
+- done-when: browser evidence supports screenshots and artifact transfers gated by the P13-T03 destination/transfer policy and recorded as steps.
+- verify: cargo test --locked tools && python3 tests/recording_integration.py
+
+### P14-T05c · Modularize and virtualize the UI
+- status: todo
+- priority: medium
+- lane: frontend-architecture
+- parallel: yes
+- depends: P11-T05
+- parent: P14-T05
+- files: static/*, tests/ui_smoke.cjs
+- done-when: the single-page app is split into cohesive modules and long views are virtualized without enlarging the initial path or breaking the mocked UI suite.
+- verify: node --check static/app.js && scripts/verify_browser.sh
+
+### P14-T05d · Keyboard, mobile, accessibility and reconnect states
+- status: todo
+- priority: medium
+- lane: frontend-accessibility
+- parallel: yes
+- depends: P14-T05c
+- parent: P14-T05
+- files: static/*, tests/*ui*.cjs
+- done-when: keyboard navigation, mobile layout, accessibility labels and explicit reconnect states are covered by the mocked UI suites.
+- verify: scripts/verify_browser.sh
+
+### P14-T05e · Context, cost and project dashboards
+- status: todo
+- priority: medium
+- lane: frontend-dashboards
+- parallel: yes
+- depends: P14-T05c, P14-T04a
+- parent: P14-T05
+- files: static/*, src/main.rs, tests/ui_smoke.cjs
+- done-when: context-budget, cost and project dashboards render from recorded data, treat missing usage as unavailable, and are covered by the mocked UI suite.
+- verify: scripts/verify_browser.sh
+
+### P14-T05f · Optional voice input
+- status: todo
+- priority: low
+- lane: frontend-optional
+- parallel: yes
+- depends: P14-T05c
+- parent: P14-T05
+- files: static/*
+- done-when: optional voice input is behind an explicit capability check, off by default, and never required for the other UI work.
+- verify: node --check static/app.js
 
 ## P15 · Memory and history
 
@@ -956,7 +1191,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - depends: P17-T02, P16-T02
 - design: docs/design/memory-wind-tunnel.md#m2-strict-memory-wind-tunnel
 - files: src/experiments/*, static/*, tests/capsules/*
-- done-when: strict replay makes zero live provider/tool calls, aligns semantic steps, evaluates deterministic acceptance, and reports the first trace/outcome divergence.
+- done-when: strict replay makes zero live provider/tool calls and is scoped to integrity and deterministic-pipeline testing: it re-matches each recorded response against the actual request boundary (provider/model/params, tool schemas, message array, budget); on any mismatch it records the first divergence, stops that branch, and marks downstream outcomes `unavailable` instead of reusing the original output as a treatment result. It aligns semantic steps and evaluates deterministic acceptance. Behavioral effects are out of scope here and require the live/hybrid treatments in P17-T04.
 - verify: cargo test --locked replay && scripts/verify_e2e.sh
 
 ### P17-T04 · Add live treatments, budgets and statistics
@@ -967,7 +1202,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - depends: P17-T03, P14-T04
 - design: docs/design/memory-wind-tunnel.md#m4-live-variance-and-research-reports
 - files: src/experiments/*, scripts/experiment.py, static/*
-- done-when: stale/conflict/pollution/poison treatments run repeatedly under hard spend/token/action limits and report paired outcomes and uncertainty rather than single-run causality.
+- done-when: stale/conflict/pollution/poison treatments run repeatedly via live or hybrid execution (strict replay cannot establish a behavioral effect) under hard spend/token/action limits and report paired outcomes and uncertainty rather than single-run causality.
 - verify: cargo test --locked experiment && python3 scripts/experiment.py --fixture --check
 
 ### P17-T05 · Export sanitized research reports and optional remote runs
