@@ -1,5 +1,15 @@
 # PROGRESS — journal
 
+## 2026-09-13 · Notion AI via Local · P13-T01 completed
+
+- Task: P13-T01; priority: critical; lane: auth.
+- Worktree/parallel slot: `p13-auth` at `/root/development/harness-p13-auth`.
+- Status transition: `todo` → `doing` → `done`.
+- Changes: added current/previous master-token rotation, delayed authentication failures, short-lived bounded browser sessions, per-route rate and body limits, explicit trusted-proxy identity, conditional HSTS, and memory-only browser credential handling.
+- Verification: all 10 auth-focused tests, all 184 Rust tests, compiled integration smoke, JavaScript syntax, both mocked-browser suites, and `git diff --check` passed.
+- Implementation commit: `af5808b` (`feat(auth): harden browser sessions and request boundaries`).
+- Blockers/open questions: none.
+
 ## 2026-09-13 · Notion AI via Local · P13-T01 started
 
 - Task: P13-T01; priority: critical; lane: auth.

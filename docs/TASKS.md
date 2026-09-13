@@ -743,7 +743,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 ## P13 · Security, privacy, and auditability
 
 ### P13-T01 · Harden request authentication and abuse boundaries
-- status: doing
+- status: done
 - priority: critical
 - lane: auth
 - parallel: yes
