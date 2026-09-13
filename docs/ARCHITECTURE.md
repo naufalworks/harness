@@ -18,7 +18,11 @@ An encrypted, opt-in exact archive belongs in a later isolated subsystem. The cu
 
 `DbStore::run` isolates synchronous rusqlite work using Tokio spawn_blocking. A semaphore bounds concurrent blocking tasks; a mutex serializes connection access. No database mutex is held across a provider await. A queue-full or lock/storage failure is an error, never an implicit success.
 
-The schema is transactional and versioned. WAL + FULL synchronous, foreign keys, constraints, and FTS triggers are enabled. Local filesystem durability still depends on the OS/storage respecting sync. Backup is a separately verified online SQLite backup, not copying the live .db alone.
+The schema is transactional and versioned. WAL + FULL synchronous, foreign keys, constraints, and FTS triggers are enabled. Local filesystem durability still depends on the OS/storage respecting sync. Backup is a separately verified online SQLite snapshot, not copying the live `.db` alone.
+
+Operational backups use `scripts/backup.py create`: the online snapshot is encrypted with a versioned AES-256-GCM envelope from the reviewed Python `cryptography` package, authenticated before restore, published through an owner-only temporary file plus atomic rename, restored into a clean temporary target for every creation, and rotated only after that drill succeeds. The required 256-bit key lives in a separate owner-only file and is never stored beside or inside the archive. `keygen` creates that file, `restore` refuses to overwrite a destination, and `drill` verifies an archive without touching the live database. Missing/wrong keys, corruption, short writes, quota errors, and failed restore validation leave no published target and never modify the source database. Plaintext `backup()` remains an internal short-lived migration snapshot helper only.
+
+Example: `python3 scripts/backup.py keygen /secure/harness-backup.key`, then `python3 scripts/backup.py create data/harness_v2.db /secure/backups --key-file /secure/harness-backup.key --retain 7`. Restore drills require the same external key: `python3 scripts/restore_test.py /secure/backups/<archive>.hbak --key-file /secure/harness-backup.key`.
 
 This release does not enforce a cross-process lease. Run only one service process per DB. Startup recovers running jobs to pending and pending chat messages to failed; a second process could disrupt those states. A future process lock / leased multi-worker design must precede multi-instance deployment.
 

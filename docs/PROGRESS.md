@@ -1,5 +1,16 @@
 # PROGRESS — journal
 
+## 2026-09-13 · Notion AI via Local · P10-T04 completed
+
+- Task: P10-T04; priority: critical; lane: backup.
+- Worktree/parallel slot: `p10-backup` at `/root/development/harness-p10-backup`.
+- Status transition: `todo` → `doing` → `done`.
+- Changes: added encrypted rotating backups, external owner-only keys, atomic publication, authenticated clean restore drills, and fail-closed fault coverage.
+- Verification: `python3 -m unittest discover -s tests -p 'test_*backup*.py'` passed 4 tests; broader Python contract verification recorded before integration.
+- Files/commit: `scripts/backup.py`, `scripts/restore_test.py`, `tests/test_backup.py`, `docs/ARCHITECTURE.md`, README, and task/progress journals; commit recorded with the task branch.
+- Blockers/open questions: production key placement and off-host copy policy remain an owner deployment decision; no real key was created or stored.
+- Next eligible tasks: P13-T02 is dependency-unblocked after integration; P10-T02 remains the next critical runtime task.
+
 ## 2026-09-13 · Notion AI via Local · P10-T01 completed
 
 - Task: P10-T01; priority: critical; lane: incident.
@@ -9,7 +20,7 @@
 - Verification: `cargo test --locked storage` passed 11 tests; `cargo build --locked && python3 tests/recording_integration.py` passed the compiled-server suite.
 - Files/commit: `src/storage.rs`, `tests/recording_integration.py`, `docs/design/causal-observability.md`, and task/progress journals; commit recorded with the task branch.
 - Blockers/open questions: none for P10-T01. Repository-wide `cargo fmt --check` still reports pre-existing formatting debt outside this task's files and belongs to P12-T05's ratchet work.
-- Next eligible tasks: integrate P10-T01, then P10-T02 becomes eligible; P10-T04 and P12-T05 remain isolated parallel candidates.
+- Next eligible tasks: P10-T02 is eligible; P10-T04 and P12-T05 remain isolated parallel candidates.
 
 ## 2026-09-13 · Notion AI via Local · P10–P18 roadmap accepted
 

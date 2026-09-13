@@ -112,8 +112,11 @@ Override the unit name with `HARNESS_UNIT`.
 - DB at `HARNESS_DB` (default `data/harness_v2.db`), mode 0600, WAL.
   Plaintext sanitized content: keep it out of source control.
 - One process per DB. Startup recovers interrupted generations; never run two.
-- Backups: `scripts/backup.py` performs a verified online SQLite backup
-  (includes committed WAL). Never copy a live `.db` alone.
+- Backups: `python3 scripts/backup.py create <db> <backup-dir> --key-file <owner-only-key>`
+  creates a rotating AES-256-GCM archive from a verified online SQLite snapshot,
+  including committed WAL state, and proves a clean restore before rotation. Generate
+  the external key once with `python3 scripts/backup.py keygen <key-file>`; never store
+  it beside the archives. The optional Python `cryptography` package is required.
 
 ## Legacy memory migration
 

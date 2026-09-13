@@ -569,15 +569,16 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - verify: cargo test --locked health && bash scripts/deploy.sh
 
 ### P10-T04 · Automate encrypted backup and restore drills
-- status: todo
+- status: done
 - priority: critical
 - lane: backup
 - parallel: yes
 - depends: P9-T02
 - design: docs/ROADMAP.md#p10-correctness-and-operational-safety
-- files: scripts/backup.py, scripts/restore_test.py, docs/ARCHITECTURE.md
+- files: scripts/backup.py, scripts/restore_test.py, tests/test_backup.py, docs/ARCHITECTURE.md, README.md
 - done-when: rotating encrypted backups restore on a clean temporary target; missing key, corruption, quota exhaustion and interrupted writes fail explicitly without touching the source.
 - verify: python3 -m unittest discover -s tests -p 'test_*backup*.py'
+- note (2026-09-13, done): operational backups now use a versioned authenticated AES-256-GCM envelope with a separate owner-only 256-bit key, atomic publication, post-create clean restore drill, and configurable retention. Restore refuses overwrite and authenticates before publishing. Four focused tests prove committed WAL data survives, rotation keeps the requested count, and missing/wrong keys, corruption, quota exhaustion, interrupted writes, and unsafe key permissions fail without modifying the source or leaving output. The legacy plaintext helper remains only for short-lived migration snapshots. Verification passed: `python3 -m unittest discover -s tests -p 'test_*backup*.py'` (4 tests).
 
 ### P10-T05 · Graceful shutdown and automatic deployment rollback
 - status: todo
