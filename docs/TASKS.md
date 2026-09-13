@@ -547,7 +547,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - note (2026-09-13, done): `causal-neighborhood-v1` now seeds deterministic breadth-first selection at the earliest durable break before filling remaining capacity in row order. The break, retained edges, and adjacency are closed over the returned node set; node/edge totals, returned and omitted counts, and opaque expansion anchors are explicit. The 401-node regression moves the break to the final step and proves it remains selected. Verification passed: 11 focused Rust storage tests and the compiled-server recording integration suite.
 
 ### P10-T02 · Enforce one process per database
-- status: todo
+- status: done
 - priority: critical
 - lane: runtime
 - parallel: yes
@@ -556,6 +556,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - files: src/process_lock.rs, src/main.rs, src/storage.rs, tests/recording_integration.py
 - done-when: a second live process cannot open the same DB; stale ownership is recovered safely and never resets another process's jobs or receipts.
 - verify: cargo test --locked process_lock && python3 tests/recording_integration.py
+- note (2026-09-13, done): the executable now acquires a non-blocking kernel `flock` on an owner-only per-database metadata file before SQLite opens or startup recovery runs. Live contention fails explicitly; stale metadata is replaced only after kernel ownership is proven, avoiding PID-reuse guesses. Three focused tests cover live exclusion, stale recovery, and independent databases. The compiled-server regression starts a second process against an actively generating receipt, proves it exits without changing the receipt or running step, then kills the owner and proves the successor performs normal interruption recovery without replay.
 
 ### P10-T03 · Expose readiness and deployed identity
 - status: todo

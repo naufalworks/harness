@@ -471,7 +471,8 @@ impl DbStore {
         if foreign_key_errors != 0 {
             bail!("schema migration left {foreign_key_errors} foreign-key errors");
         }
-        // One process only. Never silently repeat a potentially billed generation.
+        // The executable acquires ProcessLock before init. Recovery therefore interrupts stale
+        // work exactly once; a rejected contender never resets another process's billed work.
         crate::recording::recover(&mut conn)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),

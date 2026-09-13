@@ -19,6 +19,7 @@ mod context; // P3-T01 deterministic initial window and per-category byte receip
 mod embeddings;
 mod ingest;
 mod memory_agents;
+mod process_lock;
 mod recording;
 mod recording_sql;
 mod repo_map; // P3-T04 bounded per-scope file/symbol map
@@ -28,6 +29,7 @@ mod storage;
 mod subagent; // P5-T03 read-only exploration sub-agent: tools, bounds, report shape
 mod tools; // P1-T05/T06 tool registry (needs-verify: written without cargo) // P4-T02 deterministic offline vectors and cosine scoring
 use memory_agents::MemoryAgents;
+use process_lock::ProcessLock;
 use storage::DbStore;
 
 #[derive(Clone)]
@@ -1120,6 +1122,9 @@ async fn main() -> Result<()> {
             std::fs::create_dir_all(parent)?;
         }
     }
+    // Ownership must be proven before SQLite is opened: DbStore::init runs crash recovery, so a
+    // rejected contender must never interrupt the live owner's jobs or receipts.
+    let _database_lock = ProcessLock::acquire(&database)?;
     let store = DbStore::init(&database)?;
     #[cfg(unix)]
     {

@@ -1,5 +1,16 @@
 # PROGRESS — journal
 
+## 2026-09-13 · Notion AI via Local · P10-T02 completed
+
+- Task: P10-T02; priority: critical; lane: runtime.
+- Worktree/parallel slot: `p10-runtime` at `/root/development/harness-p10-runtime`.
+- Status transition: `todo` → `doing` → `done`.
+- Changes: added a kernel-backed per-database process lock acquired before SQLite startup recovery, owner-only diagnostic metadata, safe stale-file replacement, and live-process contention coverage.
+- Verification: `cargo test --locked process_lock` passed 3 focused tests; `cargo build --locked && python3 tests/recording_integration.py` passed with a real contender process, unchanged live receipt/step, and subsequent crash recovery without replay.
+- Files/commit: `src/process_lock.rs`, `src/main.rs`, `src/storage.rs`, `tests/recording_integration.py`, and task/progress journals; commit recorded with the task branch.
+- Blockers/open questions: none for P10-T02; the lock is Unix-specific, matching the current Linux deployment contract.
+- Next eligible task: P10-T03, expose readiness and deployed identity.
+
 ## 2026-09-13 · Notion AI via Local · P10-T04 completed
 
 - Task: P10-T04; priority: critical; lane: backup.

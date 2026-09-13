@@ -635,6 +635,21 @@ def main() -> None:
             wait_db(hold["request_id"], lambda rows: any(row[1] == "tool_call" and row[2] == "running" for row in rows))
             before_restart = provider.count("hold during tool")
             assert app is not None
+
+            # A second process using another HTTP port but the same database must lose before
+            # opening SQLite. It must not run recovery against the live owner's receipt or step.
+            contender_env = {**env, "HARNESS_ADDR": f"127.0.0.1:{port()}"}
+            contender = subprocess.Popen(
+                [str(binary)], env=contender_env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
+            )
+            _, contender_error = contender.communicate(timeout=5)
+            assert contender.returncode != 0, "a second process unexpectedly acquired the live database"
+            assert b"another live Harness process" in contender_error, contender_error
+            still_live = call("/chat/requests/" + hold["request_id"])[1]
+            assert still_live["state"] == "generating", still_live
+            live_steps = call("/chat/requests/" + hold["request_id"] + "/steps")[1]["steps"]
+            assert live_steps[-1]["status"] == "running", live_steps
+
             app.kill()
             app.wait(timeout=5)
             app = start()
