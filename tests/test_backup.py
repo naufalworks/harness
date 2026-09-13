@@ -96,5 +96,15 @@ class EncryptedBackupTests(unittest.TestCase):
                 create_encrypted_backup(source, Path(directory) / "backups", key)
 
 
+    def test_previous_key_restores_pre_rotation_backup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source, previous = self.fixture(directory)
+            archive = create_encrypted_backup(source, Path(directory) / "backups", previous)
+            current = generate_key(Path(directory) / "current.key")
+            target = Path(directory) / "rotated.db"
+            restore_encrypted_backup(archive, target, current, previous)
+            self.assertTrue(target.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

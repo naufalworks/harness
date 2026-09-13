@@ -53,6 +53,16 @@ def _read_key(key_file):
     return key
 
 
+def _read_keyring(key_file, previous_key_file=None):
+    keys = [_read_key(key_file)]
+    if previous_key_file is not None:
+        previous = _read_key(previous_key_file)
+        if previous == keys[0]:
+            raise ValueError("Previous backup key must differ from current key")
+        keys.append(previous)
+    return keys
+
+
 def generate_key(key_file):
     path = Path(key_file).resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -114,7 +124,7 @@ def _encode_archive(snapshot, key, created_at):
     return prefix + AESGCM(key).encrypt(nonce, plaintext, prefix)
 
 
-def _decode_archive(archive, key):
+def _decode_archive(archive, keys):
     _require_crypto()
     payload = Path(archive).read_bytes()
     prefix_length = len(MAGIC) + 4
@@ -134,6 +144,9 @@ def _decode_archive(archive, key):
     if header.get("version") != VERSION or header.get("algorithm") != ALGORITHM or len(nonce) != 12:
         raise ValueError("Unsupported encrypted backup format")
     prefix = payload[:header_end]
+    key = next((candidate for candidate in keys if hashlib.sha256(candidate).hexdigest()[:16] == header.get("key_id")), None)
+    if key is None:
+        raise ValueError("Encrypted backup authentication failed")
     try:
         plaintext = AESGCM(key).decrypt(nonce, payload[header_end:], prefix)
     except Exception as error:
@@ -178,15 +191,14 @@ def _atomic_publish(path, data, max_output_bytes=None, interrupt_after_bytes=Non
     return path
 
 
-def restore_encrypted_backup(archive, destination, key_file):
+def restore_encrypted_backup(archive, destination, key_file, previous_key_file=None):
     archive = Path(archive).resolve()
     destination = Path(destination).resolve()
     if not archive.is_file():
         raise ValueError("Encrypted backup not found")
     if destination.exists():
         raise FileExistsError(destination)
-    key = _read_key(key_file)
-    header, plaintext = _decode_archive(archive, key)
+    header, plaintext = _decode_archive(archive, _read_keyring(key_file, previous_key_file))
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.parent / f".{destination.name}.{secrets.token_hex(6)}.partial"
     try:
@@ -209,14 +221,14 @@ def restore_encrypted_backup(archive, destination, key_file):
     return destination
 
 
-def restore_drill(archive, key_file):
+def restore_drill(archive, key_file, previous_key_file=None):
     with tempfile.TemporaryDirectory(prefix="harness-restore-drill-") as directory:
-        restored = restore_encrypted_backup(archive, Path(directory) / "restored.db", key_file)
+        restored = restore_encrypted_backup(archive, Path(directory) / "restored.db", key_file, previous_key_file)
         with closing(sqlite3.connect(f"file:{restored}?mode=ro", uri=True)) as connection:
             return connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
 
 
-def create_encrypted_backup(source, directory, key_file, retain=7, *, max_output_bytes=None, interrupt_after_bytes=None, clock=None):
+def create_encrypted_backup(source, directory, key_file, retain=7, *, previous_key_file=None, max_output_bytes=None, interrupt_after_bytes=None, clock=None):
     if retain < 1:
         raise ValueError("retain must be at least 1")
     source = Path(source).resolve()
@@ -232,7 +244,7 @@ def create_encrypted_backup(source, directory, key_file, retain=7, *, max_output
         encoded = _encode_archive(snapshot, key, created_at)
         _atomic_publish(archive, encoded, max_output_bytes, interrupt_after_bytes)
     try:
-        if not restore_drill(archive, key_file):
+        if not restore_drill(archive, key_file, previous_key_file):
             raise RuntimeError("Clean restore drill failed")
     except Exception:
         archive.unlink(missing_ok=True)
@@ -252,23 +264,26 @@ def main():
     create.add_argument("source")
     create.add_argument("directory")
     create.add_argument("--key-file", required=True)
+    create.add_argument("--previous-key-file")
     create.add_argument("--retain", type=int, default=7)
     restore = commands.add_parser("restore", help="restore one archive into a new database path")
     restore.add_argument("archive")
     restore.add_argument("destination")
     restore.add_argument("--key-file", required=True)
+    restore.add_argument("--previous-key-file")
     drill = commands.add_parser("drill", help="restore into a clean temporary target and verify")
     drill.add_argument("archive")
     drill.add_argument("--key-file", required=True)
+    drill.add_argument("--previous-key-file")
     args = parser.parse_args()
     if args.command == "keygen":
         print("Key created:", generate_key(args.key_file))
     elif args.command == "create":
-        print("Encrypted backup verified:", create_encrypted_backup(args.source, args.directory, args.key_file, args.retain))
+        print("Encrypted backup verified:", create_encrypted_backup(args.source, args.directory, args.key_file, args.retain, previous_key_file=args.previous_key_file))
     elif args.command == "restore":
-        print("Backup restored and verified:", restore_encrypted_backup(args.archive, args.destination, args.key_file))
+        print("Backup restored and verified:", restore_encrypted_backup(args.archive, args.destination, args.key_file, args.previous_key_file))
     else:
-        if not restore_drill(args.archive, args.key_file):
+        if not restore_drill(args.archive, args.key_file, args.previous_key_file):
             raise SystemExit("Restore drill failed")
         print("Restore drill passed")
 

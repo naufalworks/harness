@@ -22,7 +22,7 @@ The old service captured trimmed text and import summaries. This version capture
 
 Non-sensitive source lines are preserved; redacted JSONL records are reserialized as valid JSON. Malformed lines and unsupported source records remain in sanitized source text with warnings. JSON/tool formats are version-specific adapters, not a claim of complete fidelity across every agent version. Junie headings inside fenced code are not treated as role boundaries; ambiguous unfenced exact role headings still require format-aware review.
 
-An encrypted, opt-in exact archive belongs in a later isolated subsystem. The current database is plaintext and backups contain private data. Use owner-only filesystem permissions and do not put it into ordinary source control.
+The opt-in exact-original archive is isolated in `src/archive/`: callers must explicitly pass the original bytes, an owner-only archive directory, and a current external 256-bit key file. Versioned AES-256-GCM envelopes authenticate their metadata and ciphertext; SQLite stores only non-secret metadata and append-only privacy events. A previous external key may be supplied during rotation so old archives remain readable. No archive key or exact original enters the ordinary sanitized database. The subsystem is not enabled by default and no production key is generated automatically.
 
 ## Database access and durability
 
@@ -32,7 +32,9 @@ The schema is transactional and versioned. WAL + FULL synchronous, foreign keys,
 
 Operational backups use `scripts/backup.py create`: the online snapshot is encrypted with a versioned AES-256-GCM envelope from the reviewed Python `cryptography` package, authenticated before restore, published through an owner-only temporary file plus atomic rename, restored into a clean temporary target for every creation, and rotated only after that drill succeeds. The required 256-bit key lives in a separate owner-only file and is never stored beside or inside the archive. `keygen` creates that file, `restore` refuses to overwrite a destination, and `drill` verifies an archive without touching the live database. Missing/wrong keys, corruption, short writes, quota errors, and failed restore validation leave no published target and never modify the source database. Plaintext `backup()` remains an internal short-lived migration snapshot helper only.
 
-Example: `python3 scripts/backup.py keygen /secure/harness-backup.key`, then `python3 scripts/backup.py create data/harness_v2.db /secure/backups --key-file /secure/harness-backup.key --retain 7`. Restore drills require the same external key: `python3 scripts/restore_test.py /secure/backups/<archive>.hbak --key-file /secure/harness-backup.key`.
+Example: `python3 scripts/backup.py keygen /secure/harness-backup.key`, then `python3 scripts/backup.py create data/harness_v2.db /secure/backups --key-file /secure/harness-backup.key --retain 7`. During rotation, new backups use `--key-file <current>` while `--previous-key-file <previous>` keeps the immediately preceding generation restorable; retire the previous key only after its archives expire or are re-encrypted. Production key placement and off-host copy policy remain owner decisions.
+
+Privacy operations are deliberately separate. `forget` marks memory intent, `delete_source` marks removal of the sanitized source, `purge_index` marks derived-index removal, and `delete_archive` removes the ciphertext. Migration 007 records each operation with a constrained action and append-only trigger, while per-source timestamps make incomplete deletion workflows visible; no one operation silently implies another.
 
 Startup acquires a kernel-backed exclusive process lock for the normalized database path before SQLite recovery. A second live process is rejected without mutating jobs or receipts; stale metadata is replaced only after kernel ownership is obtained. This remains a single-instance design rather than a leased multi-worker system.
 

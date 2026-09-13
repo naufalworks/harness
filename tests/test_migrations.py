@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Offline migration-chain check. No Rust toolchain needed.
 
-Applies migrations/001 -> 002 -> 003 -> 004 -> 005 -> 006 to an in-memory SQLite DB the same way
+Applies migrations/001 through the latest migration to an in-memory SQLite DB the same way
 `DbStore::init` does (execute_batch in order), then asserts the expected tables,
 user_version and CHECK constraints. Also verifies a populated v3 database upgrades to v4.
 """
@@ -12,7 +12,7 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MIG = ROOT / "migrations"
-CHAIN = ["001_core.sql", "002_recording.sql", "003_agentic.sql", "004_memory_kinds.sql", "005_generation_stream.sql", "006_provenance_edges.sql"]
+CHAIN = ["001_core.sql", "002_recording.sql", "003_agentic.sql", "004_memory_kinds.sql", "005_generation_stream.sql", "006_provenance_edges.sql", "007_privacy_archive.sql"]
 VERSIONS = [name.split("_", 1)[0] for name in CHAIN]
 LATEST_VERSION = int(VERSIONS[-1])
 OPEN_CONNECTIONS = []
@@ -24,6 +24,7 @@ EXPECTED_TABLES = {
     4: {"memory_embeddings"},
     5: {"generation_events"},
     6: {"provenance_edges"},
+    7: {"exact_archives", "source_privacy_state", "privacy_events"},
 }
 
 
@@ -233,6 +234,22 @@ def test_006_provenance_constraints():
             raise AssertionError(f"invalid provenance edge was accepted: {row[0]}")
 
 
+def test_007_privacy_archive_constraints():
+    c = fresh()
+    apply(c, len(CHAIN))
+    now = "2026-01-01T00:00:00Z"
+    c.execute("INSERT INTO exact_archives(id,source_id,relative_path,format_version,algorithm,key_id,plaintext_sha256,byte_length,created_at) VALUES('a','s','a.har',1,'AES-256-GCM','0123456789abcdef',?,4,?)", ("0" * 64, now))
+    for index, (action, archive_id) in enumerate((("forget", None), ("delete_source", None), ("purge_index", None), ("delete_archive", "a"))):
+        c.execute("INSERT INTO privacy_events(id,source_id,archive_id,action,created_at) VALUES(?,?,?,?,?)", (f"e{index}", "s", archive_id, action, now))
+    assert [row[0] for row in c.execute("SELECT action FROM privacy_events ORDER BY seq")] == ["forget", "delete_source", "purge_index", "delete_archive"]
+    try:
+        c.execute("DELETE FROM privacy_events WHERE id='e0'")
+    except sqlite3.IntegrityError:
+        pass
+    else:
+        raise AssertionError("privacy audit event was deleted")
+
+
 def main():
     try:
         check_fts5()
@@ -242,6 +259,7 @@ def main():
         test_004_memory_categories_and_embedding_constraints()
         test_003_constraints()
         test_006_provenance_constraints()
+        test_007_privacy_archive_constraints()
         print(
             f"migrations OK: {' -> '.join(VERSIONS)}, "
             f"user_version={LATEST_VERSION}, data/FTS/FKs preserved"

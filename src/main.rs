@@ -15,6 +15,7 @@ use tokio::sync::Semaphore;
 use uuid::Uuid;
 mod agent_loop; // P1-T10 agentic turn loop: steps, tools, activity events, budgets
 mod agentic_sql; // P1 SQL constants (schema 003); contract-tested by tests/test_agentic_sql.py
+mod archive; // P13 opt-in exact-original encryption and privacy audit policy
 mod context; // P3-T01 deterministic initial window and per-category byte receipts
 mod embeddings;
 mod ingest;
@@ -1666,7 +1667,7 @@ mod tests {
         assert_eq!(payload["ready"], true);
         assert_eq!(payload["commit"], BUILD_COMMIT);
         assert_eq!(payload["binary_sha256"].as_str().unwrap().len(), 64);
-        assert_eq!(payload["schema_version"], 6);
+        assert_eq!(payload["schema_version"], 7);
         assert_eq!(payload["database"]["quick_check"], "ok");
         assert_eq!(payload["database"]["queue"]["jobs_pending"], 0);
         assert_eq!(payload["workers"]["recording"], true);

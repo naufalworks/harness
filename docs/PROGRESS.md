@@ -1,5 +1,24 @@
 # PROGRESS — journal
 
+## 2026-09-13 · Notion AI via Local · P13-T02 completed
+
+- Task: P13-T02; priority: high; lane: privacy.
+- Worktree/parallel slot: `p13-privacy` at `/root/development/harness-p13-privacy`.
+- Status transition: `doing` → `done`.
+- Changes: added migration 007, an opt-in versioned AES-256-GCM exact-original archive with current/previous external keys, append-only privacy events, distinct deletion state, and previous-key backup restore support.
+- Verification: migration chain 001→007 passed; 3 archive tests passed; all 187 Rust tests passed; all 5 encrypted-backup tests passed; `git diff --check` passed.
+- Blockers/open questions: implementation is unblocked. Production key placement, archive retention, and off-host copy policy remain owner deployment decisions; no real key was generated or stored.
+
+
+## 2026-09-13 · Notion AI via Local · P13-T02 started
+
+- Task: P13-T02; priority: high; lane: privacy.
+- Worktree/parallel slot: `p13-privacy` at `/root/development/harness-p13-privacy`, based on deployed `main` commit `00d05c1`.
+- Status transition: `todo` → `doing`.
+- Scope: add an explicitly invoked AES-256-GCM exact-original archive with external current/previous keys, append-only privacy events, and distinct forget, source-delete, index-purge, and archive-delete state.
+- Verification target: `python3 tests/test_migrations.py && cargo test --locked archive`, backup rotation tests, and `git diff --check`.
+- Blockers/open questions: production key placement and off-host archive policy remain owner deployment choices; no real key will be generated or stored by this task.
+
 ## 2026-09-13 · Notion AI via Local · P13-T01 completed
 
 - Task: P13-T01; priority: critical; lane: auth.

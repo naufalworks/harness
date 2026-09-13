@@ -754,7 +754,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - verify: cargo test --locked auth && python3 tests/integration_smoke.py
 
 ### P13-T02 · Add encrypted archive, backup keys and deletion policy
-- status: todo
+- status: done
 - priority: high
 - lane: privacy
 - parallel: no

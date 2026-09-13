@@ -116,7 +116,7 @@ Override the unit name with `HARNESS_UNIT`.
   creates a rotating AES-256-GCM archive from a verified online SQLite snapshot,
   including committed WAL state, and proves a clean restore before rotation. Generate
   the external key once with `python3 scripts/backup.py keygen <key-file>`; never store
-  it beside the archives. The optional Python `cryptography` package is required.
+  it beside the archives. During rotation, pass `--previous-key-file <old-key>` when creating, drilling, or restoring until old archives expire. The optional Python `cryptography` package is required.
 
 ## Legacy memory migration
 

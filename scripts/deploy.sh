@@ -69,7 +69,7 @@ done
 [ "$(jq -r '.ready' <<<"$health")" = true ] || { echo "FAILED: service is unready: $health" >&2; exit 1; }
 [ "$(jq -r '.commit' <<<"$health")" = "$expected_commit" ] || { echo "FAILED: served commit differs from $expected_commit: $health" >&2; exit 1; }
 [ "$(jq -r '.binary_sha256' <<<"$health")" = "$built" ] || { echo "FAILED: readiness binary hash differs from $built: $health" >&2; exit 1; }
-[ "$(jq -r '.schema_version' <<<"$health")" = 6 ] || { echo "FAILED: unexpected schema version: $health" >&2; exit 1; }
+[ "$(jq -r '.schema_version' <<<"$health")" = 7 ] || { echo "FAILED: unexpected schema version: $health" >&2; exit 1; }
 [ "$(jq -r '.database.ready and .workers.recording and .workers.extraction' <<<"$health")" = true ] || { echo "FAILED: database or worker unready: $health" >&2; exit 1; }
 curl -fsS -o /dev/null -H "$auth" "$base/scopes"
 refused=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "$auth" -H 'Content-Type: application/json' -d '[]' "$base/chat/submit")

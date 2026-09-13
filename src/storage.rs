@@ -440,7 +440,7 @@ impl DbStore {
                     "legacy or unknown database: use scripts/migrate_legacy.py into a NEW database"
                 );
             }
-        } else if !(1..=6).contains(&version) {
+        } else if !(1..=7).contains(&version) {
             bail!("unsupported schema version {version}");
         }
         conn.execute_batch(
@@ -463,6 +463,9 @@ impl DbStore {
         }
         if version < 6 {
             conn.execute_batch(include_str!("../migrations/006_provenance_edges.sql"))?;
+        }
+        if version < 7 {
+            conn.execute_batch(include_str!("../migrations/007_privacy_archive.sql"))?;
         }
         let foreign_key_errors: i64 =
             conn.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| {
@@ -801,7 +804,7 @@ impl DbStore {
             let failed_jobs:i64=c.query_row("SELECT count(*) FROM jobs WHERE status='failed'",[],|r|r.get(0))?;
             let waiting_turns:i64=c.query_row("SELECT count(*) FROM chat_receipts WHERE state='captured'",[],|r|r.get(0))?;
             let running_turns:i64=c.query_row("SELECT count(*) FROM chat_receipts WHERE state='generating'",[],|r|r.get(0))?;
-            Ok(json!({"ready":schema_version==6&&quick_check=="ok","schema_version":schema_version,
+            Ok(json!({"ready":schema_version==7&&quick_check=="ok","schema_version":schema_version,
                 "quick_check":quick_check,"queue":{"jobs_pending":pending_jobs,"jobs_running":running_jobs,
                 "jobs_failed":failed_jobs,"turns_waiting":waiting_turns,"turns_running":running_turns}}))
         }).await
