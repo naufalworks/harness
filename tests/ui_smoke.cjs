@@ -28,7 +28,8 @@ const root=path.resolve(__dirname,'..');const out=process.env.QA_DIR || path.joi
    const req=route.request();const u=new URL(req.url());const p=u.pathname;
    const staticFiles={'/':'index.html','/style.css':'style.css','/app.js':'app.js'};
    if(staticFiles[p]){return route.fulfill({contentType:p.endsWith('.css')?'text/css':p.endsWith('.js')?'text/javascript':'text/html',body:fs.readFileSync(path.join(root,'static',staticFiles[p]),'utf8')});}
-   if(req.headers().authorization!=='Bearer test-token'){return route.fulfill({status:401,json:{error:'Bearer token required'}});}
+   if(p==='/auth/session'&&req.headers().authorization==='Bearer test-token')return route.fulfill({status:201,json:{session_token:'test-session',expires_in:900}});
+   if(req.headers().authorization!=='Bearer test-session'){return route.fulfill({status:401,json:{error:'Bearer token required'}});}
    let result={};
    if(p==='/health')result={ready:true,commit:'__HARNESS_BUILD_COMMIT__',binary_sha256:'0'.repeat(64),schema_version:6,database:{ready:true},workers:{recording:true,extraction:true}};
    else if(p==='/memory/status')result={active_memories:importCandidate?1:2,pending_confirmations:Number(importCandidate)+Number(inlineCandidate&&inlineData),queued_jobs:0,failed_jobs:1};

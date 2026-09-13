@@ -4,7 +4,17 @@
 
 ## Scope
 
-Single user, one local process, one SQLite database. Scope labels partition recall and proposals, but are not a tenant-security system. The shared local token authorizes the entire instance. No remote bind is allowed in this release.
+Single user, one local process, one SQLite database. Scope labels partition recall and proposals, but are not a tenant-security system. A master token authorizes the entire instance; the browser exchanges it once for a random, server-side session with a 15-minute default absolute lifetime. Both credentials stay only in JavaScript memory: they are never placed in URLs, DOM state, `localStorage`, or `sessionStorage`. No remote bind is allowed in this release.
+
+## Authentication and request boundaries
+
+Set `HARNESS_AUTH_TOKEN` to 32–256 non-whitespace ASCII characters. For restart-safe rotation, deploy a new value there and temporarily put the old value in `HARNESS_AUTH_TOKEN_PREVIOUS`; after clients have reconnected, remove the previous value and restart. Current and previous master tokens use constant-time comparison. Browser sessions cannot create more sessions, are capped at 128 live entries, are pruned on access, and expire absolutely. `HARNESS_SESSION_TTL_SECONDS` may tighten or extend the lifetime from 300 to 3600 seconds.
+
+Failed bearer authentication waits a uniform 150 ms before returning 401. Authenticated traffic retains the global eight-request concurrency bound and also has one-minute per-route limits: 120 reads, 30 writes, and 8 imports. JSON bodies default to 64 KiB; `/memory/ingest` alone accepts up to 2 MiB. These are local abuse boundaries, not a multi-tenant quota system.
+
+`HARNESS_PROXY_IDENTITY_HEADER` is disabled by default. When enabled, every authenticated API request must carry a printable, non-empty identity in that exact header, and rate accounting is separated by identity. Enable it only behind a trusted reverse proxy that removes every client-supplied copy and writes its own authenticated identity; forwarding an untrusted header defeats the boundary. Bearer authentication remains mandatory.
+
+The loopback listener is HTTP, so it does not emit HSTS by default. A TLS-terminating deployment may set `HARNESS_HTTPS_HSTS=1` only when the public origin is HTTPS and all HTTP traffic is permanently redirected; this adds `Strict-Transport-Security: max-age=31536000; includeSubDomains`. Misusing HSTS on a partially migrated domain can make sibling services unreachable.
 
 ## Capture and privacy
 
@@ -24,7 +34,7 @@ Operational backups use `scripts/backup.py create`: the online snapshot is encry
 
 Example: `python3 scripts/backup.py keygen /secure/harness-backup.key`, then `python3 scripts/backup.py create data/harness_v2.db /secure/backups --key-file /secure/harness-backup.key --retain 7`. Restore drills require the same external key: `python3 scripts/restore_test.py /secure/backups/<archive>.hbak --key-file /secure/harness-backup.key`.
 
-This release does not enforce a cross-process lease. Run only one service process per DB. Startup recovers running jobs to pending and pending chat messages to failed; a second process could disrupt those states. A future process lock / leased multi-worker design must precede multi-instance deployment.
+Startup acquires a kernel-backed exclusive process lock for the normalized database path before SQLite recovery. A second live process is rejected without mutating jobs or receipts; stale metadata is replaced only after kernel ownership is obtained. This remains a single-instance design rather than a leased multi-worker system.
 
 ## Conversation flow
 

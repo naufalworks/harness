@@ -28,13 +28,13 @@ def free_port():
 def main():
     binary=ROOT/'target/debug/harness'
     if not binary.is_file():raise SystemExit('Build first: cargo build --locked')
-    provider=ThreadingHTTPServer(('127.0.0.1',0),Provider);threading.Thread(target=provider.serve_forever,daemon=True).start();port=free_port();token='synthetic-local-token-'+'x'*32
+    provider=ThreadingHTTPServer(('127.0.0.1',0),Provider);threading.Thread(target=provider.serve_forever,daemon=True).start();port=free_port();token='synthetic-local-token-'+'x'*32;previous='synthetic-previous-token-'+'y'*32
     with tempfile.TemporaryDirectory() as d:
-        env={**os.environ,'HARNESS_API_KEY':'synthetic','HARNESS_AUTH_TOKEN':token,'HARNESS_ADDR':f'127.0.0.1:{port}','HARNESS_BASE_URL':f'http://127.0.0.1:{provider.server_port}','HARNESS_DB':str(Path(d)/'test.db'),'HARNESS_MODEL':'synthetic-model'}
+        env={**os.environ,'HARNESS_API_KEY':'synthetic','HARNESS_AUTH_TOKEN':token,'HARNESS_AUTH_TOKEN_PREVIOUS':previous,'HARNESS_ADDR':f'127.0.0.1:{port}','HARNESS_BASE_URL':f'http://127.0.0.1:{provider.server_port}','HARNESS_DB':str(Path(d)/'test.db'),'HARNESS_MODEL':'synthetic-model'}
         app=subprocess.Popen([str(binary)],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-        def call(path,body=None,auth=True,origin=None):
+        def call(path,body=None,auth=True,origin=None,bearer=None):
             headers={'Content-Type':'application/json'}
-            if auth:headers['Authorization']='Bearer '+token
+            if auth:headers['Authorization']='Bearer '+(bearer or token)
             if origin:headers['Origin']=origin
             req=urllib.request.Request(f'http://127.0.0.1:{port}'+path,None if body is None else json.dumps(body).encode(),headers=headers)
             try:
@@ -52,7 +52,11 @@ def main():
                 except urllib.error.URLError:pass
                 time.sleep(.1)
             else:raise AssertionError('Application did not start')
-            assert call('/memory/status',auth=False)[0]==401
+            started=time.monotonic();assert call('/memory/status',auth=False)[0]==401;assert time.monotonic()-started>=.14
+            assert call('/memory/status',bearer=previous)[0]==200
+            code,issued=call('/auth/session',{});assert code==201 and issued['expires_in']==900
+            session_token=issued['session_token'];assert call('/memory/status',bearer=session_token)[0]==200
+            assert call('/auth/session',{},bearer=session_token)[0]==401
             assert call('/memory/status',origin='https://untrusted.invalid')[0]==403
             code,first=call('/chat',{'prompt':'I prefer Rust','scope':'project-a'});assert code==200,(code,first)
             for _ in range(100):
@@ -89,7 +93,7 @@ def main():
             assert call('/scopes/body-contract')[1]['updated_at']==stamped
             code,redacted=call('/chat',{'prompt':'api_key=synthetic-value','scope':'secret-test'});assert code==200 and redacted['redacted']
             assert all('synthetic-value' not in json.dumps(r) for r in requests)
-            print('PASS: authenticated API, origin protection, candidate filtering/editing, approval, scope, multi-turn recall, idempotent ingestion, path rejection, JSON object body contract, provider redaction')
+            print('PASS: delayed and rotating authentication, short-lived browser session, origin protection, candidate filtering/editing, approval, scope, multi-turn recall, idempotent ingestion, path rejection, JSON object body contract, provider redaction')
         finally:
             app.terminate()
             try:app.wait(timeout=5)

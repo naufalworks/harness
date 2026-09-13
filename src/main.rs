@@ -10,7 +10,7 @@ use axum::{
 };
 use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::{json, Value};
-use std::{collections::BTreeMap, env, fmt::Write as _, net::SocketAddr, sync::{Arc, atomic::{AtomicBool, Ordering}}, time::Duration};
+use std::{collections::{BTreeMap, HashMap, VecDeque}, env, fmt::Write as _, net::SocketAddr, sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}}, time::{Duration, Instant}};
 use tokio::sync::Semaphore;
 use uuid::Uuid;
 mod agent_loop; // P1-T10 agentic turn loop: steps, tools, activity events, budgets
@@ -56,12 +56,99 @@ impl WorkerHealth {
 struct Harness {
     store: DbStore,
     agents: MemoryAgents,
-    token: Arc<String>,
+    auth: Arc<AuthState>,
     port: u16,
     origins: Arc<Vec<String>>,
     api_limit: Arc<Semaphore>,
     identity: Arc<RuntimeIdentity>,
     workers: Arc<WorkerHealth>,
+    hsts: bool,
+}
+
+const AUTH_FAILURE_DELAY: Duration = Duration::from_millis(150);
+const MAX_BROWSER_SESSIONS: usize = 128;
+
+struct AuthState {
+    current: String,
+    previous: Option<String>,
+    session_ttl: Duration,
+    sessions: Mutex<HashMap<String, Instant>>,
+    rates: Mutex<HashMap<String, VecDeque<Instant>>>,
+    proxy_identity_header: Option<header::HeaderName>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AuthKind {
+    Master,
+    Session,
+}
+
+impl AuthState {
+    fn new(
+        current: String,
+        previous: Option<String>,
+        session_ttl: Duration,
+        proxy_identity_header: Option<header::HeaderName>,
+    ) -> Self {
+        Self {
+            current,
+            previous,
+            session_ttl,
+            sessions: Mutex::new(HashMap::new()),
+            rates: Mutex::new(HashMap::new()),
+            proxy_identity_header,
+        }
+    }
+    fn identify(&self, token: &str) -> Option<AuthKind> {
+        if valid_token(&self.current, token)
+            || self
+                .previous
+                .as_deref()
+                .is_some_and(|value| valid_token(value, token))
+        {
+            return Some(AuthKind::Master);
+        }
+        let now = Instant::now();
+        let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        sessions.retain(|_, expires| *expires > now);
+        sessions
+            .get(token)
+            .filter(|expires| **expires > now)
+            .map(|_| AuthKind::Session)
+    }
+    fn issue_session(&self) -> (String, u64) {
+        let now = Instant::now();
+        let token = format!("{}.{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
+        let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        sessions.retain(|_, expiry| *expiry > now);
+        if sessions.len() >= MAX_BROWSER_SESSIONS {
+            if let Some(oldest) = sessions
+                .iter()
+                .min_by_key(|(_, expiry)| **expiry)
+                .map(|(key, _)| key.clone())
+            {
+                sessions.remove(&oldest);
+            }
+        }
+        sessions.insert(token.clone(), now + self.session_ttl);
+        (token, self.session_ttl.as_secs())
+    }
+    fn allow(&self, identity: &str, class: &str, limit: usize) -> bool {
+        let now = Instant::now();
+        let mut rates = self.rates.lock().unwrap_or_else(|e| e.into_inner());
+        let entries = rates.entry(format!("{identity}:{class}")).or_default();
+        while entries
+            .front()
+            .is_some_and(|at| now.duration_since(*at) >= Duration::from_secs(60))
+        {
+            entries.pop_front();
+        }
+        if entries.len() >= limit {
+            return false;
+        }
+        entries.push_back(now);
+        true
+    }
 }
 struct ApiError(StatusCode, &'static str);
 impl IntoResponse for ApiError {
@@ -155,10 +242,49 @@ async fn authenticate(State(h): State<Harness>, request: Request, next: Next) ->
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "));
-    if !auth.is_some_and(|value| valid_token(&h.token, value)) {
+    if auth.and_then(|value| h.auth.identify(value)).is_none() {
+        tokio::time::sleep(AUTH_FAILURE_DELAY).await;
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({"error":"Bearer token required"})),
+        )
+            .into_response();
+    }
+    let identity = if let Some(name) = &h.auth.proxy_identity_header {
+        match request
+            .headers()
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .filter(|value| {
+                !value.is_empty()
+                    && value.len() <= 128
+                    && value.bytes().all(|byte| byte.is_ascii_graphic())
+            }) {
+            Some(value) => value.to_string(),
+            None => {
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(json!({"error":"Trusted proxy identity required"})),
+                )
+                    .into_response()
+            }
+        }
+    } else {
+        "local".to_string()
+    };
+    let path = request.uri().path();
+    let limit = if path == "/memory/ingest" {
+        8
+    } else if request.method() == axum::http::Method::POST {
+        30
+    } else {
+        120
+    };
+    let route_key = format!("{}:{path}", request.method());
+    if !h.auth.allow(&identity, &route_key, limit) {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(json!({"error":"Request rate limit exceeded"})),
         )
             .into_response();
     }
@@ -184,13 +310,66 @@ async fn authenticate(State(h): State<Harness>, request: Request, next: Next) ->
     };
     next.run(request).await
 }
-async fn headers(request: Request, next: Next) -> Response {
+async fn create_browser_session(State(h): State<Harness>, headers: HeaderMap) -> Response {
+    let Ok(_permit) = h.api_limit.clone().try_acquire_owned() else {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(json!({"error":"Too many concurrent requests"})),
+        )
+            .into_response();
+    };
+    let token = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "));
+    if token.and_then(|value| h.auth.identify(value)) != Some(AuthKind::Master) {
+        tokio::time::sleep(AUTH_FAILURE_DELAY).await;
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error":"Master bearer token required"})),
+        )
+            .into_response();
+    }
+    if let Some(origin) = headers.get(header::ORIGIN) {
+        if !origin
+            .to_str()
+            .ok()
+            .is_some_and(|value| h.origins.iter().any(|allowed| allowed == value))
+        {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({"error":"Origin not allowed"})),
+            )
+                .into_response();
+        }
+    }
+    if !h.auth.allow("local", "session", 5) {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(json!({"error":"Session creation rate limit exceeded"})),
+        )
+            .into_response();
+    }
+    let (session_token, expires_in) = h.auth.issue_session();
+    (
+        StatusCode::CREATED,
+        Json(json!({"session_token":session_token,"expires_in":expires_in})),
+    )
+        .into_response()
+}
+async fn headers(State(state): State<Harness>, request: Request, next: Next) -> Response {
     let mut response = next.run(request).await;
     let h = response.headers_mut();
     h.insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
     h.insert("x-content-type-options", "nosniff".parse().unwrap());
     h.insert("referrer-policy", "no-referrer".parse().unwrap());
     h.insert("content-security-policy","default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'".parse().unwrap());
+    if state.hsts {
+        h.insert(
+            "strict-transport-security",
+            "max-age=31536000; includeSubDomains".parse().unwrap(),
+        );
+    }
     response
 }
 async fn index() -> impl IntoResponse {
@@ -1106,7 +1285,10 @@ fn router(state: Harness) -> Router {
         .route("/memory/candidates", get(candidates))
         .route("/memory/candidates/{id}/edit", post(edit_candidate))
         .route("/memory/confirm", post(confirm))
-        .route("/memory/ingest", post(ingest_memory))
+        .route(
+            "/memory/ingest",
+            post(ingest_memory).layer(DefaultBodyLimit::max(2 * 1024 * 1024)),
+        )
         .route("/sessions/{id}/messages", get(history))
         .route("/jobs", get(jobs))
         .route("/jobs/{id}/retry", post(retry_job))
@@ -1128,9 +1310,10 @@ fn router(state: Harness) -> Router {
         .route("/", get(index))
         .route("/app.js", get(js))
         .route("/style.css", get(css))
+        .route("/auth/session", post(create_browser_session))
         .merge(api)
-        .layer(DefaultBodyLimit::max(2 * 1024 * 1024))
-        .layer(middleware::from_fn(headers))
+        .layer(DefaultBodyLimit::max(64 * 1024))
+        .layer(middleware::from_fn_with_state(state.clone(), headers))
         .with_state(state)
 }
 
@@ -1153,6 +1336,32 @@ async fn main() -> Result<()> {
     {
         bail!("HARNESS_AUTH_TOKEN must contain 32-256 non-whitespace ASCII characters");
     }
+    let previous_token = env::var("HARNESS_AUTH_TOKEN_PREVIOUS")
+        .ok()
+        .filter(|value| !value.is_empty());
+    if previous_token.as_deref().is_some_and(|value| {
+        value == token
+            || value.len() < 32
+            || value.len() > 256
+            || !value.is_ascii()
+            || value.chars().any(char::is_whitespace)
+    }) {
+        bail!("HARNESS_AUTH_TOKEN_PREVIOUS must be distinct and contain 32-256 non-whitespace ASCII characters");
+    }
+    let session_ttl = env::var("HARNESS_SESSION_TTL_SECONDS")
+        .ok()
+        .map(|value| value.parse::<u64>())
+        .transpose()?
+        .unwrap_or(900);
+    if !(300..=3600).contains(&session_ttl) {
+        bail!("HARNESS_SESSION_TTL_SECONDS must be between 300 and 3600");
+    }
+    let proxy_identity_header = env::var("HARNESS_PROXY_IDENTITY_HEADER")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .map(|value| header::HeaderName::from_bytes(value.as_bytes()))
+        .transpose()?;
+    let hsts = env::var("HARNESS_HTTPS_HSTS").is_ok_and(|value| value == "1");
     let key =
         env::var("HARNESS_API_KEY").map_err(|_| anyhow::anyhow!("HARNESS_API_KEY is required"))?;
     if key.trim().is_empty() {
@@ -1200,12 +1409,18 @@ async fn main() -> Result<()> {
     let state = Harness {
         store: store.clone(),
         agents: agents.clone(),
-        token: Arc::new(token),
+        auth: Arc::new(AuthState::new(
+            token,
+            previous_token,
+            Duration::from_secs(session_ttl),
+            proxy_identity_header,
+        )),
         port: addr.port(),
         origins: Arc::new(origins),
         api_limit: Arc::new(Semaphore::new(8)),
         identity,
         workers: workers.clone(),
+        hsts,
     };
     let listener = tokio::net::TcpListener::bind(addr).await?;
     workers.recording.store(true, Ordering::Release);
@@ -1232,7 +1447,7 @@ mod tests {
         router(Harness {
             store,
             agents: MemoryAgents::new("http://127.0.0.1:9", "synthetic", "test").unwrap(),
-            token: Arc::new("x".repeat(32)),
+            auth: Arc::new(AuthState::new("x".repeat(32), None, Duration::from_secs(900), None)),
             port: 8080,
             origins: Arc::new(vec![
                 "http://127.0.0.1:8080".into(),
@@ -1242,6 +1457,7 @@ mod tests {
             api_limit: Arc::new(Semaphore::new(8)),
             identity: test_identity(),
             workers,
+            hsts: false,
         })
     }
     fn app_with(store: DbStore) -> Router { app_with_workers(store, test_workers()) }
@@ -1274,6 +1490,163 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+    }
+    #[tokio::test]
+    async fn auth_failure_is_delayed() {
+        let started = Instant::now();
+        let response = app()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/memory/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert!(started.elapsed() >= Duration::from_millis(140));
+    }
+    #[test]
+    fn auth_accepts_previous_token_during_rotation() {
+        let auth = AuthState::new(
+            "c".repeat(32),
+            Some("p".repeat(32)),
+            Duration::from_secs(900),
+            None,
+        );
+        assert_eq!(auth.identify(&"c".repeat(32)), Some(AuthKind::Master));
+        assert_eq!(auth.identify(&"p".repeat(32)), Some(AuthKind::Master));
+        assert_eq!(auth.identify(&"x".repeat(32)), None);
+    }
+    #[tokio::test]
+    async fn auth_browser_session_is_short_lived_and_cannot_mint_sessions() {
+        let app = app();
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/auth/session")
+                    .header("Authorization", format!("Bearer {}", "x".repeat(32)))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let bytes = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let payload: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(payload["expires_in"], 900);
+        let session = payload["session_token"].as_str().unwrap();
+        let status = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/memory/status")
+                    .header("Authorization", format!("Bearer {session}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(status.status(), StatusCode::OK);
+        let recursive = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/auth/session")
+                    .header("Authorization", format!("Bearer {session}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(recursive.status(), StatusCode::UNAUTHORIZED);
+    }
+    #[test]
+    fn auth_rate_classes_are_bounded_per_identity() {
+        let auth = AuthState::new("x".repeat(32), None, Duration::from_secs(900), None);
+        assert!((0..8).all(|_| auth.allow("one", "import", 8)));
+        assert!(!auth.allow("one", "import", 8));
+        assert!(auth.allow("two", "import", 8));
+    }
+    #[tokio::test]
+    async fn auth_default_body_limit_rejects_oversized_json() {
+        let response = app()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/config")
+                    .header("Authorization", format!("Bearer {}", "x".repeat(32)))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(format!(
+                        "{{\"padding\":\"{}\"}}",
+                        "x".repeat(70 * 1024)
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+    #[tokio::test]
+    async fn auth_proxy_identity_and_hsts_are_explicit_opt_ins() {
+        let state = Harness {
+            store: DbStore::init(":memory:").unwrap(),
+            agents: MemoryAgents::new("http://127.0.0.1:9", "synthetic", "test").unwrap(),
+            auth: Arc::new(AuthState::new(
+                "x".repeat(32),
+                None,
+                Duration::from_secs(900),
+                Some(header::HeaderName::from_static("x-harness-user")),
+            )),
+            port: 8080,
+            origins: Arc::new(vec!["http://127.0.0.1:8080".into()]),
+            api_limit: Arc::new(Semaphore::new(8)),
+            identity: test_identity(),
+            workers: test_workers(),
+            hsts: true,
+        };
+        let app = router(state);
+        let missing = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/memory/status")
+                    .header("Authorization", format!("Bearer {}", "x".repeat(32)))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
+        let trusted = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/memory/status")
+                    .header("Authorization", format!("Bearer {}", "x".repeat(32)))
+                    .header("x-harness-user", "owner")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(trusted.status(), StatusCode::OK);
+        assert_eq!(
+            trusted.headers().get("strict-transport-security").unwrap(),
+            "max-age=31536000; includeSubDomains"
+        );
+    }
+    #[test]
+    fn auth_frontend_keeps_credentials_out_of_url_and_storage() {
+        let source = include_str!("../static/app.js");
+        assert!(source.contains("fetch('/auth/session'"));
+        assert!(!source.contains("sessionStorage.setItem('token"));
+        assert!(!source.contains("localStorage.setItem('harness_token"));
+        assert!(!source.contains("sessionStorage.setItem('harness_token"));
+        assert!(!source.contains("?token="));
     }
     #[tokio::test]
     async fn health_reports_identity_database_queue_and_workers() {
@@ -1339,12 +1712,13 @@ mod tests {
         let state = Harness {
             store: DbStore::init(":memory:").unwrap(),
             agents: MemoryAgents::new("http://127.0.0.1:9", "synthetic", "test").unwrap(),
-            token: Arc::new("x".repeat(32)),
+            auth: Arc::new(AuthState::new("x".repeat(32), None, Duration::from_secs(900), None)),
             port: 8080,
             origins: Arc::new(vec!["https://upcloud-dev.example.ts.net:8443".into()]),
             api_limit: Arc::new(Semaphore::new(8)),
             identity: test_identity(),
             workers: test_workers(),
+            hsts: false,
         };
         let response = router(state)
             .oneshot(

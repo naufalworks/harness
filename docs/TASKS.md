@@ -749,7 +749,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - parallel: yes
 - depends: P10-T03
 - design: docs/ROADMAP.md#p13-security-privacy-and-auditability
-- files: src/main.rs, static/app.js, docs/ARCHITECTURE.md
+- files: src/main.rs, static/app.js, tests/integration_smoke.py, tests/ui_smoke.cjs, tests/recording_ui.cjs, docs/ARCHITECTURE.md
 - done-when: per-route body/rate limits, delayed auth failures, token rotation, short-lived browser sessions, proxy identity options and HTTPS HSTS guidance are tested without putting credentials in URLs or storage.
 - verify: cargo test --locked auth && python3 tests/integration_smoke.py
 

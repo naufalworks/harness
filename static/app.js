@@ -36,6 +36,15 @@ async function api(path, body) {
     return payload;
   } finally { clearTimeout(timer); }
 }
+async function exchangeBrowserSession(masterToken) {
+  const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 20000);
+  try {
+    const response = await fetch('/auth/session', { method: 'POST', signal: controller.signal, headers: { 'Authorization': `Bearer ${masterToken}` } });
+    const payload = await response.json().catch(() => ({ error: `Unexpected response (${response.status})` }));
+    if (!response.ok || typeof payload.session_token !== 'string') { const error = new Error(payload.error || `Request failed (${response.status})`); error.status = response.status; throw error; }
+    return payload.session_token;
+  } finally { clearTimeout(timer); }
+}
 function node(tag, text, cls) { const element = document.createElement(tag); if (text !== undefined) element.textContent = text; if (cls) element.className = cls; return element; }
 function persistSession() { sessionStorage.setItem('harness_scope', scope); sessionStorage.setItem('harness_session', session); }
 const stateLabels = { captured: 'Sent · waiting for answer', generating: 'Thinking…', complete: 'Done', failed: 'Saved · answer failed', interrupted: 'Saved · answer interrupted' };
@@ -310,15 +319,17 @@ async function sendAttempt(retry = false) {
   } finally { if (myEpoch === epoch) setBusy(false); }
 }
 $('authform').addEventListener('submit', async event => {
-  event.preventDefault(); token = $('token').value.trim(); const myEpoch = epoch;
+  event.preventDefault(); let masterToken = $('token').value.trim(); $('token').value = ''; const myEpoch = epoch;
   try {
+    token = await exchangeBrowserSession(masterToken); masterToken = '';
     const health = await api('/health'); if (myEpoch !== epoch) return;
     if (!health.ready) throw new Error('Harness is not ready');
     if (health.commit !== EXPECTED_SERVER_COMMIT) throw new Error('This page is stale; reload before connecting');
-    $('auth').hidden = true; $('workspace').hidden = false; $('connection').textContent = 'Connected'; $('token').value = '';
+    $('auth').hidden = true; $('workspace').hidden = false; $('connection').textContent = 'Connected';
     notice('Connected — pick up where you left off.'); persistSession(); await loadHistory(); await loadSessions(); await refreshStatus(); await refreshScopeSetup();
     rememberPending(pending); if (pending) await resumeRecording();
   } catch (error) { token = ''; $('workspace').hidden = true; $('auth').hidden = false; notice(error.message, true); }
+  finally { masterToken = ''; }
 });
 $('lock').addEventListener('click', () => {
   token = ''; epoch++; setBusy(false); pendingPrompt = null; closeGenerationStream(); closeActivityStream();
