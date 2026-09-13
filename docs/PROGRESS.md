@@ -1,14 +1,15 @@
 # PROGRESS — journal
 
-## 2026-09-13 · Notion AI via Local · P10-T03 implementation ready
+## 2026-09-13 · Notion AI via Local · P10-T03 completed
 
 - Task: P10-T03; priority: critical; lane: runtime.
 - Worktree/parallel slot: `p10-readiness` at `/root/development/harness-p10-readiness`.
-- Status transition: `todo` → `doing`.
+- Status transition: `todo` → `doing` → `done`.
 - Changes: embedded the source commit, calculated the running executable's SHA-256, added authenticated readiness with database/schema/queue and tracked worker state, exposed build identity in the UI with stale-client detection, and made deployment smoke fail closed on commit/hash/schema/worker/database mismatch.
-- Verification: 3 focused health tests, all 177 Rust tests, all 65 Python tests, compiled recording integration, both mocked-browser suites, JavaScript/shell syntax checks, and `git diff --check` passed.
-- Blockers/open questions: production deployment is the remaining completion gate; automatic rollback belongs to P10-T05.
-- Next: integrate the implementation, run the release deployment smoke, then mark P10-T03 done.
+- Verification: 3 focused health tests, all 177 Rust tests, all 65 Python tests, compiled recording integration, both mocked-browser suites, JavaScript/shell syntax checks, `git diff --check`, and the production deployment/readiness smoke passed.
+- Deployment: implementation commit `1c4d699` started as PID 116606 with release SHA-256 `d3096e3e6b976bedc158cf4324a3aed6714cbacb267b017f19adab55f7a5dfd3`; commit, executable, schema 6, database, both workers, API, and request refusal were verified.
+- Blockers/open questions: none for P10-T03; automatic rollback intentionally remains P10-T05.
+- Next highest-priority eligible task: P13-T01, harden request authentication and abuse boundaries.
 
 ## 2026-09-13 · Notion AI via Local · P10-T02 completed
 

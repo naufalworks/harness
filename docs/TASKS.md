@@ -559,7 +559,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - note (2026-09-13, done): the executable now acquires a non-blocking kernel `flock` on an owner-only per-database metadata file before SQLite opens or startup recovery runs. Live contention fails explicitly; stale metadata is replaced only after kernel ownership is proven, avoiding PID-reuse guesses. Three focused tests cover live exclusion, stale recovery, and independent databases. The compiled-server regression starts a second process against an actively generating receipt, proves it exits without changing the receipt or running step, then kills the owner and proves the successor performs normal interruption recovery without replay.
 
 ### P10-T03 · Expose readiness and deployed identity
-- status: doing
+- status: done
 - priority: critical
 - lane: runtime
 - parallel: no
@@ -568,6 +568,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - files: build.rs, src/main.rs, src/storage.rs, static/app.js, scripts/deploy.sh, tests/recording_ui.cjs, tests/ui_smoke.cjs
 - done-when: health/readiness reports commit, binary hash, schema version, queue/worker state and DB readiness; UI and deploy smoke detect a stale or unready artifact.
 - verify: cargo test --locked health && bash scripts/deploy.sh
+- note (2026-09-13, done): the authenticated readiness contract now reports the embedded source commit, runtime executable SHA-256, startup time, schema and SQLite probe, queue counts, and tracked worker liveness, returning 503 when any required component is unready. Served JavaScript embeds its expected commit and refuses a mixed/stale frontend; deployment now verifies the live process hash and readiness commit/hash/schema/workers/database before smoke-testing the API. Three focused health regressions, all 177 Rust tests, all 65 Python tests, compiled recording integration, both browser suites, and deployment smoke passed.
 
 ### P10-T04 · Automate encrypted backup and restore drills
 - status: done
