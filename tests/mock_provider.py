@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import threading
-from collections import Counter, defaultdict
+from collections import Counter
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
@@ -105,7 +105,7 @@ class MockProvider:
             def log_message(self, *_args: Any) -> None:
                 pass
 
-            def do_POST(self) -> None:  # noqa: N802
+            def do_POST(self) -> None:
                 length = int(self.headers.get("Content-Length", "0"))
                 body = json.loads(self.rfile.read(length))
                 # The verifier audits an answer that already exists; it is never a coding turn.

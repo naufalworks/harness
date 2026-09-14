@@ -2,6 +2,10 @@
 name = "harness"
 version = "0.2.0"
 edition = "2021"
+# This crate is a deployed binary, never a registry package. Saying so lets
+# cargo-deny's private-crate rule skip the missing `license` field instead of
+# failing the license gate on our own code.
+publish = false
 
 [dependencies]
 axum = "0.8"

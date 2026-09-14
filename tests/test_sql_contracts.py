@@ -2,13 +2,22 @@
 with a Python transaction driver mirroring Rust orchestration. They do not compile
 or execute the Rust implementation; the Rust/HTTP release gates remain separate.
 """
-import importlib.util,json,re,sqlite3,sys,tempfile,time,unittest,uuid
+import json
+import re
+import sqlite3
+import sys
+import tempfile
+import time
+import unittest
+import uuid
 from contextlib import closing
 from pathlib import Path
+
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'scripts'))
 from backup import backup
 from migrate_legacy import migrate
+
 MIGRATIONS=['001_core.sql','002_recording.sql','003_agentic.sql','004_memory_kinds.sql']
 # P12-T02: the storage module was split into src/storage.rs plus src/storage/*.rs, so
 # the shipped SQL now lives across those files. The submodules hold the implementation

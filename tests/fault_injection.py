@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Deterministic destructive reliability fixtures on disposable SQLite databases only."""
-import os
 import shutil
 import signal
 import sqlite3
@@ -32,7 +31,7 @@ def check(path: Path) -> sqlite3.Connection:
 
 def crash_script(path: Path, body: str) -> subprocess.CompletedProcess:
     script = "import os,signal,sqlite3,sys\np=sys.argv[1]\nc=sqlite3.connect(p,isolation_level=None)\nc.execute('PRAGMA foreign_keys=ON')\nc.execute('PRAGMA journal_mode=WAL')\nc.execute('PRAGMA synchronous=FULL')\n" + body + "\nos.kill(os.getpid(),signal.SIGKILL)\n"
-    result = subprocess.run([sys.executable, "-c", script, str(path)])
+    result = subprocess.run([sys.executable, "-c", script, str(path)], check=False)
     assert result.returncode == -signal.SIGKILL, result.returncode
     return result
 

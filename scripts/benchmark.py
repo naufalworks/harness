@@ -7,12 +7,11 @@ The gate validates required indexes and representative SQLite query plans.
 from __future__ import annotations
 
 import argparse
-from contextlib import closing
 import sqlite3
 import sys
 import time
+from contextlib import closing
 from pathlib import Path
-
 
 DEFAULT_SESSIONS = 10000
 DEFAULT_EVENTS = 100000

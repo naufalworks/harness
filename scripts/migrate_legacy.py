@@ -3,10 +3,19 @@
 Original artifacts/settings/graph remain only in the original and its backup.
 No old memory is automatically trusted, and missing provenance is never invented.
 """
-import argparse, hashlib, json, os, re, sqlite3, tempfile, uuid
-from datetime import datetime, timezone, timedelta
+import argparse
+import hashlib
+import json
+import os
+import re
+import sqlite3
+import tempfile
+import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
 from backup import backup
+
 ROOT=Path(__file__).resolve().parents[1]
 ALLOWED={'preference','fact','project','rule','skill'}
 MARKERS=['private key','private_key','age-secret-key-','password','passwd','api_key','api-key','api key','access_token','refresh_token','client_secret','credential','authorization:','bearer ','ghp_','github_pat_','xoxb-','xoxp-']

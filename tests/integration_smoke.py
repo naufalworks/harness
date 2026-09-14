@@ -1,8 +1,17 @@
 #!/usr/bin/env python3
 """Run against the COMPILED Rust binary with a local mock provider; no paid API calls."""
-import json,os,signal,socket,subprocess,tempfile,threading,time,urllib.request,urllib.error
-from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
+import json
+import os
+import socket
+import subprocess
+import tempfile
+import threading
+import time
+import urllib.error
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
 ROOT=Path(__file__).resolve().parents[1]
 requests=[]
 class Provider(BaseHTTPRequestHandler):

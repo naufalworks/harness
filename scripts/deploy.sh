@@ -24,6 +24,10 @@ if [ "$dirty" -gt 0 ]; then
 fi
 
 set -a
+# .env is deployment-local and deliberately not in the repository, so the
+# linter cannot follow it. The variables it must define are validated below
+# with ${VAR:?...} expansions.
+# shellcheck source=/dev/null
 . ./.env
 set +a
 base="http://${HARNESS_ADDR:-127.0.0.1:8080}"

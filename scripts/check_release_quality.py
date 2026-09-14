@@ -1,8 +1,15 @@
 #!/usr/bin/env python3
 """Fail-closed local evidence for P12-T06; CI-only evidence is reported, never passed."""
 from __future__ import annotations
-import os, re, shutil, subprocess, sys, tempfile
+
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
 from pathlib import Path
+
 ROOT=Path(__file__).resolve().parents[1]
 
 PROPERTIES={
@@ -28,7 +35,7 @@ def main():
  absent=[token for token in CI_REQUIRED if token not in workflow]
  if absent: raise SystemExit(f'release-evidence CI contract shrank: {absent}')
  listing=subprocess.run(['cargo','test','--locked','--','--list'],cwd=ROOT,text=True,capture_output=True,check=True).stdout
- missing={kind:test for kind,test in PROPERTIES.items() if not re.search(rf'(^|::){re.escape(test)}:',listing,re.M)}
+ missing={kind:test for kind,test in PROPERTIES.items() if not re.search(rf'(^|::){re.escape(test)}:',listing,re.MULTILINE)}
  if missing: raise SystemExit(f'property inventory shrank: {missing}')
  for kind,test in PROPERTIES.items(): run('property-'+kind,'cargo','test','--locked',test)
  run('import-protocol-fuzz','python3','tests/fuzz_import_protocol.py')

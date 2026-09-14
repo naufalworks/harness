@@ -10,13 +10,19 @@ but they never enter active recall. Idempotent by source snapshot hash.
 
 Usage: python3 scripts/migrate_legacy_trusted.py SRC_DB DST_DB
 """
-import json, os, re, sqlite3, sys, tempfile, uuid
+import json
+import os
+import re
+import sqlite3
+import sys
+import tempfile
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
-from backup import backup  # noqa: E402  (online snapshot, includes WAL)
+from backup import backup
 
 KEY_RE = re.compile(r"[a-z0-9_]{1,80}")
 ALLOWED = {"preference", "fact", "project", "rule", "skill"}

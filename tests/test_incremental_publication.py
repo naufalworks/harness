@@ -10,7 +10,9 @@ This is a specification and test corpus, NOT a substitute for the Rust implement
 for cargo, or for the HTTP suites. All fixtures are synthetic: no provider calls, no
 real credentials and no user data.
 """
-import random, re, unittest
+import random
+import re
+import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -160,7 +162,7 @@ class IncrementalPublicationSpec(unittest.TestCase):
             for parts in splittings(text):
                 r = StreamRedactor()
                 out = ''.join(r.push(part) for part in parts) + r.finish()
-                self.assertEqual(out, expected, '%s: %r' % (name, parts))
+                self.assertEqual(out, expected, f'{name}: {parts!r}')
                 self.assertEqual(r.published, expected, name)
 
     def test_published_text_is_always_a_prefix_and_never_leaks_early(self):

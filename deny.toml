@@ -1,0 +1,47 @@
+# cargo-deny policy for harness.
+#
+# P12-T02 follow-up: CI has always declared `cargo deny check licenses bans
+# sources`, but the repository never carried a deny.toml. Without one, deny
+# runs with an empty license allowlist and rejects ordinary permissive
+# licences (MIT included), so the declared gate could never have passed. This
+# file states the policy explicitly: permissive licences only, registry
+# sources only, no git dependencies.
+
+[graph]
+all-features = true
+
+[licenses]
+# Permissive / weak-copyleft-free set. Anything outside this list is a
+# deliberate decision and must be added here with a reason.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "CC0-1.0",
+    "MPL-2.0",
+    "OpenSSL",
+    "BSL-1.0",
+]
+confidence-threshold = 0.9
+# harness itself carries no `license` field and is never published to a
+# registry, so deny would otherwise fail it as unlicensed. Ignoring private
+# crates keeps the policy about third-party code, which is what it is for.
+private = { ignore = true }
+# Allowances that no current dependency uses are policy, not mistakes: keep
+# them listed without turning each one into a warning.
+unused-allowed-license = "allow"
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

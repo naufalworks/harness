@@ -1,7 +1,11 @@
 """Offline contract test for src/agentic_sql.rs: every constant is executed against the
 migrated schema (001->006) with a Python driver mirroring src/agent_loop.rs.
 No Rust toolchain needed. Rust/HTTP gates remain separate."""
-import json, re, sqlite3, unittest, uuid
+import json
+import re
+import sqlite3
+import unittest
+import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -9,7 +13,7 @@ RUST = (ROOT / "src/agentic_sql.rs").read_text()
 # P12-T05b: match across the `=` tolerantly. rustfmt wraps long declarations onto
 # the next line, and a regex that required `= r#"` on one line silently dropped 7
 # of 31 constants: the scrape returned fewer keys instead of failing loudly.
-SQL = {m.group(1): m.group(2) for m in re.finditer(r'pub const (\w+): &str\s*=\s*r#"(.*?)"#;', RUST, re.S)}
+SQL = {m.group(1): m.group(2) for m in re.finditer(r'pub const (\w+): &str\s*=\s*r#"(.*?)"#;', RUST, re.DOTALL)}
 # Guard the scrape itself, so a future formatting or syntax change cannot quietly
 # reduce this suite to testing nothing.
 _DECLARED = set(re.findall(r'pub const (\w+): &str', RUST))

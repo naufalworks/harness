@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """Read-only smoke test for an explicitly configured deployed HTTPS endpoint."""
 from __future__ import annotations
-import argparse, json, os, ssl, urllib.parse, urllib.request
+
+import argparse
+import json
+import os
+import ssl
+import urllib.parse
+import urllib.request
 
 
 def main() -> int:

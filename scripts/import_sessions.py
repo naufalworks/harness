@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
 """Upload bounded local transcripts; the service never accepts filesystem paths."""
-import argparse,json,os,time,urllib.request,urllib.error,urllib.parse
+import argparse
+import json
+import os
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
+
 
 def files_at(path,max_files):
     if path.is_symlink():raise ValueError('Symlinks are not accepted')

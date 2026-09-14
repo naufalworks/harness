@@ -6,13 +6,15 @@ reproducible lint gates. Those live in two different places, and this script is
 deliberate about which is which:
 
   * Checks 1-4 run here, offline, and are real assertions about this checkout.
-  * Vulnerability and license scanning needs `cargo audit` / `cargo deny`,
-    neither of which is installed here, and crates.io is unreachable from this
-    host. Pretending to scan would be worse than not scanning, so instead this
-    script asserts that the CI workflow *declares* those steps. That is a
-    checkable local claim: it catches the failure mode where the scanner step is
-    quietly deleted from CI. It is not evidence that a scan passed, and the
-    output says so.
+    Check 4 asserts that CI *declares* the scanner steps, which catches the
+    failure mode where a scanner is quietly deleted from the workflow. A
+    declaration is not evidence that a scan passed.
+  * Check 5 actually executes the scanners (cargo audit, cargo deny,
+    shellcheck, ruff) when they are installed. Each one is reported
+    individually: PASS when it exits clean, FAIL when it reports findings, and
+    SKIP -- never a pass -- when the tool is absent or the network it needs is
+    unreachable. cargo audit and cargo deny need crates.io; on an offline host
+    they skip rather than pretending to scan.
 
 Exit code is 1 if any check fails, 0 otherwise. Warnings never fail the run.
 """
@@ -21,6 +23,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -105,6 +108,7 @@ def check_lock_in_sync() -> None:
             capture_output=True,
             text=True,
             timeout=120,
+            check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         record("SKIP", "lock", f"could not run cargo metadata: {exc}")
@@ -133,6 +137,7 @@ REQUIRED_CI_STEPS = {
     "cargo audit": "dependency vulnerability scan",
     "cargo deny": "license and ban policy",
     "shellcheck": "shell lint",
+    "ruff check": "python lint",
     "check_docs.py": "documentation claim gate",
     "check_supply_chain.py": "this script",
 }
@@ -152,11 +157,54 @@ def check_ci_declares_gates() -> None:
         )
 
 
+# --------------------------------------------------------------------------
+# 5. Run the scanners themselves when they are installed. A missing tool or an
+#    unreachable registry is a SKIP, never a pass.
+# --------------------------------------------------------------------------
+SCANNERS: tuple[tuple[str, str, list[str], bool], ...] = (
+    ("audit", "cargo-audit", ["cargo", "audit", "--deny", "warnings"], True),
+    ("deny", "cargo-deny", ["cargo", "deny", "check", "licenses", "bans", "sources"], True),
+    ("shell-lint", "shellcheck", ["bash", "-c", "shellcheck scripts/*.sh"], False),
+    ("python-lint", "ruff", ["ruff", "check", "tests", "scripts"], False),
+)
+
+
+def check_scanners_run() -> None:
+    for area, tool, command, needs_network in SCANNERS:
+        probe = tool if tool != "cargo-audit" and tool != "cargo-deny" else "cargo"
+        if shutil.which(probe) is None or (
+            probe == "cargo" and shutil.which(tool) is None and not (Path.home() / ".cargo" / "bin" / tool).exists()
+        ):
+            record("SKIP", area, f"{tool} is not installed on this host")
+            continue
+        try:
+            result = subprocess.run(
+                command, cwd=ROOT, capture_output=True, text=True, timeout=900, check=False
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            record("SKIP", area, f"could not run {tool}: {exc}")
+            continue
+        if result.returncode == 0:
+            record("PASS", area, f"{tool} reported no findings")
+            continue
+        output = (result.stderr + result.stdout).strip().splitlines()
+        tail = output[-1] if output else "no output"
+        offline = needs_network and any(
+            marker in (result.stderr + result.stdout)
+            for marker in ("failed to fetch", "could not connect", "403 Forbidden", "network failure")
+        )
+        if offline:
+            record("SKIP", area, f"{tool} needs registry access and could not reach it: {tail}")
+        else:
+            record("FAIL", area, f"{tool} reported findings: {tail}")
+
+
 def main() -> int:
     check_pinned_actions()
     check_dependency_shape()
     check_lock_in_sync()
     check_ci_declares_gates()
+    check_scanners_run()
 
     for level, area, message in findings:
         print(f"[{level}] {area}: {message}")
@@ -168,8 +216,8 @@ def main() -> int:
         print(f"{len(skips)} check(s) skipped and NOT counted as passing")
     print(f"{len(failures)} failing check(s)")
     print(
-        "note: vulnerability and license scanning is asserted as declared in CI, "
-        "not executed here; cargo audit and cargo deny are not installed on this host."
+        "note: check 4 asserts the scanners are declared in CI; check 5 runs them "
+        "here when installed. A SKIP is never counted as a pass."
     )
     return 1 if failures else 0
 

@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import json
 import os
-import socket
 import shutil
+import socket
 import sqlite3
 import subprocess
 import tempfile
@@ -17,13 +17,13 @@ import time
 import urllib.error
 import urllib.request
 import uuid
-from pathlib import Path
 
 # P12-T05b: `with sqlite3.connect(...)` commits the transaction but does NOT close
 # the connection, so every read below leaked a handle and the interpreter reported
 # it as a ResourceWarning at shutdown. These reads are read-only, so closing() is
 # the correct wrapper.
 from contextlib import closing
+from pathlib import Path
 
 from mock_provider import MockProvider, failure, text, tool_calls
 

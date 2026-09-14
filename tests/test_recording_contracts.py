@@ -2,14 +2,19 @@
 These are SQL contracts, NOT a substitute for Rust compilation or HTTP integration.
 All fixtures synthetic; no provider calls and no legacy user database involved.
 """
-import json, re, sqlite3, tempfile, unittest
+import json
+import re
+import sqlite3
+import tempfile
+import unittest
 from pathlib import Path
+
 ROOT=Path(__file__).resolve().parents[1]
 # P12-T05b: see tests/test_agentic_sql.py. rustfmt may wrap a long declaration, so
 # the match must tolerate whitespace around `=`, and the scrape must assert it saw
 # every declared constant rather than silently testing a subset.
 _RECORDING_RUST=(ROOT/'src/recording_sql.rs').read_text()
-SQL=dict(re.findall(r'pub const (\w+): &str\s*=\s*r#"(.*?)"#;', _RECORDING_RUST,re.S))
+SQL=dict(re.findall(r'pub const (\w+): &str\s*=\s*r#"(.*?)"#;', _RECORDING_RUST,re.DOTALL))
 _DECLARED=set(re.findall(r'pub const (\w+): &str', _RECORDING_RUST))
 assert _DECLARED==set(SQL), f"SQL scrape missed constants: {sorted(_DECLARED - set(SQL))}"
 RUST=(ROOT/'src/recording.rs').read_text()

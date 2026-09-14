@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """Bounded deterministic fuzz smoke for import boundaries and protocol parsers."""
 from __future__ import annotations
-import importlib.util, json, random, subprocess, sys, tempfile
+
+import importlib.util
+import json
+import random
+import subprocess
+import sys
+import tempfile
 from pathlib import Path
 
 ROOT=Path(__file__).resolve().parents[1]

@@ -30,6 +30,11 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y shellcheck
       - run: shellcheck scripts/*.sh
 
+      # Python lint. The suites below execute the scripts; ruff is the only
+      # step that checks the ones CI never imports.
+      - run: pipx install ruff==0.16.7
+      - run: ruff check tests scripts
+
       # Python suites run with ResourceWarning promoted to an error so a leaked
       # socket or file handle fails here instead of becoming flake later.
       - run: python3 -W error::ResourceWarning -m unittest discover -s tests -p 'test_*.py' -v

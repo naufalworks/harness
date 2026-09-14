@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run a clean-target restore drill for one encrypted Harness backup."""
 import argparse
+
 from backup import restore_drill
 
 

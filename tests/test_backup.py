@@ -10,7 +10,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
-from backup import create_encrypted_backup, generate_key, restore_encrypted_backup, restore_drill
+from backup import (
+    create_encrypted_backup,
+    generate_key,
+    restore_drill,
+    restore_encrypted_backup,
+)
 
 
 class EncryptedBackupTests(unittest.TestCase):

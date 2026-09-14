@@ -92,7 +92,7 @@ def inventory_routes() -> set[str]:
         record("FAIL", "routes", "docs/ARCHITECTURE.md is missing")
         return set()
     text = doc.read_text(encoding="utf-8")
-    match = re.search(r"^## HTTP surface$(.*?)(?=^## |\Z)", text, re.S | re.M)
+    match = re.search(r"^## HTTP surface$(.*?)(?=^## |\Z)", text, re.DOTALL | re.MULTILINE)
     if not match:
         record(
             "FAIL",
@@ -268,7 +268,7 @@ def check_deployment() -> None:
         return
     request = urllib.request.Request(
         "http://" + addr + "/health",
-        headers=dict(Authorization="Bearer " + token),
+        headers={"Authorization": "Bearer " + token},
     )
     try:
         with urllib.request.urlopen(request, timeout=5) as response:

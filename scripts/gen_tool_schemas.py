@@ -10,9 +10,9 @@ def obj(props, required):
     return {"type": "object", "properties": props, "required": required, "additionalProperties": False}
 
 
-S = lambda d, **k: {"type": "string", "description": d, **k}  # noqa: E731
-I = lambda d, **k: {"type": "integer", "description": d, **k}  # noqa: E731
-B = lambda d: {"type": "boolean", "description": d}  # noqa: E731
+S = lambda d, **k: {"type": "string", "description": d, **k}
+I = lambda d, **k: {"type": "integer", "description": d, **k}
+B = lambda d: {"type": "boolean", "description": d}
 
 TOOLS = {
     "read": (

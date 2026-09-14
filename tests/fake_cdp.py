@@ -170,7 +170,7 @@ class FakeCdp:
             while not self._stop.is_set():
                 try:
                     client, _ = self._listener.accept()
-                except socket.timeout:
+                except TimeoutError:
                     continue
                 except OSError:
                     if self._stop.is_set():
@@ -180,7 +180,7 @@ class FakeCdp:
                     self._connection(client)
                 finally:
                     client.close()
-        except BaseException as error:  # surfaced synchronously from close()
+        except BaseException as error:  # noqa: BLE001 - surfaced synchronously from close()
             if not self._stop.is_set():
                 self.error = error
 
@@ -215,7 +215,7 @@ class FakeCdp:
         while not self._stop.is_set():
             try:
                 opcode, payload = _read_frame(client)
-            except socket.timeout:
+            except TimeoutError:
                 continue
             except (ConnectionError, EOFError, OSError):
                 return
