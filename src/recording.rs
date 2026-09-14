@@ -28,6 +28,13 @@ pub enum Admission {
     Busy,
     Full,
 }
+pub enum RetryAdmission {
+    Saved(Value),
+    Unsafe,
+    NotTerminal,
+    Busy,
+    NotFound,
+}
 
 /// Publishes generation text to the durable event feed as it arrives.
 ///
@@ -116,6 +123,17 @@ pub struct Generation {
 pub fn recover(c: &mut Connection) -> Result<()> {
     let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let stamp = now();
+    // Committed Stop intent wins over generic restart recovery in this same transaction.
+    let cancelled = {
+        let mut stmt = tx.prepare(
+            "SELECT r.request_id,r.session_id FROM chat_receipts r JOIN run_controls c ON c.request_id=r.request_id WHERE r.state='generating' AND c.cancel_requested_at IS NOT NULL",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    for (request, session) in cancelled {
+        cancel_tx(&tx, &request, &session, &stamp)?;
+    }
     tx.execute(sql::RECOVER_EVENTS, [&stamp])?;
     // Agentic rows first: both `RECOVER_ACTIVITY` and `RECOVER_EVENTS` select the receipts that
     // are still `generating`, so they have to run before the receipt itself is interrupted.
@@ -142,9 +160,59 @@ pub fn recover(c: &mut Connection) -> Result<()> {
     Ok(())
 }
 
+fn cancel_tx(
+    tx: &rusqlite::Transaction<'_>,
+    request: &str,
+    session: &str,
+    stamp: &str,
+) -> Result<()> {
+    tx.execute(
+        "UPDATE turn_steps SET status='interrupted',error_code='cancelled',finished_at=?2 WHERE request_id=?1 AND status='running'",
+        params![request, stamp],
+    )?;
+    tx.execute(
+        "UPDATE permission_requests SET status='expired',resolved_at=?2 WHERE request_id=?1 AND status='pending'",
+        params![request, stamp],
+    )?;
+    tx.execute(
+        "UPDATE chat_receipts SET state='interrupted',error_code='cancelled',updated_at=?2 WHERE request_id=?1 AND state IN ('captured','generating')",
+        params![request, stamp],
+    )?;
+    tx.execute(
+        "UPDATE messages SET status='failed' WHERE id=?1 AND status='pending'",
+        [request],
+    )?;
+    tx.execute(
+        "UPDATE run_controls SET cancelled_at=COALESCE(cancelled_at,?2) WHERE request_id=?1",
+        params![request, stamp],
+    )?;
+    tx.execute(sql::EVENT, params![request, "interrupted", stamp])?;
+    tx.execute(
+        agentic::EVENT,
+        params![request, session, None::<String>, "turn_cancelled", "{}", stamp],
+    )?;
+    tx.execute(
+        "INSERT INTO generation_events(request_id,session_id,state,content,error_code,created_at) VALUES(?1,?2,'interrupted','','cancelled',?3)",
+        params![request, session, stamp],
+    )?;
+    Ok(())
+}
+
+// The cancellation check must share the terminal transaction, not just precede its await.
+fn cancel_pending_tx(tx: &rusqlite::Transaction<'_>, request: &str, stamp: &str) -> Result<bool> {
+    let session: Option<String> = tx.query_row(
+        "SELECT r.session_id FROM chat_receipts r JOIN run_controls c ON c.request_id=r.request_id WHERE r.request_id=?1 AND r.state='generating' AND c.cancel_requested_at IS NOT NULL",
+        [request],
+        |r| r.get(0),
+    ).optional()?;
+    let Some(session) = session else { return Ok(false); };
+    cancel_tx(tx, request, &session, stamp)?;
+    Ok(true)
+}
+
 fn receipt(c: &Connection, request: &str) -> Result<Option<Value>> {
     let row = c.query_row(
-        "SELECT r.request_id,r.session_id,r.scope,r.model,r.redacted,r.state,r.error_code,r.captured_at,r.updated_at,r.context_json,a.content,o.job_id,j.status FROM chat_receipts r LEFT JOIN messages a ON a.id=r.answer_id LEFT JOIN recording_outbox o ON o.request_id=r.request_id LEFT JOIN jobs j ON j.id=o.job_id WHERE r.request_id=?1",
+        "SELECT r.request_id,r.session_id,r.scope,r.model,r.redacted,r.state,r.error_code,r.captured_at,r.updated_at,r.context_json,a.content,o.job_id,j.status,c.cancel_requested_at,c.cancelled_at,c.safe_boundary_seq,c.retry_of,c.retried_by FROM chat_receipts r LEFT JOIN messages a ON a.id=r.answer_id LEFT JOIN recording_outbox o ON o.request_id=r.request_id LEFT JOIN jobs j ON j.id=o.job_id LEFT JOIN run_controls c ON c.request_id=r.request_id WHERE r.request_id=?1",
         [request], |r| {
             let state: String = r.get(5)?;
             let context: Option<String> = r.get(9)?;
@@ -159,7 +227,10 @@ fn receipt(c: &Connection, request: &str) -> Result<Option<Value>> {
                 "recording":"sanitized_local","context_available":!context.is_null(),
                 "recalled":context.get("memories").cloned().unwrap_or(json!([])),
                 "recalled_context_applied":context.get("memories").and_then(Value::as_array).is_some_and(|m|!m.is_empty()),
-                "confirmation_prompt":null}))
+                "confirmation_prompt":null,
+                "cancel_requested_at":r.get::<_,Option<String>>(13)?,"cancelled_at":r.get::<_,Option<String>>(14)?,
+                "safe_boundary_seq":r.get::<_,Option<i64>>(15)?,"retry_of":r.get::<_,Option<String>>(16)?,
+                "retried_by":r.get::<_,Option<String>>(17)?}))
         }).optional()?;
     Ok(row)
 }
@@ -193,6 +264,147 @@ impl DbStore {
     pub async fn recording_receipt(&self, request: String) -> Result<Option<Value>> {
         self.run(move |c| receipt(c, &request)).await
     }
+    pub async fn cancellation_requested(&self, request: String) -> Result<bool> {
+        self.run(move |c| {
+            Ok(c.query_row(
+                "SELECT EXISTS(SELECT 1 FROM run_controls WHERE request_id=?1 AND cancel_requested_at IS NOT NULL)",
+                [request],
+                |r| r.get(0),
+            )?)
+        }).await
+    }
+    pub async fn request_cancellation(&self, request: String) -> Result<Option<Value>> {
+        self.run(move |c| {
+            let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let found: Option<(String, String)> = tx.query_row(
+                "SELECT state,session_id FROM chat_receipts WHERE request_id=?1",
+                [&request],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            ).optional()?;
+            let Some((state, session)) = found else { return Ok(None); };
+            if state == "captured" || state == "generating" {
+                let stamp = now();
+                let already_requested: bool = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM run_controls WHERE request_id=?1 AND cancel_requested_at IS NOT NULL)",
+                    [&request],
+                    |r| r.get(0),
+                )?;
+                tx.execute(
+                    "INSERT INTO run_controls(request_id,cancel_requested_at) VALUES(?1,?2) ON CONFLICT(request_id) DO UPDATE SET cancel_requested_at=COALESCE(run_controls.cancel_requested_at,excluded.cancel_requested_at)",
+                    params![request, stamp],
+                )?;
+                tx.execute(
+                    "UPDATE permission_requests SET status='expired',resolved_at=?2 WHERE request_id=?1 AND status='pending'",
+                    params![request, stamp],
+                )?;
+                if !already_requested {
+                    tx.execute(
+                        agentic::EVENT,
+                        params![request, session, None::<String>, "cancel_requested", "{}", stamp],
+                    )?;
+                }
+                if state == "captured" {
+                    cancel_tx(&tx, &request, &session, &stamp)?;
+                }
+            }
+            let result = receipt(&tx, &request)?;
+            tx.commit()?;
+            Ok(result)
+        }).await
+    }
+    pub async fn finalize_cancellation(&self, request: String) -> Result<bool> {
+        self.run(move |c| {
+            let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let cancelled = cancel_pending_tx(&tx, &request, &now())?;
+            tx.commit()?;
+            Ok(cancelled)
+        }).await
+    }
+    pub async fn retry_recording(&self, request: String) -> Result<RetryAdmission> {
+        self.run(move |c| {
+            let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let source: Option<(String, String, String, String, String, bool)> = tx.query_row(
+                "SELECT r.state,r.session_id,r.scope,r.model,m.content,r.redacted FROM chat_receipts r JOIN messages m ON m.id=r.request_id WHERE r.request_id=?1",
+                [&request],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+            ).optional()?;
+            let Some((state, session, scope, model, prompt, redacted)) = source else {
+                return Ok(RetryAdmission::NotFound);
+            };
+            if !matches!(state.as_str(), "failed" | "interrupted") {
+                return Ok(RetryAdmission::NotTerminal);
+            }
+            let prior_retry: Option<String> = tx.query_row(
+                "SELECT retried_by FROM run_controls WHERE request_id=?1",
+                [&request],
+                |r| r.get(0),
+            ).optional()?.flatten();
+            if let Some(prior_retry) = prior_retry {
+                return Ok(RetryAdmission::Saved(receipt(&tx, &prior_retry)?.ok_or_else(|| anyhow::anyhow!("retry lineage points to a missing receipt"))?));
+            }
+            if tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM chat_receipts WHERE session_id=?1 AND state IN ('captured','generating'))",
+                [&session],
+                |r| r.get::<_, bool>(0),
+            )? {
+                return Ok(RetryAdmission::Busy);
+            }
+            if tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM file_changes WHERE request_id=?1 AND applied=1)",
+                [&request],
+                |r| r.get::<_, bool>(0),
+            )? {
+                return Ok(RetryAdmission::Unsafe);
+            }
+            let registry = Registry::standard();
+            let mut safe_boundary_seq = None::<i64>;
+            {
+                let mut stmt = tx.prepare(
+                    "SELECT tool_name,input_json,status,seq FROM turn_steps WHERE request_id=?1 AND kind='tool_call' ORDER BY seq",
+                )?;
+                let rows = stmt.query_map([&request], |r| Ok((
+                    r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?,
+                    r.get::<_, String>(2)?, r.get::<_, i64>(3)?,
+                )))?;
+                for row in rows {
+                    let (name, input, status, seq) = row?;
+                    let Some(tool) = name.as_deref().and_then(|name| registry.get(name)) else {
+                        return Ok(RetryAdmission::Unsafe);
+                    };
+                    let args = input.as_deref().and_then(|value| serde_json::from_str::<Value>(value).ok()).unwrap_or(Value::Null);
+                    if status != "denied" && tool.side_effecting_for(&args) {
+                        return Ok(RetryAdmission::Unsafe);
+                    }
+                    if status == "complete" {
+                        safe_boundary_seq = Some(seq);
+                    }
+                }
+            }
+            let retry = uid();
+            let stamp = now();
+            let signature = safety::fingerprint(&json!({"retry_of":request,"request":retry,"prompt":prompt}).to_string());
+            tx.execute(sql::INSERT_MESSAGE, params![retry, session, prompt, stamp])?;
+            tx.execute(sql::INSERT_RECEIPT, params![retry, session, scope, model, signature, redacted, stamp])?;
+            tx.execute(sql::INSERT_OUTBOX, params![retry, stamp])?;
+            tx.execute(sql::EVENT, params![retry, "captured", stamp])?;
+            tx.execute(
+                "INSERT INTO run_controls(request_id,retry_of) VALUES(?1,?2)",
+                params![retry, request],
+            )?;
+            tx.execute(
+                "INSERT INTO run_controls(request_id,safe_boundary_seq,retried_by) VALUES(?1,?2,?3) ON CONFLICT(request_id) DO UPDATE SET safe_boundary_seq=excluded.safe_boundary_seq,retried_by=excluded.retried_by",
+                params![request, safe_boundary_seq, retry],
+            )?;
+            tx.execute(
+                agentic::EVENT,
+                params![retry, session, None::<String>, "retry_created", json!({"retry_of":request,"safe_boundary_seq":safe_boundary_seq}).to_string(), stamp],
+            )?;
+            let result = receipt(&tx, &retry)?.ok_or_else(|| anyhow::anyhow!("retry receipt was not created"))?;
+            tx.commit()?;
+            Ok(RetryAdmission::Saved(result))
+        }).await
+    }
+
     pub async fn recording_context(&self, request: String) -> Result<Option<Value>> {
         self.run(move |c| {
             let Some(mut result) = receipt(c, &request)? else {
@@ -256,13 +468,17 @@ impl DbStore {
     pub async fn complete_recording(&self, request: String, answer: String) -> Result<()> {
         self.run(move |c| {
             let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let stamp = now();
+            if cancel_pending_tx(&tx, &request, &stamp)? {
+                tx.commit()?;
+                return Ok(());
+            }
             let session: String = tx.query_row(
                 "SELECT session_id FROM chat_receipts WHERE request_id=?1 AND state='generating'",
                 [&request],
                 |r| r.get(0),
             )?;
             let answer_id = uid();
-            let stamp = now();
             if tx.execute(sql::COMPLETE_USER, params![request])? != 1 {
                 bail!("user message not pending");
             }
@@ -313,6 +529,10 @@ impl DbStore {
         self.run(move |c| {
             let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let stamp = now();
+            if cancel_pending_tx(&tx, &request, &stamp)? {
+                tx.commit()?;
+                return Ok(());
+            }
             if tx.execute(sql::FAIL, params![request, code, stamp])? == 1 {
                 tx.execute(sql::FAIL_MESSAGE, [&request])?;
                 tx.execute(sql::EVENT, params![request, "generation_failed", stamp])?;
@@ -396,6 +616,10 @@ pub(crate) async fn generate(
     agents: &MemoryAgents,
     turn: Generation,
 ) -> Result<()> {
+    if store.cancellation_requested(turn.request.clone()).await? {
+        store.finalize_cancellation(turn.request).await?;
+        return Ok(());
+    }
     let recalled: Vec<Recall> = match store.recall(turn.scope.clone(), turn.prompt.clone()).await {
         Ok(r) => r,
         Err(_) => return store.fail_recording(turn.request, "context_failed").await,
@@ -487,6 +711,10 @@ pub(crate) async fn generate(
     {
         return store.fail_recording(turn.request, "context_failed").await;
     }
+    if store.cancellation_requested(turn.request.clone()).await? {
+        store.finalize_cancellation(turn.request).await?;
+        return Ok(());
+    }
     // No provider call is allowed before context persistence succeeds.
     // The sink persists each redacted chunk before delivery, so an incremental answer is durable
     // before any client can observe it.
@@ -507,6 +735,10 @@ pub(crate) async fn generate(
     let outcome = agents
         .within_spend_request(turn.request.clone(), provider_work)
         .await?;
+    if store.cancellation_requested(turn.request.clone()).await? {
+        store.finalize_cancellation(turn.request).await?;
+        return Ok(());
+    }
     if let Some(code) = sink.failure() {
         // A chunk that could not be made durable ends the turn explicitly rather than silently
         // truncating the answer the reader already saw.

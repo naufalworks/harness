@@ -608,7 +608,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 ## P11 · Runtime and storage performance
 
 ### P11-T01 · Wake streams from committed events
-- status: todo
+- status: done
 - priority: high
 - lane: streams
 - parallel: yes
@@ -814,7 +814,12 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 ## P14 · Workflow, tools, providers, and UX
 
 ### P14-T01 · Add durable cancellation and safe-boundary retry
-- status: todo
+- status: done
+- completed: 2026-09-14T03:07:07Z; resumed independent review verified the terminal-state/recovery and late-registration fixes, then reran the strict non-deploying release gate.
+- result: durable cancellation now wins inside completion/failure transactions and restart recovery, provider/sub-agent/permission waits stop cooperatively, late process-group registration is killed, and retry is admitted only from recorded non-mutating boundaries.
+- verify: `cargo test --locked` (207 passed), `bash scripts/verify_release.sh` (exit 0: native, contracts, HTTP, mocked-browser, real browser-to-server cancellation/retry and unsafe-retry refusal), `git diff --check` (clean).
+- publication: worktree remains uncommitted and unpushed; no deploy or production restart.
+- handoff: docs/HANDOFF-P14-T01.md (historical checkpoints and implementation ledger).
 - priority: high
 - lane: workflow
 - parallel: yes

@@ -12,7 +12,7 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MIG = ROOT / "migrations"
-CHAIN = ["001_core.sql", "002_recording.sql", "003_agentic.sql", "004_memory_kinds.sql", "005_generation_stream.sql", "006_provenance_edges.sql", "007_privacy_archive.sql", "008_provider_spend.sql"]
+CHAIN = ["001_core.sql", "002_recording.sql", "003_agentic.sql", "004_memory_kinds.sql", "005_generation_stream.sql", "006_provenance_edges.sql", "007_privacy_archive.sql", "008_provider_spend.sql", "009_run_cancellation.sql"]
 VERSIONS = [name.split("_", 1)[0] for name in CHAIN]
 LATEST_VERSION = int(VERSIONS[-1])
 OPEN_CONNECTIONS = []
@@ -26,6 +26,7 @@ EXPECTED_TABLES = {
     6: {"provenance_edges"},
     7: {"exact_archives", "source_privacy_state", "privacy_events"},
     8: {"provider_calls"},
+    9: {"run_controls"},
 }
 
 
@@ -251,6 +252,39 @@ def test_007_privacy_archive_constraints():
         raise AssertionError("privacy audit event was deleted")
 
 
+def test_009_run_cancellation_constraints():
+    c = fresh()
+    apply(c, len(CHAIN))
+    now = "2026-01-01T00:00:00Z"
+    c.execute("INSERT INTO sessions(id,scope,created_at) VALUES('s1','proj',?)", (now,))
+    for request_id in ("req", "retry"):
+        c.execute(
+            "INSERT INTO messages(id,session_id,role,content,status,created_at) VALUES(?,'s1','user','hi','pending',?)",
+            (request_id, now),
+        )
+        c.execute(
+            "INSERT INTO chat_receipts(request_id,session_id,scope,model,signature,redacted,state,captured_at,updated_at) VALUES(?,'s1','proj','m',?,0,'captured',?,?)",
+            (request_id, f"sig-{request_id}", now, now),
+        )
+    c.execute(
+        "INSERT INTO run_controls(request_id,cancel_requested_at,safe_boundary_seq,retried_by) VALUES('req',?,3,'retry')",
+        (now,),
+    )
+    c.execute("INSERT INTO run_controls(request_id,retry_of) VALUES('retry','req')")
+    assert c.execute("SELECT safe_boundary_seq,retried_by FROM run_controls WHERE request_id='req'").fetchone() == (3, "retry")
+    for statement in (
+        "INSERT INTO run_controls(request_id,cancelled_at) VALUES('missing-request','2026-01-01T00:00:00Z')",
+        "UPDATE run_controls SET retry_of='retry' WHERE request_id='retry'",
+        "UPDATE run_controls SET retried_by='req' WHERE request_id='req'",
+    ):
+        try:
+            c.execute(statement)
+        except sqlite3.IntegrityError:
+            pass
+        else:
+            raise AssertionError(f"run cancellation constraint was not enforced: {statement}")
+
+
 def main():
     try:
         check_fts5()
@@ -261,6 +295,7 @@ def main():
         test_003_constraints()
         test_006_provenance_constraints()
         test_007_privacy_archive_constraints()
+        test_009_run_cancellation_constraints()
         print(
             f"migrations OK: {' -> '.join(VERSIONS)}, "
             f"user_version={LATEST_VERSION}, data/FTS/FKs preserved"

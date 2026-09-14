@@ -21,6 +21,25 @@ function providerServer(mode) {
     if (req.method !== 'POST' || req.url !== '/v1/chat/completions') return json(res, 404, { error: 'not found' });
     let raw = ''; req.on('data', chunk => { raw += chunk; }); req.on('end', () => {
       const body = JSON.parse(raw); calls.push(body); const messages = body.messages || []; const tools = messages.filter(m => m.role === 'tool'); let reply;
+      const verify = { role: 'assistant', content: JSON.stringify({ claims: [], skipped_diagnostics: [] }) };
+      const readCall = { role: 'assistant', content: null, tool_calls: [{ id: 'read-1', type: 'function', function: { name: 'read', arguments: JSON.stringify({ path: 'notes.md' }) } }] };
+      const editCall = { role: 'assistant', content: null, tool_calls: [{ id: 'edit-1', type: 'function', function: { name: 'edit', arguments: JSON.stringify({ path: 'notes.md', anchors: [{ line: 2, hash: 'f44e' }], old_string: 'beta', new_string: 'gamma' }) } }] };
+      const ok = message => json(res, 200, { choices: [{ message }], usage: { prompt_tokens: 11, completion_tokens: 7 } });
+      // P14-T01 cancel: the first provider call answers slowly so the browser can press Stop while
+      // the turn is genuinely blocked on the provider; the retry then answers at once.
+      if (mode === 'cancel') {
+        if (JSON.stringify(messages).includes('HARNESS_VERIFICATION_V1')) return ok(verify);
+        if (calls.length === 1) { res.on('error', () => {}); return setTimeout(() => { try { ok({ role: 'assistant', content: 'This turn was stopped before it answered.' }); } catch {} }, 8000); }
+        if (!tools.length) return ok(readCall);
+        return ok({ role: 'assistant', content: 'Retried from a safe boundary and finished.' });
+      }
+      // P14-T01 unsafe retry: the edit applies, then the provider fails, so the turn is terminal
+      // with a completed side effect and the retry must be refused.
+      if (mode === 'unsafeRetry') {
+        if (JSON.stringify(messages).includes('HARNESS_VERIFICATION_V1')) return ok(verify);
+        if (!tools.length) return ok(editCall);
+        return json(res, 500, { error: { message: 'injected provider failure after the edit' } });
+      }
       if (JSON.stringify(messages).includes('HARNESS_VERIFICATION_V1')) reply = { role: 'assistant', content: JSON.stringify({ claims: [], skipped_diagnostics: [] }) };
       else if (!tools.length) reply = { role: 'assistant', content: null, tool_calls: [{ id: 'read-1', type: 'function', function: { name: 'read', arguments: JSON.stringify({ path: 'notes.md' }) } }] };
       else if (!tools.some(m => m.tool_call_id === 'edit-1')) reply = { role: 'assistant', content: null, tool_calls: [{ id: 'edit-1', type: 'function', function: { name: 'edit', arguments: JSON.stringify({ path: 'notes.md', anchors: [{ line: 2, hash: 'f44e' }], old_string: 'beta', new_string: 'gamma' }) } }] };
@@ -36,7 +55,7 @@ async function stop(child, signal = 'SIGTERM') { if (!child || child.exitCode !=
 function sql(db, statement) { return JSON.parse(execFileSync('python3', ['-c', 'import json,sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.row_factory=sqlite3.Row; print(json.dumps([dict(r) for r in c.execute(sys.argv[2])]))', db, statement]).toString()); }
 async function incident(port, auth, requestId) { const response = await fetch(`http://127.0.0.1:${port}/chat/requests/${requestId}/incident`, { headers: { Authorization: `Bearer ${auth}` } }); assert.strictEqual(response.status, 200); return response.json(); }
 async function boot(project, db, auth, provider) { const port = await new Promise(resolve => { const s = http.createServer().listen(0, '127.0.0.1', function () { const p = this.address().port; this.close(() => resolve(p)); }); }); const app = launch({ HARNESS_ADDR: `127.0.0.1:${port}`, HARNESS_DB: db, HARNESS_AUTH_TOKEN: auth, HARNESS_API_KEY: 'e2e-provider-key', HARNESS_BASE_URL: `http://127.0.0.1:${provider.port}/v1`, HARNESS_MODEL: 'e2e-model' }); await waitFor(async () => { try { return (await fetch(`http://127.0.0.1:${port}/memory/status`, { headers: { Authorization: `Bearer ${auth}` } })).ok; } catch { return false; } }, 30000, 'Rust readiness'); return { app, port }; }
-async function configure(page, project) { await page.click('[data-view="settings"]'); await page.waitForTimeout(300); await page.fill('#rootpath', project); await page.selectOption('#permissionmode', 'ask'); await page.fill('#diagnosticscmd', 'grep -q gamma notes.md'); await page.click('#projectform button[type="submit"]'); await waitFor( async () => (await page.locator('#notice').innerText()).includes('saved'), 10000, 'scope save'); await page.click('[data-view="chat"]'); await waitFor(() => page.locator('#setup-banner').evaluate(el => el.hidden), 10000, 'scope ready'); }
+async function configure(page, project, mode = 'ask') { await page.click('[data-view="settings"]'); await page.waitForTimeout(300); await page.fill('#rootpath', project); await page.selectOption('#permissionmode', mode); await page.fill('#diagnosticscmd', 'grep -q gamma notes.md'); await page.click('#projectform button[type="submit"]'); await waitFor( async () => (await page.locator('#notice').innerText()).includes('saved'), 10000, 'scope save'); await page.click('[data-view="chat"]'); await waitFor(() => page.locator('#setup-banner').evaluate(el => el.hidden), 10000, 'scope ready'); }
 async function denial() {
   const auth = token(), fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'harness-deny-')), dbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'harness-deny-db-')), project = path.join(fixture, 'project'), db = path.join(dbDir, 'harness.db'); fs.mkdirSync(project); fs.writeFileSync(path.join(project, 'notes.md'), 'alpha\nbeta\n'); const provider = await providerServer('deny'); let browser, app, appPort;
   try { ({ app, port: appPort } = await boot(project, db, auth, provider)); browser = await chromium.launch({ headless: true, executablePath: process.env.CHROMIUM_PATH || chromium.executablePath(), args: ['--no-sandbox'] }); const page = await browser.newPage(); await page.goto(`http://127.0.0.1:${appPort}/`); await page.fill('#token', auth); await page.click('#authform button'); await page.waitForFunction(() => !document.querySelector('#workspace').hidden); await configure(page, project); await page.fill('#prompt', 'Change beta to gamma in notes.md'); await page.click('#send'); await page.waitForSelector('#agent-permission:not([hidden])', { timeout: 45000 }); assert((await page.locator('#permission-summary').innerText()).includes('edit notes.md')); await page.click('#permission-deny'); await waitFor(() => page.locator('#notice').innerText().then(t => t.includes('Answer saved')), 45000, 'denial answer'); assert((await page.locator('#log').innerText()).includes('denied')); assert.strictEqual(fs.readFileSync(path.join(project, 'notes.md'), 'utf8'), 'alpha\nbeta\n'); const permissions = sql(db, 'SELECT request_id,tool_name,status FROM permission_requests'); const steps = sql(db, 'SELECT tool_name,status,error_code FROM turn_steps WHERE tool_name IS NOT NULL ORDER BY seq'); assert(permissions.some(x => x.tool_name === 'edit' && x.status === 'denied'), JSON.stringify(permissions)); assert(steps.some(x => x.tool_name === 'edit' && x.status === 'denied'), JSON.stringify(steps)); const graph = await incident(appPort, auth, permissions[0].request_id); assert(graph.edges.some(edge => edge.relation === 'triggers' && edge.source.startsWith('permission:') && edge.target.startsWith('step:')), JSON.stringify(graph)); assert.strictEqual(graph.edges.some(edge => edge.relation === 'authorizes'), false); assert(provider.calls.some(x => JSON.stringify(x).includes('denied')), 'provider did not receive the denial result'); console.log('DENIAL E2E passed: approval denied, file unchanged, causal denial persisted and returned to provider'); }
@@ -47,4 +66,53 @@ async function crashRecovery() {
   try { ({ app, port: appPort } = await boot(project, db, auth, provider)); browser = await chromium.launch({ headless: true, executablePath: process.env.CHROMIUM_PATH || chromium.executablePath(), args: ['--no-sandbox'] }); const page = await browser.newPage(); await page.goto(`http://127.0.0.1:${appPort}/`); await page.fill('#token', auth); await page.click('#authform button'); await page.waitForFunction(() => !document.querySelector('#workspace').hidden); await configure(page, project); await page.fill('#prompt', 'Change beta to gamma in notes.md, then verify it'); await page.click('#send'); await page.waitForSelector('#agent-permission:not([hidden])', { timeout: 45000 }); await page.click('#permission-approve'); await page.waitForFunction(() => document.querySelector('#permission-summary')?.textContent.includes('bash'), null, { timeout: 45000 }); await stop(app, 'SIGKILL'); app = null; assert.strictEqual(fs.readFileSync(path.join(project, 'notes.md'), 'utf8'), 'alpha\ngamma\n'); const resumed = await boot(project, db, auth, provider); app = resumed.app; appPort = resumed.port; const rows = sql(db, 'SELECT id,status,tool_name,error_code FROM turn_steps ORDER BY seq'); const receipt = sql(db, 'SELECT request_id,state,error_code FROM chat_receipts ORDER BY updated_at DESC LIMIT 1'); const changes = sql(db, 'SELECT path,applied FROM file_changes'); const interrupted = rows.find(x => x.status === 'interrupted'); assert(interrupted, JSON.stringify(rows)); assert.strictEqual(interrupted.tool_name, 'bash'); assert.strictEqual(rows.some(x => x.status === 'running'), false); assert.strictEqual(receipt[0].state, 'interrupted'); assert.strictEqual(receipt[0].error_code, 'process_restarted'); assert.strictEqual(changes.filter(x => x.path === 'notes.md').length, 1); assert.strictEqual(rows.filter(x => x.tool_name === 'edit').length, 1); assert.strictEqual(rows.filter(x => x.tool_name === 'bash').length, 1); const graph = await incident(appPort, auth, receipt[0].request_id); const recovery = graph.edges.find(edge => edge.relation === 'triggers' && edge.target.startsWith('recovery:')); assert(recovery, JSON.stringify(graph)); assert.strictEqual(recovery.source, 'step:' + interrupted.id); assert.strictEqual(graph.earliest_known_break.node_id, 'step:' + interrupted.id); await stop(app); app = null; console.log('CRASH-RECOVERY E2E passed: restart linked the exact interrupted bash step and replayed no side effect'); }
   finally { await browser?.close(); await stop(app); await new Promise(resolve => provider.server.close(resolve)); fs.rmSync(fixture, { recursive: true, force: true }); fs.rmSync(dbDir, { recursive: true, force: true }); }
 }
-(async () => { assert(fs.existsSync(binary), `missing ${binary}; run cargo build --locked first`); await denial(); await crashRecovery(); console.log('Failure-path E2E passed: denial + crash recovery'); })().catch(error => { console.error(error.stack || error); process.exit(1); });
+async function cancellationThenSafeRetry() {
+  const auth = token(), fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'harness-cancel-')), dbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'harness-cancel-db-')), project = path.join(fixture, 'project'), db = path.join(dbDir, 'harness.db'); fs.mkdirSync(project); fs.writeFileSync(path.join(project, 'notes.md'), 'alpha\nbeta\n'); const provider = await providerServer('cancel'); let browser, app, appPort;
+  try {
+    ({ app, port: appPort } = await boot(project, db, auth, provider)); browser = await chromium.launch({ headless: true, executablePath: process.env.CHROMIUM_PATH || chromium.executablePath(), args: ['--no-sandbox'] }); const page = await browser.newPage(); await page.goto(`http://127.0.0.1:${appPort}/`); await page.fill('#token', auth); await page.click('#authform button'); await page.waitForFunction(() => !document.querySelector('#workspace').hidden); await configure(page, project);
+    await page.fill('#prompt', 'Explore notes.md'); await page.click('#send');
+    await waitFor(() => page.locator('#capturestatus').innerText().then(t => t === 'Thinking\u2026'), 15000, 'turn generating');
+    await page.click('#cancelrequest');
+    await waitFor(() => page.locator('#capturestatus').innerText().then(t => t.includes('interrupted')), 30000, 'cancelled turn terminal');
+    const cancelled = sql(db, "SELECT request_id,state,error_code FROM chat_receipts WHERE state='interrupted' ORDER BY updated_at DESC LIMIT 1");
+    assert.strictEqual(cancelled.length, 1, JSON.stringify(cancelled)); assert.strictEqual(cancelled[0].error_code, 'cancelled', JSON.stringify(cancelled));
+    const controls = sql(db, 'SELECT request_id,cancel_requested_at,cancelled_at,retried_by FROM run_controls');
+    assert(controls.some(c => c.cancel_requested_at && c.cancelled_at), JSON.stringify(controls));
+    const sourceId = cancelled[0].request_id;
+    const retryButton = page.locator('.generation-message[data-state="interrupted"] button').last();
+    await waitFor(() => retryButton.count(), 10000, 'retry control'); await retryButton.click();
+    await waitFor(() => page.locator('#notice').innerText().then(t => t.startsWith('Answer saved')), 45000, 'retry answer saved');
+    const lineage = sql(db, 'SELECT request_id,retry_of,safe_boundary_seq,retried_by FROM run_controls WHERE retry_of IS NOT NULL OR retried_by IS NOT NULL');
+    assert.strictEqual(lineage.filter(r => r.retry_of === sourceId).length, 1, JSON.stringify(lineage));
+    assert(lineage.some(r => r.request_id === sourceId && r.retried_by), JSON.stringify(lineage));
+    const sourceSteps = sql(db, `SELECT kind,tool_name,status FROM turn_steps WHERE request_id='${sourceId}'`);
+    assert.strictEqual(sourceSteps.some(s => s.status === 'running'), false, 'a cancelled turn must leave no running step: ' + JSON.stringify(sourceSteps));
+    assert.strictEqual(sourceSteps.some(s => s.kind === 'tool_call'), false, 'a provider cancelled before any tool call must have no tool step: ' + JSON.stringify(sourceSteps));
+    const retryId = lineage.find(r => r.retry_of === sourceId).request_id;
+    const retrySteps = sql(db, `SELECT tool_name,status FROM turn_steps WHERE request_id='${retryId}' AND kind='tool_call'`);
+    assert(retrySteps.some(s => s.tool_name === 'read' && s.status === 'complete'), JSON.stringify(retrySteps));
+    const finalRow = sql(db, "SELECT state FROM chat_receipts ORDER BY updated_at DESC LIMIT 1");
+    assert.strictEqual(finalRow[0].state, 'complete', JSON.stringify(finalRow));
+    assert(provider.calls.length >= 3, `provider calls: ${provider.calls.length}`);
+    console.log('CANCELLATION E2E passed: Stop during a slow provider wait, then exactly one safe-boundary retry with no replayed side effect');
+  } finally { await browser?.close(); await stop(app); await new Promise(resolve => provider.server.close(resolve)); fs.rmSync(fixture, { recursive: true, force: true }); fs.rmSync(dbDir, { recursive: true, force: true }); }
+}
+async function unsafeRetryIsRejected() {
+  const auth = token(), fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'harness-unsafe-')), dbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'harness-unsafe-db-')), project = path.join(fixture, 'project'), db = path.join(dbDir, 'harness.db'); fs.mkdirSync(project); fs.writeFileSync(path.join(project, 'notes.md'), 'alpha\nbeta\n'); const provider = await providerServer('unsafeRetry'); let browser, app, appPort;
+  try {
+    ({ app, port: appPort } = await boot(project, db, auth, provider)); browser = await chromium.launch({ headless: true, executablePath: process.env.CHROMIUM_PATH || chromium.executablePath(), args: ['--no-sandbox'] }); const page = await browser.newPage(); await page.goto(`http://127.0.0.1:${appPort}/`); await page.fill('#token', auth); await page.click('#authform button'); await page.waitForFunction(() => !document.querySelector('#workspace').hidden); await configure(page, project, 'auto_all');
+    await page.fill('#prompt', 'Change beta to gamma in notes.md'); await page.click('#send');
+    await waitFor(() => page.locator('#capturestatus').innerText().then(t => t.includes('answer failed')), 45000, 'failed turn terminal');
+    assert.strictEqual(fs.readFileSync(path.join(project, 'notes.md'), 'utf8'), 'alpha\ngamma\n', 'the edit must have applied before the provider failed');
+    const changes = sql(db, 'SELECT path,applied FROM file_changes'); assert(changes.some(c => c.path === 'notes.md' && c.applied === 1), JSON.stringify(changes));
+    const retryButton = page.locator('.generation-message[data-state="failed"] button').last();
+    await waitFor(() => retryButton.count(), 10000, 'retry control'); await retryButton.click();
+    await waitFor(() => page.locator('#notice').innerText().then(t => t.includes('Retry refused')), 15000, 'retry refusal');
+    const controls = sql(db, 'SELECT request_id,retried_by,retry_of FROM run_controls');
+    assert.strictEqual(controls.some(r => r.retried_by), false, JSON.stringify(controls));
+    assert.strictEqual(controls.some(r => r.retry_of), false, JSON.stringify(controls));
+    console.log('UNSAFE-RETRY E2E passed: a completed side effect makes retry a hard refusal, with no retry turn created');
+  } finally { await browser?.close(); await stop(app); await new Promise(resolve => provider.server.close(resolve)); fs.rmSync(fixture, { recursive: true, force: true }); fs.rmSync(dbDir, { recursive: true, force: true }); }
+}
+
+(async () => { assert(fs.existsSync(binary), `missing ${binary}; run cargo build --locked first`); await denial(); await crashRecovery(); await cancellationThenSafeRetry(); await unsafeRetryIsRejected(); console.log('Failure-path E2E passed: denial + crash recovery + cancellation/retry + unsafe-retry refusal'); })().catch(error => { console.error(error.stack || error); process.exit(1); });

@@ -608,6 +608,15 @@ struct Ctx<'a> {
 
 /// `sink` receives redacted answer text as it becomes publishable. Its accumulated `text()` is
 /// the turn's answer, so a sink that published incrementally reports exactly what it published.
+/// P14-T01: how often a provider wait re-checks the durable cancel intent.
+const PROVIDER_CANCEL_POLL: Duration = Duration::from_millis(200);
+
+/// The outcome of racing a provider future against the durable cancel intent.
+enum Raced<T> {
+    Done(T),
+    Cancelled,
+}
+
 pub async fn run<S: GenerationSink>(turn: Turn<'_>, sink: &mut S) -> Result<Outcome> {
     let Turn {
         store,
@@ -654,6 +663,12 @@ pub async fn run<S: GenerationSink>(turn: Turn<'_>, sink: &mut S) -> Result<Outc
     }
 
     loop {
+        if ctx.cancelled().await? {
+            // The cancel endpoint already signalled any live group; this covers the cooperative
+            // path where the loop itself observes the intent, and is a no-op with nothing live.
+            crate::processes::terminate(&ctx.request);
+            return Ok(Outcome::Answer(String::new()));
+        }
         let elapsed = started.elapsed().as_secs() as i64;
         if let Some(reason) = exhausted(
             steps,
@@ -768,25 +783,45 @@ pub async fn run<S: GenerationSink>(turn: Turn<'_>, sink: &mut S) -> Result<Outc
         }).await?;
 
         let replied = if tools.is_empty() {
-            match ctx.agents.stream_turn(&ctx.model, messages.clone(), sink).await {
-                Ok(()) => {
-                    let text = sink.text().to_string();
-                    let usage = sink.usage().cloned().unwrap_or_default();
-                    Ok(ModelTurn {
-                        assistant_message: json!({"role":"assistant","content":text}),
-                        text: Some(text),
-                        tool_calls: Vec::new(),
-                        usage,
-                    })
+            // P14-T01: a provider call can outlast a cancel request, so the wait is raced against
+            // the durable intent. Dropping the abandoned future aborts the in-flight request
+            // instead of letting a stopped turn keep consuming provider work and then committing.
+            let streamed = async {
+                ctx.agents
+                    .stream_turn(&ctx.model, messages.clone(), sink)
+                    .await?;
+                let text = sink.text().to_string();
+                let usage = sink.usage().cloned().unwrap_or_default();
+                Ok::<ModelTurn, anyhow::Error>(ModelTurn {
+                    assistant_message: json!({"role":"assistant","content":text}),
+                    text: Some(text),
+                    tool_calls: Vec::new(),
+                    usage,
+                })
+            };
+            match ctx.race_cancellation(streamed).await? {
+                Raced::Cancelled => {
+                    ctx.finish_cancelled_step(step).await?;
+                    return Ok(Outcome::Answer(String::new()));
                 }
-                Err(error) => Err(error),
+                Raced::Done(replied) => replied,
             }
         } else {
-            ctx
+            let called = ctx
                 .agents
-                .complete_with_tools(&ctx.model, messages.clone(), tools.clone())
-                .await
+                .complete_with_tools(&ctx.model, messages.clone(), tools.clone());
+            match ctx.race_cancellation(called).await? {
+                Raced::Cancelled => {
+                    ctx.finish_cancelled_step(step).await?;
+                    return Ok(Outcome::Answer(String::new()));
+                }
+                Raced::Done(replied) => replied,
+            }
         };
+        if ctx.cancelled().await? {
+            ctx.finish_cancelled_step(step).await?;
+            return Ok(Outcome::Answer(String::new()));
+        }
         steps += 1;
         let reply = match replied {
             Ok(reply) => reply,
@@ -842,6 +877,9 @@ pub async fn run<S: GenerationSink>(turn: Turn<'_>, sink: &mut S) -> Result<Outc
         messages.push(reply.assistant_message.clone());
         let deadline = started + Duration::from_secs(max_wall.max(0) as u64);
         for call in &reply.tool_calls {
+            if ctx.cancelled().await? {
+                return Ok(Outcome::Answer(String::new()));
+            }
             durable_seq += 1;
             let tool_seq = durable_seq;
             // P5-T03: `task` is offered like any other tool but cannot run through the registry,
@@ -900,6 +938,43 @@ pub async fn run<S: GenerationSink>(turn: Turn<'_>, sink: &mut S) -> Result<Outc
 }
 
 impl Ctx<'_> {
+    async fn cancelled(&self) -> Result<bool> {
+        self.store.cancellation_requested(self.request.clone()).await
+    }
+
+    /// P14-T01: wait for a provider future while polling the durable cancel intent. Returns
+    /// `Cancelled` as soon as the intent is observed; the caller then drops the future, which
+    /// aborts the in-flight provider request rather than waiting for it to finish.
+    async fn race_cancellation<F, T>(&self, fut: F) -> Result<Raced<T>>
+    where
+        F: std::future::Future<Output = T>,
+    {
+        tokio::pin!(fut);
+        loop {
+            if self.cancelled().await? {
+                return Ok(Raced::Cancelled);
+            }
+            tokio::select! {
+                value = &mut fut => return Ok(Raced::Done(value)),
+                _ = tokio::time::sleep(PROVIDER_CANCEL_POLL) => {}
+            }
+        }
+    }
+
+    /// Close the in-flight model-call step as `interrupted`, so a cancelled turn never leaves a
+    /// `running` step behind (which would read as live work and violate the restart invariant).
+    async fn finish_cancelled_step(&self, step: String) -> Result<()> {
+        let mut outcome = self.outcome(
+            step,
+            "interrupted",
+            json!({"error_code":"cancelled"}),
+            "model_call_finished",
+            json!({"status":"interrupted","error_code":"cancelled"}),
+        );
+        outcome.error_code = Some("cancelled".into());
+        self.store.finish_step(outcome).await
+    }
+
     async fn event(&self, kind: &'static str, payload: Value) -> Result<()> {
         self.store
             .activity(self.request.clone(), self.session.clone(), kind, payload)
@@ -1067,11 +1142,32 @@ impl Ctx<'_> {
                 .await?;
             if let Err(reason) = self.await_permission(&permission, &step, deadline).await? {
                 // A denial is a tool error, not a dead turn: the model can adapt or ask.
-                let refusal = ToolResult::err("denied", format!("`{}` was not approved: {reason}. Nothing was run and nothing changed on disk.", call.name));
-                return self.finish_tool(step, call, refusal, Some("denied")).await;
+                let cancelled = reason == "cancelled";
+                let refusal = ToolResult::err(
+                    if cancelled { "cancelled" } else { "denied" },
+                    format!("`{}` was not approved: {reason}. Nothing was run and nothing changed on disk.", call.name),
+                );
+                return self
+                    .finish_tool(
+                        step,
+                        call,
+                        refusal,
+                        Some(if cancelled { "interrupted" } else { "denied" }),
+                    )
+                    .await;
             }
         }
 
+        if self.cancelled().await? {
+            return self
+                .finish_tool(
+                    step,
+                    call,
+                    ToolResult::err("cancelled", "the request was cancelled before the tool ran"),
+                    Some("interrupted"),
+                )
+                .await;
+        }
         let registry = self.registry.clone();
         let name = call.name.clone();
         let result =
@@ -1181,16 +1277,39 @@ impl Ctx<'_> {
                 break;
             }
 
+            // P14-T01: a delegation draws provider calls of its own, so it must observe the same
+            // durable cancel the parent loop does. Stop before the next call and report incomplete.
+            if self.cancelled().await? {
+                stopped = Some(subagent::Stop::Cancelled);
+                break;
+            }
             let model_step = self.store.begin_child_step(sub_step.clone(), NewStep {
                 request: self.request.clone(), session: self.session.clone(), kind: "model_call",
                 tool_name: None, tool_call_id: None,
                 input: json!({"messages":messages,"tools":tool_names(&definitions)}),
                 event: "model_call_started", payload: json!({"attempt":model_calls+1,"messages":messages.len(),"subagent":true}),
             }).await?;
-            let replied = self
+            // P14-T01: a delegation's provider call can outlast a cancel exactly like the parent's,
+            // so race it against the durable intent and drop the abandoned future. The child step is
+            // closed `interrupted` on cancellation, and the post-response guard below catches a
+            // cancel that lands while the reply was in flight, so a cancelled turn can never record
+            // a completed final answer.
+            let called = self
                 .agents
-                .complete_with_tools(&self.model, messages.clone(), definitions.clone())
-                .await;
+                .complete_with_tools(&self.model, messages.clone(), definitions.clone());
+            let replied = match self.race_cancellation(called).await? {
+                Raced::Cancelled => {
+                    self.finish_cancelled_step(model_step).await?;
+                    stopped = Some(subagent::Stop::Cancelled);
+                    break;
+                }
+                Raced::Done(replied) => replied,
+            };
+            if self.cancelled().await? {
+                self.finish_cancelled_step(model_step).await?;
+                stopped = Some(subagent::Stop::Cancelled);
+                break;
+            }
             model_calls += 1;
             let reply = match replied {
                 Ok(reply) => reply,
@@ -1226,6 +1345,10 @@ impl Ctx<'_> {
             }
             messages.push(reply.assistant_message.clone());
             for sub_call in &reply.tool_calls {
+                if self.cancelled().await? {
+                    stopped = Some(subagent::Stop::Cancelled);
+                    break;
+                }
                 let sub_args = sub_call.arguments().ok().filter(|value| value.is_object());
                 let allowed = subagent::TOOLS.contains(&sub_call.name.as_str());
                 let tool_summary = match (
@@ -1289,10 +1412,11 @@ impl Ctx<'_> {
         };
         let content = subagent::report_content(&report);
         let file_count = report.files.len();
-        let status = if matches!(stopped, Some(subagent::Stop::ProviderFailed)) {
-            "failed"
-        } else {
-            "complete"
+        let status = match stopped {
+            Some(subagent::Stop::ProviderFailed) => "failed",
+            // A cancelled delegation is incomplete work, never a completed exploration.
+            Some(subagent::Stop::Cancelled) => "interrupted",
+            _ => "complete",
         };
         let mut outcome = self.outcome(sub_step, status,
             json!({"summary":report.summary.clone(),"files":report.files.clone(),"model_calls":model_calls,
@@ -1304,14 +1428,22 @@ impl Ctx<'_> {
         if status == "failed" {
             outcome.error_code = Some("provider_failed".into());
         }
+        if status == "interrupted" {
+            outcome.error_code = Some("cancelled".into());
+        }
         self.store.finish_step(outcome).await?;
 
+        let cancelled = matches!(stopped, Some(subagent::Stop::Cancelled));
         let completed = self
             .finish_tool(
                 step,
                 call,
-                ToolResult::ok(subagent::label(&ask), content),
-                None,
+                if cancelled {
+                    ToolResult::err("cancelled", "the request was cancelled while the sub-agent ran")
+                } else {
+                    ToolResult::ok(subagent::label(&ask), content)
+                },
+                if cancelled { Some("interrupted") } else { None },
             )
             .await?;
         Ok(Delegated {
@@ -1344,6 +1476,9 @@ impl Ctx<'_> {
         deadline: Instant,
     ) -> Result<std::result::Result<(), String>> {
         loop {
+            if self.cancelled().await? {
+                return Ok(Err("cancelled".into()));
+            }
             match self
                 .store
                 .permission_status(permission.to_string())
@@ -1593,6 +1728,64 @@ mod tests {
             "test-model",
         )
         .unwrap()
+    }
+
+    /// P14-REVIEW-01: a provider that answers the parent call immediately but holds the first
+    /// delegated call open until the test releases it, so a cancel can be requested while a
+    /// sub-agent provider wait is genuinely in flight. Every request is counted, so a regression can
+    /// assert no call is made after the cancel.
+    struct Held {
+        calls: Mutex<usize>,
+        arrived: tokio::sync::Semaphore,
+        release: tokio::sync::Semaphore,
+    }
+
+    async fn held_provider() -> (MemoryAgents, Arc<Held>) {
+        use axum::{extract::State, response::IntoResponse, routing::post, Json, Router};
+        async fn complete(
+            State(held): State<Arc<Held>>,
+            Json(_body): Json<Value>,
+        ) -> axum::response::Response {
+            let call = {
+                let mut calls = held.calls.lock().unwrap();
+                *calls += 1;
+                *calls
+            };
+            if call == 1 {
+                // The parent turn delegates one read-only exploration.
+                return Json(json!({"choices":[{"message":{"role":"assistant","content":Value::Null,
+                    "tool_calls":[{"id":"call-1","type":"function","function":{"name":"task",
+                    "arguments":"{\"description\":\"find beta\",\"prompt\":\"say which line of notes.md holds beta\"}"}}]}}]}))
+                    .into_response();
+            }
+            if call == 2 {
+                // The sub-agent's provider call: announce arrival and hold until released.
+                held.arrived.add_permits(1);
+                held.release.acquire().await.unwrap().forget();
+            }
+            Json(json!({"choices":[{"message":{"role":"assistant","content":"beta is on line 2 of notes.md."}}]}))
+                .into_response()
+        }
+        let held = Arc::new(Held {
+            calls: Mutex::new(0),
+            arrived: tokio::sync::Semaphore::new(0),
+            release: tokio::sync::Semaphore::new(0),
+        });
+        let app = Router::new()
+            .route("/chat/completions", post(complete))
+            .with_state(held.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+        let agents = MemoryAgents::new(
+            &format!("http://127.0.0.1:{port}"),
+            "test-key",
+            "test-model",
+        )
+        .unwrap();
+        (agents, held)
     }
 
     async fn claim(db: &DbStore, prompt: &str) -> Generation {
@@ -2950,6 +3143,72 @@ mod tests {
         assert!(
             db.claim_recording().await.unwrap().is_none(),
             "an interrupted turn must never be claimed again"
+        );
+    }
+
+    /// P14-REVIEW-01: a cancel that lands while a sub-agent's provider call is in flight must
+    /// interrupt the child model step, the delegation and its parent step, and must not let the turn
+    /// record a completed answer or make another child provider call.
+    #[tokio::test]
+    async fn cancelling_a_held_sub_agent_provider_call_interrupts_without_a_further_call() {
+        let db = DbStore::init(":memory:").unwrap();
+        let _root = project(&db, "auto_all", ScopePatch::default()).await;
+        let (agents, held) = held_provider().await;
+        let turn = claim(&db, "cancel a delegated exploration").await;
+        let request = turn.request.clone();
+
+        let mut generate = Box::pin(recording::generate(&db, &agents, turn));
+        loop {
+            tokio::select! {
+                result = &mut generate => {
+                    result.unwrap();
+                    break;
+                }
+                permit = held.arrived.acquire() => {
+                    // The sub-agent's provider call is now held open; cancel the run and let the
+                    // durable race observe the intent and drop the in-flight future. Releasing the
+                    // handler as well means a fix-less direct await would still return and record a
+                    // completed answer, so this test fails (rather than hangs) without the race.
+                    permit.unwrap().forget();
+                    db.request_cancellation(request.clone()).await.unwrap();
+                    held.release.add_permits(1);
+                }
+            }
+        }
+        held.release.add_permits(1); // let the abandoned provider handler unwind
+
+        let saved = receipt(&db, &request).await;
+        assert_eq!(
+            (saved["state"].as_str(), saved["error_code"].as_str()),
+            (Some("interrupted"), Some("cancelled")),
+            "a cancelled sub-agent turn must not record a completed answer"
+        );
+
+        let rows = steps(&db, &request).await;
+        let shape: Vec<(&str, &str, &str)> = rows
+            .iter()
+            .map(|r| {
+                (
+                    r["kind"].as_str().unwrap(),
+                    r["status"].as_str().unwrap(),
+                    r["error"].as_str().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            vec![
+                ("model_call", "complete", ""),
+                ("tool_call", "interrupted", "cancelled"),
+                ("subagent", "interrupted", "cancelled"),
+                ("model_call", "interrupted", "cancelled"),
+            ],
+            "the child model call, its delegation and the parent step are all interrupted: {rows:#?}"
+        );
+        assert_eq!(
+            *held.calls.lock().unwrap(),
+            2,
+            "a cancelled sub-agent made no further provider call"
         );
     }
 }

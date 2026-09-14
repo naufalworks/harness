@@ -22,7 +22,8 @@ class Recorder:
         self.c=sqlite3.connect(path,isolation_level=None);self.c.execute('PRAGMA foreign_keys=ON')
         self.c.execute('PRAGMA journal_mode=WAL');self.c.execute('PRAGMA synchronous=FULL')
         if fresh:
-            for name in ['001_core.sql','002_recording.sql','003_agentic.sql','004_memory_kinds.sql']:self.c.executescript((ROOT/'migrations'/name).read_text())
+            # P14-T01: the receipt read now joins run_controls, so the fixture applies 009 too.
+            for name in ['001_core.sql','002_recording.sql','003_agentic.sql','004_memory_kinds.sql','009_run_cancellation.sql']:self.c.executescript((ROOT/'migrations'/name).read_text())
     def tx(self,fn):
         self.c.execute('BEGIN IMMEDIATE')
         try:out=fn();self.c.execute('COMMIT');return out

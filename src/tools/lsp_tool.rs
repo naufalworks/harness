@@ -13,7 +13,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 use url::Url;
 
-use super::edit_tools::{atomic_write, describe, run_capped};
+use super::edit_tools::{atomic_write, describe, run_capped_for};
 use super::fs_tools::read_text;
 use super::{content_hash, paths, PendingChange, Tool, ToolCtx, ToolResult};
 
@@ -1331,12 +1331,14 @@ fn apply_workspace(ctx: &ToolCtx, new_name: &str, changes: Vec<PendingChange>) -
         ));
     }
     if let Some(command) = ctx.diagnostics_cmd.as_deref() {
-        let run = run_capped(
+        // Register the diagnostics process group too, so a cancel interrupts a long check.
+        let run = run_capped_for(
             command,
             &ctx.root,
             &ctx.scope,
             DIAGNOSTICS_TIMEOUT,
             DIAGNOSTICS_CAP,
+            Some(&ctx.request_id),
         );
         output.push_str(&format!(
             "\n[diagnostics {}]\n{}\n",

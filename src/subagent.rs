@@ -125,6 +125,8 @@ pub enum Stop {
     TurnToolBytes,
     Deadline,
     ProviderFailed,
+    /// P14-T01: the owning turn was cancelled; the sub-agent stopped before it finished.
+    Cancelled,
 }
 
 impl Stop {
@@ -135,6 +137,7 @@ impl Stop {
             Self::TurnToolBytes => "max_tool_bytes",
             Self::Deadline => "max_wall_seconds",
             Self::ProviderFailed => "provider_failed",
+            Self::Cancelled => "cancelled",
         }
     }
     /// What the parent model is told, so a partial exploration is never read as a complete one.
@@ -150,6 +153,9 @@ impl Stop {
             Self::Deadline => "stopped at the turn's time limit, so this may be incomplete",
             Self::ProviderFailed => {
                 "stopped because the model call failed, so this may be incomplete"
+            }
+            Self::Cancelled => {
+                "stopped because the request was cancelled, so this is incomplete"
             }
         }
     }

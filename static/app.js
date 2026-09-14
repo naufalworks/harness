@@ -25,7 +25,7 @@ function rememberPending(value) {
   pending = value;
   if (value) sessionStorage.setItem('harness_pending', JSON.stringify(value));
   else { sessionStorage.removeItem('harness_pending'); pendingPrompt = null; }
-  $('checkrecording').hidden = !value; $('leavepending').hidden = !value; $('send').hidden = !!value;
+  $('checkrecording').hidden = !value; $('leavepending').hidden = !value; $('send').hidden = !!value; $('cancelrequest').hidden = !value;
 }
 async function api(path, body) {
   const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 20000);
@@ -48,7 +48,7 @@ async function exchangeBrowserSession(masterToken) {
 function node(tag, text, cls) { const element = document.createElement(tag); if (text !== undefined) element.textContent = text; if (cls) element.className = cls; return element; }
 function persistSession() { sessionStorage.setItem('harness_scope', scope); sessionStorage.setItem('harness_session', session); }
 const stateLabels = { captured: 'Sent · waiting for answer', generating: 'Thinking…', complete: 'Done', failed: 'Saved · answer failed', interrupted: 'Saved · answer interrupted' };
-const eventLabels = { captured: 'Message saved locally', generation_started: 'Answer started', context_saved: 'Context receipt saved', answer_saved: 'Answer saved locally', generation_failed: 'Answer did not complete', interrupted: 'Server restarted; no automatic resend', extraction_queued: 'Memory review queued', provider_spend_refused: 'Provider call refused by spend limit' };
+const eventLabels = { captured: 'Message saved locally', generation_started: 'Answer started', context_saved: 'Context receipt saved', answer_saved: 'Answer saved locally', generation_failed: 'Answer did not complete', interrupted: 'Server restarted; no automatic resend', extraction_queued: 'Memory review queued', provider_spend_refused: 'Provider call refused by spend limit', cancel_requested: 'Cancellation requested', turn_cancelled: 'Turn cancelled at a recorded boundary', retry_created: 'Retry started from a safe boundary' };
 async function showReceipt(id, content, button) {
   const myEpoch = epoch; button.disabled = true;
   try {
@@ -105,6 +105,13 @@ function message(m, target = $('log')) {
         : 'The provider failed before an answer was saved.'),
       node('span', m.generation_state === 'interrupted' ? 'Interrupted' : 'Failed', 'muted generation-state'),
     );
+    if (m.request_id) {
+      const retry = node('button', 'Retry from safe boundary', 'secondary');
+      retry.type = 'button';
+      retry.title = 'Starts a new turn from the last recorded non-mutating boundary. A completed side effect is never replayed.';
+      retry.addEventListener('click', () => retryFromBoundary(m.request_id, retry));
+      terminal.append(retry);
+    }
     target.append(terminal);
   }
 }
@@ -292,6 +299,42 @@ async function resumeRecording() {
     }
   } finally { if (myEpoch === epoch) setBusy(false); }
 }
+// P14-T01: an explicit Stop records durable cancellation intent; the server also terminates any
+// process group the turn is still blocked on. The turn then lands on `interrupted`, a recorded
+// terminal state — it is never silently treated as a completed answer.
+async function cancelPending() {
+  if (!pending) return;
+  const requestId = pending.request_id, myEpoch = epoch;
+  $('cancelrequest').disabled = true;
+  try {
+    const receipt = await api(`/chat/requests/${encodeURIComponent(requestId)}/cancel`, {});
+    if (!token || myEpoch !== epoch) return;
+    notice(receipt.state === 'interrupted'
+      ? 'Cancelled. The turn stopped at its last recorded boundary; no side effect was replayed.'
+      : 'Cancellation requested. The turn will stop at the next recorded boundary.');
+  } catch (error) {
+    notice(`Could not cancel: ${error.message}`, true);
+  } finally { $('cancelrequest').disabled = false; }
+}
+// P14-T01: the server admits a retry only from a recorded non-mutating boundary. It returns the
+// new receipt; this tab adopts it as its active turn and follows it like any other.
+async function retryFromBoundary(requestId, button) {
+  if (busy) return notice('Let the current message finish before retrying.', true);
+  const myEpoch = epoch;
+  if (button) button.disabled = true;
+  try {
+    const receipt = await api(`/chat/requests/${encodeURIComponent(requestId)}/retry`, {});
+    if (!token || myEpoch !== epoch) return;
+    rememberPending({ request_id: receipt.request_id, session_id: receipt.session_id, scope: receipt.scope, generation_cursor: 0 });
+    pendingPrompt = null;
+    notice('Retrying from the last recorded non-mutating boundary. Nothing was replayed.');
+    await loadHistory();
+    setBusy(true);
+    try { await followReceipt(receipt, myEpoch); } finally { if (myEpoch === epoch) setBusy(false); }
+  } catch (error) {
+    notice((error.status === 409 ? 'Retry refused: ' : 'Retry failed: ') + error.message, true);
+  } finally { if (button) button.disabled = false; }
+}
 async function sendAttempt(retry = false) {
   if (busy) return;
   if (pending && !retry) return resumeRecording();
@@ -349,6 +392,7 @@ $('newchat').addEventListener('click', () => {
 $('chatform').addEventListener('submit', event => { event.preventDefault(); sendAttempt(); });
 $('checkrecording').addEventListener('click', resumeRecording);
 $('retryrequest').addEventListener('click', () => sendAttempt(true));
+$('cancelrequest').addEventListener('click', () => cancelPending());
 $('leavepending').addEventListener('click', () => {
   if (!pending || !window.confirm('Start a new conversation without resending or cancelling this request? Any saved work remains in History. Unsaved draft text will be cleared.')) return;
   epoch++; setBusy(false); closeGenerationStream(); closeActivityStream(); rememberPending(null); $('retryrequest').hidden = true; $('prompt').value = '';

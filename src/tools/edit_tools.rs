@@ -345,12 +345,14 @@ pub(crate) fn apply(ctx: &ToolCtx, verb: &str, change: PendingChange) -> ToolRes
     }
 
     if let Some(command) = ctx.diagnostics_cmd.as_deref() {
-        let run = run_capped(
+        // Register the diagnostics process group too, so a cancel interrupts a long check.
+        let run = run_capped_for(
             command,
             &ctx.root,
             &ctx.scope,
             DIAGNOSTICS_TIMEOUT,
             DIAGNOSTICS_CAP,
+            Some(&ctx.request_id),
         );
         out.push_str(&format!(
             "\n[diagnostics {}]\n{}\n",
@@ -393,6 +395,21 @@ pub(crate) fn run_capped(
     scope: &str,
     seconds: u64,
     cap: usize,
+) -> Capped {
+    run_capped_for(command, cwd, scope, seconds, cap, None)
+}
+
+/// P14-T01: as `run_capped`, but while the child lives its process group is registered under
+/// `request`, so an explicit cancellation can terminate the very tree this call is blocked on
+/// instead of only flagging the turn for after the command returns. `request` is `None` for
+/// callers with no cancellable turn (a detached background job, and unit tests).
+pub(crate) fn run_capped_for(
+    command: &str,
+    cwd: &Path,
+    scope: &str,
+    seconds: u64,
+    cap: usize,
+    request: Option<&str>,
 ) -> Capped {
     let failed = |message: String| Capped {
         started: false,
@@ -437,6 +454,9 @@ pub(crate) fn run_capped(
             return failed(format!("could not start the command: {e}"));
         }
     };
+    // Held for the whole wait: dropping it on any exit path deregisters the group, so a later
+    // cancellation can never signal a pid the OS has since reused.
+    let _group = request.map(|request| crate::processes::register(request, child.id() as i32));
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(seconds);
     let (mut code, mut timed_out) = (None, false);
     loop {

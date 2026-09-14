@@ -33,6 +33,7 @@ mod embeddings;
 mod ingest;
 mod memory_agents;
 mod process_lock;
+mod processes; // P14-T01 live process-group handles so an explicit cancel can stop blocked work
 mod recording;
 mod recording_sql;
 mod repo_map; // P3-T04 bounded per-scope file/symbol map
@@ -526,6 +527,49 @@ async fn get_receipt(State(h): State<Harness>, Path(id): Path<String>) -> ApiRes
             ))?,
     ))
 }
+async fn cancel_request(
+    State(h): State<Harness>,
+    Path(id): Path<String>,
+) -> ApiResult<(StatusCode, Json<Value>)> {
+    Uuid::parse_str(&id).map_err(|_| invalid("Invalid request identifier"))?;
+    let receipt = h
+        .store
+        .request_cancellation(id.clone())
+        .await
+        .map_err(db_error)?
+        .ok_or(ApiError(
+            StatusCode::NOT_FOUND,
+            "Recording receipt not found",
+        ))?;
+    // The durable intent is committed first; only then stop any process group the turn is still
+    // blocked on. A restart that loses this in-memory handle still leaves the turn interrupted.
+    crate::processes::terminate(&id);
+    match receipt["state"].as_str() {
+        Some("generating") => Ok((StatusCode::ACCEPTED, Json(receipt))),
+        Some("interrupted") if receipt["error_code"] == "cancelled" => {
+            Ok((StatusCode::OK, Json(receipt)))
+        }
+        _ => Err(ApiError(
+            StatusCode::CONFLICT,
+            "Only a captured or generating request can be cancelled",
+        )),
+    }
+}
+
+async fn retry_request(
+    State(h): State<Harness>,
+    Path(id): Path<String>,
+) -> ApiResult<(StatusCode, Json<Value>)> {
+    Uuid::parse_str(&id).map_err(|_| invalid("Invalid request identifier"))?;
+    match h.store.retry_recording(id).await.map_err(db_error)? {
+        recording::RetryAdmission::Saved(receipt) => Ok((StatusCode::ACCEPTED, Json(receipt))),
+        recording::RetryAdmission::NotFound => Err(ApiError(StatusCode::NOT_FOUND, "Recording receipt not found")),
+        recording::RetryAdmission::NotTerminal => Err(ApiError(StatusCode::CONFLICT, "Only failed or interrupted requests can be retried")),
+        recording::RetryAdmission::Busy => Err(ApiError(StatusCode::CONFLICT, "This conversation already has an unfinished answer")),
+        recording::RetryAdmission::Unsafe => Err(ApiError(StatusCode::CONFLICT, "Retry refused because the run crossed or may have crossed a mutating boundary")),
+    }
+}
+
 async fn get_context(State(h): State<Harness>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
     Uuid::parse_str(&id).map_err(|_| invalid("Invalid request identifier"))?;
     Ok(Json(
@@ -1088,7 +1132,6 @@ async fn activity(
 // The token stays in the `Authorization` header (the client uses `fetch`, never `EventSource`,
 // which cannot send one), and `authenticate` releases its concurrency permit as soon as the
 // response head is returned, so an open stream never occupies one of the 8 API slots.
-const STREAM_POLL: Duration = Duration::from_millis(200);
 const STREAM_HEARTBEAT: Duration = Duration::from_secs(15);
 const STREAM_BATCH: usize = 200; // `agentic_sql::EVENTS_AFTER` LIMIT
 const STREAM_READ_FAILURES: u32 = 25; // ~5 s of failed reads, then close
@@ -1125,6 +1168,7 @@ async fn activity_stream(
         return Err(invalid("Activity cursor cannot be negative"));
     }
     let (tx, rx) = tokio::sync::mpsc::channel::<String>(64);
+    let mut rx_commit = h.store.commit_notify.subscribe();
     tokio::spawn(async move {
         let (mut cursor, mut quiet, mut failures) = (after, tokio::time::Instant::now(), 0u32);
         // A closed channel is the client hanging up; stop reading the database for a tab that left.
@@ -1163,7 +1207,8 @@ async fn activity_stream(
                 }
                 quiet = tokio::time::Instant::now();
             }
-            tokio::time::sleep(STREAM_POLL).await;
+            let until_heartbeat = STREAM_HEARTBEAT.saturating_sub(quiet.elapsed());
+            let _ = tokio::time::timeout(until_heartbeat, rx_commit.recv()).await;
         }
     });
     Ok((
@@ -1213,6 +1258,7 @@ async fn generation_stream(
         return Err(invalid("Generation cursor cannot be negative"));
     }
     let (tx, rx) = tokio::sync::mpsc::channel::<String>(64);
+    let mut rx_commit = h.store.commit_notify.subscribe();
     tokio::spawn(async move {
         let (mut cursor, mut quiet, mut failures) = (after, tokio::time::Instant::now(), 0u32);
         while !tx.is_closed() {
@@ -1247,7 +1293,8 @@ async fn generation_stream(
                 }
                 quiet = tokio::time::Instant::now();
             }
-            tokio::time::sleep(STREAM_POLL).await;
+            let until_heartbeat = STREAM_HEARTBEAT.saturating_sub(quiet.elapsed());
+            let _ = tokio::time::timeout(until_heartbeat, rx_commit.recv()).await;
         }
     });
     Ok((
@@ -1322,6 +1369,8 @@ fn router(state: Harness) -> Router {
         .route("/chat", post(chat))
         .route("/chat/submit", post(submit_chat))
         .route("/chat/requests/{id}", get(get_receipt))
+        .route("/chat/requests/{id}/cancel", post(cancel_request))
+        .route("/chat/requests/{id}/retry", post(retry_request))
         .route("/chat/requests/{id}/context", get(get_context))
         .route("/sessions", get(sessions))
         .route("/models", get(models))
@@ -1774,7 +1823,7 @@ mod tests {
         assert_eq!(payload["ready"], true);
         assert_eq!(payload["commit"], BUILD_COMMIT);
         assert_eq!(payload["binary_sha256"].as_str().unwrap().len(), 64);
-        assert_eq!(payload["schema_version"], 8);
+        assert_eq!(payload["schema_version"], 9);
         assert_eq!(payload["database"]["quick_check"], "ok");
         assert_eq!(payload["database"]["queue"]["jobs_pending"], 0);
         assert_eq!(payload["workers"]["recording"], true);
@@ -1877,6 +1926,452 @@ mod tests {
         )
         .unwrap()
     }
+    #[tokio::test]
+    async fn queued_cancellation_is_durable_and_idempotent() {
+        let store = DbStore::init(":memory:").unwrap();
+        let app = app_with(store.clone());
+        let (request, session) = (storage::uid(), storage::uid());
+        store
+            .capture_chat(recording::CaptureInput {
+                request: request.clone(),
+                session,
+                scope: "global".into(),
+                prompt: "cancel this".into(),
+                model: "m".into(),
+                signature: storage::uid(),
+                redacted: false,
+            })
+            .await
+            .unwrap();
+        let cancel = || {
+            authorized("POST", &format!("/chat/requests/{request}/cancel"))
+                .body(Body::empty())
+                .unwrap()
+        };
+        let first = app.clone().oneshot(cancel()).await.unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        let receipt = body_json(first).await;
+        assert_eq!((receipt["state"].as_str(), receipt["error_code"].as_str()), (Some("interrupted"), Some("cancelled")));
+        assert!(receipt["cancel_requested_at"].is_string());
+        assert!(receipt["cancelled_at"].is_string());
+        let replay = app.clone().oneshot(cancel()).await.unwrap();
+        assert_eq!(replay.status(), StatusCode::OK);
+        assert!(store.claim_recording().await.unwrap().is_none());
+        let counts: (i64, i64) = store.run(move |c| Ok((
+            c.query_row("SELECT count(*) FROM activity_events WHERE request_id=?1 AND kind='cancel_requested'", [&request], |r| r.get(0))?,
+            c.query_row("SELECT count(*) FROM activity_events WHERE request_id=?1 AND kind='turn_cancelled'", [&request], |r| r.get(0))?,
+        ))).await.unwrap();
+        assert_eq!(counts, (1, 1));
+    }
+
+    #[tokio::test]
+    async fn active_cancellation_records_intent_until_a_safe_boundary() {
+        let store = DbStore::init(":memory:").unwrap();
+        let app = app_with(store.clone());
+        let (request, session) = (storage::uid(), storage::uid());
+        store.capture_chat(recording::CaptureInput {
+            request: request.clone(), session, scope: "global".into(), prompt: "stop later".into(),
+            model: "m".into(), signature: storage::uid(), redacted: false,
+        }).await.unwrap();
+        store.claim_recording().await.unwrap().unwrap();
+        let response = app.oneshot(
+            authorized("POST", &format!("/chat/requests/{request}/cancel"))
+                .body(Body::empty()).unwrap(),
+        ).await.unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let receipt = body_json(response).await;
+        assert_eq!(receipt["state"], json!("generating"));
+        assert!(receipt["cancel_requested_at"].is_string());
+        assert!(store.cancellation_requested(request.clone()).await.unwrap());
+        assert!(store.finalize_cancellation(request.clone()).await.unwrap());
+        let terminal = store.recording_receipt(request).await.unwrap().unwrap();
+        assert_eq!((terminal["state"].as_str(), terminal["error_code"].as_str()), (Some("interrupted"), Some("cancelled")));
+    }
+
+    async fn assert_cancelled_once(store: &DbStore, request: &str) -> Value {
+        let receipt = store.recording_receipt(request.into()).await.unwrap().unwrap();
+        assert_eq!(receipt["state"], "interrupted");
+        assert_eq!(receipt["error_code"], "cancelled");
+        assert!(receipt["cancel_requested_at"].is_string());
+        assert!(receipt["cancelled_at"].is_string());
+        assert!(receipt["response"].is_null());
+        let request = request.to_string();
+        store.run(move |c| {
+            let cancelled: i64 = c.query_row(
+                "SELECT count(*) FROM generation_events WHERE request_id=?1 AND state='interrupted' AND error_code='cancelled'",
+                [&request], |r| r.get(0),
+            )?;
+            let other_terminal: i64 = c.query_row(
+                "SELECT count(*) FROM generation_events WHERE request_id=?1 AND (state IN ('completed','failed') OR error_code='process_restarted')",
+                [&request], |r| r.get(0),
+            )?;
+            let cancelled_activity: i64 = c.query_row(
+                "SELECT count(*) FROM activity_events WHERE request_id=?1 AND kind='turn_cancelled'",
+                [&request], |r| r.get(0),
+            )?;
+            let interrupted: i64 = c.query_row(
+                "SELECT count(*) FROM recording_events WHERE request_id=?1 AND kind='interrupted'",
+                [&request], |r| r.get(0),
+            )?;
+            let answers: i64 = c.query_row(
+                "SELECT count(*) FROM messages WHERE role='assistant' AND session_id=(SELECT session_id FROM chat_receipts WHERE request_id=?1)",
+                [&request], |r| r.get(0),
+            )?;
+            let message_status: String = c.query_row(
+                "SELECT status FROM messages WHERE id=?1", [&request], |r| r.get(0),
+            )?;
+            assert_eq!((cancelled, other_terminal, cancelled_activity, interrupted, answers), (1, 0, 1, 1, 0));
+            assert_eq!(message_status, "failed");
+            Ok(())
+        }).await.unwrap();
+        receipt
+    }
+
+    #[tokio::test]
+    async fn cancellation_committed_after_worker_check_wins_over_completion() {
+        let store = DbStore::init(":memory:").unwrap();
+        let (request, session) = (storage::uid(), storage::uid());
+        capture_turn(&store, &request, &session, "stop before saving").await;
+        store.claim_recording().await.unwrap().unwrap();
+        store.save_recording_context(request.clone(), json!({})).await.unwrap();
+        // Deterministic ordering at the race boundary: the worker checked, then Stop committed.
+        assert!(!store.cancellation_requested(request.clone()).await.unwrap());
+        let response = app_with(store.clone()).oneshot(
+            authorized("POST", &format!("/chat/requests/{request}/cancel"))
+                .body(Body::empty()).unwrap(),
+        ).await.unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        store.complete_recording(request.clone(), "must not be saved".into()).await.unwrap();
+        let terminal = assert_cancelled_once(&store, &request).await;
+        assert!(!store.finalize_cancellation(request.clone()).await.unwrap());
+        store.fail_recording(request.clone(), "answer_save_failed").await.unwrap();
+        assert_eq!(assert_cancelled_once(&store, &request).await, terminal);
+        assert!(store.claim_recording().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn cancellation_committed_after_worker_check_wins_over_every_failure() {
+        for code in ["context_failed", "provider_failed", "generation_stream_save_failed", "answer_save_failed", "worker_failed"] {
+            let store = DbStore::init(":memory:").unwrap();
+            let (request, session) = (storage::uid(), storage::uid());
+            capture_turn(&store, &request, &session, "stop before failure").await;
+            store.claim_recording().await.unwrap().unwrap();
+            assert!(!store.cancellation_requested(request.clone()).await.unwrap());
+            store.request_cancellation(request.clone()).await.unwrap();
+            store.fail_recording(request.clone(), code).await.unwrap();
+            let terminal = assert_cancelled_once(&store, &request).await;
+            store.fail_recording(request.clone(), code).await.unwrap();
+            assert_eq!(assert_cancelled_once(&store, &request).await, terminal);
+        }
+    }
+
+    #[tokio::test]
+    async fn cancellation_does_not_override_an_already_committed_terminal_result() {
+        for complete in [true, false] {
+            let store = DbStore::init(":memory:").unwrap();
+            let (request, session) = (storage::uid(), storage::uid());
+            capture_turn(&store, &request, &session, "finish first").await;
+            store.claim_recording().await.unwrap().unwrap();
+            if complete {
+                store.save_recording_context(request.clone(), json!({})).await.unwrap();
+                store.complete_recording(request.clone(), "saved answer".into()).await.unwrap();
+            } else {
+                store.fail_recording(request.clone(), "provider_failed").await.unwrap();
+            }
+            let terminal = store.recording_receipt(request.clone()).await.unwrap().unwrap();
+            let response = app_with(store.clone()).oneshot(
+                authorized("POST", &format!("/chat/requests/{request}/cancel"))
+                    .body(Body::empty()).unwrap(),
+            ).await.unwrap();
+            assert_eq!(response.status(), StatusCode::CONFLICT);
+            assert_eq!(store.recording_receipt(request.clone()).await.unwrap().unwrap(), terminal);
+            assert!(!store.cancellation_requested(request).await.unwrap());
+        }
+    }
+
+    #[tokio::test]
+    async fn cancellation_recovery_finishes_intent_once_without_reclaiming_work() {
+        let dir = std::env::temp_dir().join(format!("harness-cancel-recovery-{}", storage::uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.db");
+        let store = DbStore::init(path.to_str().unwrap()).unwrap();
+        let (request, session) = (storage::uid(), storage::uid());
+        capture_turn(&store, &request, &session, "cancel before restart").await;
+        store.claim_recording().await.unwrap().unwrap();
+        let step = store.begin_step(agent_loop::NewStep {
+            request: request.clone(), session: session.clone(), kind: "tool_call",
+            tool_name: Some("write".into()), tool_call_id: Some(storage::uid()),
+            input: json!({}), event: "tool_started", payload: json!({}),
+        }).await.unwrap();
+        let accepted = store.request_cancellation(request.clone()).await.unwrap().unwrap();
+        assert_eq!(accepted["state"], "generating");
+        let other = storage::uid();
+        capture_turn(&store, &other, &storage::uid(), "ordinary restart").await;
+        assert_eq!(store.claim_recording().await.unwrap().unwrap().request, other);
+        let queued = storage::uid();
+        capture_turn(&store, &queued, &storage::uid(), "still queued").await;
+        drop(store);
+        let mut first_terminal = None;
+        for _ in 0..2 {
+            let store = DbStore::init(path.to_str().unwrap()).unwrap();
+            let terminal = assert_cancelled_once(&store, &request).await;
+            assert_eq!(terminal["cancel_requested_at"], accepted["cancel_requested_at"]);
+            if let Some(first) = &first_terminal { assert_eq!(&terminal, first); }
+            first_terminal = Some(terminal);
+            let response = app_with(store.clone()).oneshot(
+                authorized("POST", &format!("/chat/requests/{request}/cancel"))
+                    .body(Body::empty()).unwrap(),
+            ).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let step = step.clone();
+            store.run(move |c| {
+                let state: (String, Option<String>) = c.query_row(
+                    "SELECT status,error_code FROM turn_steps WHERE id=?1", [step],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )?;
+                assert_eq!(state, ("interrupted".into(), Some("cancelled".into())));
+                Ok(())
+            }).await.unwrap();
+            let restarted = store.recording_receipt(other.clone()).await.unwrap().unwrap();
+            assert_eq!(restarted["state"], "interrupted");
+            assert_eq!(restarted["error_code"], "process_restarted");
+            assert_eq!(store.recording_receipt(queued.clone()).await.unwrap().unwrap()["state"], "captured");
+        }
+        let store = DbStore::init(path.to_str().unwrap()).unwrap();
+        assert_eq!(store.claim_recording().await.unwrap().unwrap().request, queued);
+        assert!(store.claim_recording().await.unwrap().is_none());
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// P14-T01 test helpers: a captured turn, and a completed read-only tool step.
+    async fn capture_turn(store: &DbStore, request: &str, session: &str, prompt: &str) {
+        store
+            .capture_chat(recording::CaptureInput {
+                request: request.into(),
+                session: session.into(),
+                scope: "global".into(),
+                prompt: prompt.into(),
+                model: "m".into(),
+                signature: storage::uid(),
+                redacted: false,
+            })
+            .await
+            .unwrap();
+    }
+    async fn complete_tool_step(store: &DbStore, request: &str, session: &str, tool: &str) {
+        let step = store
+            .begin_step(agent_loop::NewStep {
+                request: request.into(),
+                session: session.into(),
+                kind: "tool_call",
+                tool_name: Some(tool.into()),
+                tool_call_id: Some(storage::uid()),
+                input: json!({ "tool": tool }),
+                event: "tool_started",
+                payload: json!({}),
+            })
+            .await
+            .unwrap();
+        store
+            .finish_step(agent_loop::StepOutcome {
+                step,
+                request: request.into(),
+                session: session.into(),
+                status: "complete",
+                output: json!({ "tool": tool }),
+                bytes: 0,
+                truncated: false,
+                tokens_in: None,
+                tokens_out: None,
+                error_code: None,
+                event: "tool_finished",
+                payload: json!({}),
+                artifacts: Vec::new(),
+            })
+            .await
+            .unwrap();
+    }
+
+    /// P14-T01: a retry from a turn whose only recorded tool calls are non-mutating is admitted,
+    /// records its lineage, and never replays the (absent) side effect.
+    #[tokio::test]
+    async fn retry_is_admitted_from_a_recorded_non_mutating_boundary() {
+        let store = DbStore::init(":memory:").unwrap();
+        let app = app_with(store.clone());
+        let (request, session) = (storage::uid(), storage::uid());
+        capture_turn(&store, &request, &session, "explain the module").await;
+        store.claim_recording().await.unwrap().unwrap();
+        complete_tool_step(&store, &request, &session, "read").await;
+        store
+            .fail_recording(request.clone(), "provider_failed")
+            .await
+            .unwrap();
+
+        let response = app
+            .clone()
+            .oneshot(
+                authorized("POST", &format!("/chat/requests/{request}/retry"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let receipt = body_json(response).await;
+        assert_eq!(receipt["state"], json!("captured"));
+        assert_eq!(receipt["retry_of"], json!(request));
+        let retry_id = receipt["request_id"].as_str().unwrap().to_string();
+        assert_ne!(retry_id, request);
+        // The safe boundary is recorded on the *source* turn, and the source points at the retry.
+        let source = request.clone();
+        let retry_key = retry_id.clone();
+        let (boundary, retried_by, lineage): (Option<i64>, Option<String>, Option<String>) = store
+            .run(move |c| {
+                Ok((
+                    c.query_row(
+                        "SELECT safe_boundary_seq FROM run_controls WHERE request_id=?1",
+                        [&source],
+                        |r| r.get(0),
+                    )?,
+                    c.query_row(
+                        "SELECT retried_by FROM run_controls WHERE request_id=?1",
+                        [&source],
+                        |r| r.get(0),
+                    )?,
+                    c.query_row(
+                        "SELECT retry_of FROM run_controls WHERE request_id=?1",
+                        [&retry_key],
+                        |r| r.get(0),
+                    )?,
+                ))
+            })
+            .await
+            .unwrap();
+        assert!(boundary.is_some(), "a completed non-mutating step must be a safe boundary");
+        assert_eq!(retried_by.as_deref(), Some(retry_id.as_str()));
+        assert_eq!(lineage.as_deref(), Some(request.as_str()));
+    }
+
+    /// P14-T01: a retry is refused when a completed tool call could have mutated state, because
+    /// replaying it would duplicate a side effect.
+    #[tokio::test]
+    async fn retry_is_refused_when_a_side_effecting_tool_completed() {
+        let store = DbStore::init(":memory:").unwrap();
+        let app = app_with(store.clone());
+        let (request, session) = (storage::uid(), storage::uid());
+        capture_turn(&store, &request, &session, "run the migration").await;
+        store.claim_recording().await.unwrap().unwrap();
+        complete_tool_step(&store, &request, &session, "bash").await;
+        store
+            .fail_recording(request.clone(), "provider_failed")
+            .await
+            .unwrap();
+
+        let response = app
+            .oneshot(
+                authorized("POST", &format!("/chat/requests/{request}/retry"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        // No retry turn was created for the source.
+        let source = request.clone();
+        let retried: bool = store
+            .run(move |c| {
+                Ok(c.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM run_controls WHERE request_id=?1 AND retried_by IS NOT NULL)",
+                    [&source],
+                    |r| r.get(0),
+                )?)
+            })
+            .await
+            .unwrap();
+        assert!(!retried, "a refused retry must not create a lineage");
+    }
+
+    /// P14-T01: retry is refused while the conversation still owns an unfinished turn, so two
+    /// provider turns can never interleave in one session.
+    #[tokio::test]
+    async fn retry_is_refused_while_the_conversation_has_an_unfinished_answer() {
+        let store = DbStore::init(":memory:").unwrap();
+        let app = app_with(store.clone());
+        let (request, session) = (storage::uid(), storage::uid());
+        capture_turn(&store, &request, &session, "first").await;
+        store.claim_recording().await.unwrap().unwrap();
+        complete_tool_step(&store, &request, &session, "read").await;
+        store
+            .fail_recording(request.clone(), "provider_failed")
+            .await
+            .unwrap();
+        // A second, still-captured turn in the same session blocks the retry.
+        let other = storage::uid();
+        capture_turn(&store, &other, &session, "second").await;
+
+        let response = app
+            .oneshot(
+                authorized("POST", &format!("/chat/requests/{request}/retry"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+
+    /// P14-T01: only a terminal turn can be retried.
+    #[tokio::test]
+    async fn retry_is_refused_for_a_turn_that_has_not_reached_a_terminal_state() {
+        let store = DbStore::init(":memory:").unwrap();
+        let app = app_with(store.clone());
+        let (request, session) = (storage::uid(), storage::uid());
+        capture_turn(&store, &request, &session, "still queued").await;
+
+        let response = app
+            .oneshot(
+                authorized("POST", &format!("/chat/requests/{request}/retry"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+
+    /// P14-T01: retrying a turn that already has a retry returns that same retry instead of
+    /// creating a second lineage (idempotent admission).
+    #[tokio::test]
+    async fn retry_is_idempotent_for_an_already_retried_turn() {
+        let store = DbStore::init(":memory:").unwrap();
+        let app = app_with(store.clone());
+        let (request, session) = (storage::uid(), storage::uid());
+        capture_turn(&store, &request, &session, "retry twice").await;
+        store.claim_recording().await.unwrap().unwrap();
+        complete_tool_step(&store, &request, &session, "glob").await;
+        store
+            .fail_recording(request.clone(), "provider_failed")
+            .await
+            .unwrap();
+
+        let retry = || {
+            authorized("POST", &format!("/chat/requests/{request}/retry"))
+                .body(Body::empty())
+                .unwrap()
+        };
+        let first = app.clone().oneshot(retry()).await.unwrap();
+        assert_eq!(first.status(), StatusCode::ACCEPTED);
+        let first_id = body_json(first).await["request_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let second = app.oneshot(retry()).await.unwrap();
+        assert_eq!(second.status(), StatusCode::ACCEPTED);
+        assert_eq!(body_json(second).await["request_id"], json!(first_id));
+    }
+
+
     #[tokio::test]
     async fn scopes_are_absent_until_configured_then_read_back_canonicalized() {
         let app = app();

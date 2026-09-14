@@ -24,6 +24,7 @@ pub fn uid() -> String {
 #[derive(Clone)]
 pub struct DbStore {
     conn: Arc<Mutex<Connection>>,
+    pub commit_notify: tokio::sync::broadcast::Sender<()>,
     permits: Arc<Semaphore>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -444,6 +445,8 @@ pub fn canonical_root(input: &str) -> std::result::Result<String, &'static str> 
 
 impl DbStore {
     pub fn init(path: &str) -> Result<Self> {
+        let (commit_notify, _) = tokio::sync::broadcast::channel(128);
+
         let mut conn = Connection::open(path)?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         // Inspect first: rejecting a legacy DB must not change its journal mode.
@@ -455,7 +458,7 @@ impl DbStore {
                     "legacy or unknown database: use scripts/migrate_legacy.py into a NEW database"
                 );
             }
-        } else if !(1..=8).contains(&version) {
+        } else if !(1..=9).contains(&version) {
             bail!("unsupported schema version {version}");
         }
         conn.execute_batch(
@@ -484,6 +487,9 @@ impl DbStore {
         }
         if version < 8 {
             conn.execute_batch(include_str!("../migrations/008_provider_spend.sql"))?;
+        if version < 9 {
+            conn.execute_batch(include_str!("../migrations/009_run_cancellation.sql"))?;
+        }
         }
         conn.execute(
             "UPDATE provider_calls SET state='failed',usage_status='unavailable',reason='process_restarted_with_call_reserved',finished_at=?1 WHERE state='reserved'",
@@ -499,8 +505,11 @@ impl DbStore {
         // The executable acquires ProcessLock before init. Recovery therefore interrupts stale
         // work exactly once; a rejected contender never resets another process's billed work.
         crate::recording::recover(&mut conn)?;
+        let notify = commit_notify.clone();
+        conn.commit_hook(Some(move || { let _ = notify.send(()); false }));
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
+            commit_notify,
             permits: Arc::new(Semaphore::new(32)),
         })
     }
@@ -826,7 +835,7 @@ impl DbStore {
             let failed_jobs:i64=c.query_row("SELECT count(*) FROM jobs WHERE status='failed'",[],|r|r.get(0))?;
             let waiting_turns:i64=c.query_row("SELECT count(*) FROM chat_receipts WHERE state='captured'",[],|r|r.get(0))?;
             let running_turns:i64=c.query_row("SELECT count(*) FROM chat_receipts WHERE state='generating'",[],|r|r.get(0))?;
-            Ok(json!({"ready":schema_version==8&&quick_check=="ok","schema_version":schema_version,
+            Ok(json!({"ready":schema_version==9&&quick_check=="ok","schema_version":schema_version,
                 "quick_check":quick_check,"queue":{"jobs_pending":pending_jobs,"jobs_running":running_jobs,
                 "jobs_failed":failed_jobs,"turns_waiting":waiting_turns,"turns_running":running_turns}}))
         }).await

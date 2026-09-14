@@ -7,7 +7,7 @@
 //! without building a tool; it forces an approval even in `auto_all`.
 use serde_json::{json, Value};
 
-use super::edit_tools::run_capped;
+use super::edit_tools::{run_capped, run_capped_for};
 use super::{
     command_touches_protected_path, command_uses_network, is_dangerous_command, paths,
     truncate_chars, Tool, ToolCtx, ToolResult, MAX_OUTPUT,
@@ -128,12 +128,15 @@ fn log_name(step_id: &str) -> String {
 }
 
 fn foreground(ctx: &ToolCtx, call: &Call, summary: String) -> ToolResult {
-    let run = run_capped(
+    // A foreground command is exactly the case a cancel must be able to interrupt: register its
+    // process group under the request so the cancel endpoint can terminate the whole tree.
+    let run = run_capped_for(
         &call.command,
         &ctx.root,
         &ctx.scope,
         call.timeout,
         OUTPUT_CAP,
+        Some(&ctx.request_id),
     );
     if !run.started {
         return ToolResult::err("spawn_failed", &run.output);

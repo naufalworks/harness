@@ -1,5 +1,78 @@
 # PROGRESS — journal
 
+## 2026-09-14T03:07:07Z · P14-T01 — independent continuation verified; task complete
+
+- Resumed the dirty `p14-durable-cancellation` worktree at `9947c0b` and preserved all existing modified/untracked work. No commit, push, deploy, or production restart.
+- Reviewed the current cancellation/retry state machine, recovery ordering, terminal transaction guard, provider/sub-agent/permission cancellation, process-group registration seal, retry admission, migration and UI/test contracts. The latest terminal-state/recovery and late-registration regressions are present and pass.
+- Fresh verification: `cargo test --locked` -> 207 passed, 0 failed; `bash scripts/verify_release.sh` -> exit 0 with Rust/clippy/build, Python/HTTP/recording contracts, JavaScript, both mocked-browser suites, and real browser-to-server success/denial/crash-recovery/cancellation/safe-retry/unsafe-retry-refusal scenarios; `git diff --check` clean.
+- Status: P14-T01 `doing` -> `done`. This is non-deploying verification only; publication remains owner-controlled because the worktree is still uncommitted and the branch has no upstream.
+
+## 2026-09-13T17:04:09Z · P14-T01 — independent review resumed; durable cancellation fixes started
+
+- Status: `needs-verify` -> `doing`. Resumed the existing dirty `p14-durable-cancellation` worktree at `9947c0b`; preserved all prior changes. No commit, push, deployment, or production restart.
+- Completed independent read-only reviews of SHA-256-verified copies of all changed implementation/test files, migration 009, and adjacent recording/tool contracts. Both reviewers found accepted cancellation can lose to a later completion/failure transaction; recovery also strands cancellation intent as `process_restarted`.
+- This increment fixes those durable terminal-state defects first, with fail-before/pass-after regression evidence. Process ownership/signalling, auxiliary provider waits, permission/retry and UI findings remain open; review is not release clearance.
+- Verification target: focused cancellation tests, full native/HTTP/contracts, and exact browser/release gates only with a permitted browser runtime. Do not treat historical browser passes as current evidence.
+- Next: reproduce the terminal-state/recovery defects, make cancellation win inside the terminal transaction, then record fresh results and remaining findings.
+
+## 2026-09-13T15:46:39Z · P14-T01 — checkpoint disimpan; review kode ditunda
+
+- User meminta update progress saja di repo untuk dilanjutkan nanti. Perubahan ini hanya dokumentasi; source tidak diubah dan tidak ada pengujian kode baru.
+- P14-REVIEW-01 (child-provider cancellation race + post-response guard) dan P14-REVIEW-02 (late process registration seal) telah diimplementasikan di `src/agent_loop.rs` dan `src/processes.rs`; keduanya masih menunggu review independen.
+- Hasil terakhir yang dilaporkan implementer: kedua regresi fail-before/pass-after; `cargo test --locked` 203 passed; E2E dan strict non-deploy release gate exit 0. Ini bukan hasil audit independen. Ledger task ID/log ada di checkpoint terbaru `docs/HANDOFF-P14-T01.md`.
+- Status tetap **needs-verify, bukan done**. Review kode belum dijalankan; snapshot MCP mengalami timeout/perbedaan hitungan baris dan belum berhasil diverifikasi lengkap.
+- Branch `p14-durable-cancellation`, HEAD `9947c0b7798c9d7d42b791b1b29df080043f137f`; worktree 16 modified + 3 untracked, tanpa staging. **Tidak commit/push/deploy/restart**; perubahan disimpan pada worktree remote.
+- Lanjutkan dari handoff terbaru: verifikasi artefak lengkap dengan hash, audit seluruh cancellation/retry (termasuk bounded process seal/PID lifecycle), perbaiki jika perlu dan rerun gate sebelum clearance/publikasi.
+- Entri di bawah bersifat historis; angka 201 berasal dari sebelum dua regresi terbaru.
+
+## 2026-09-13 · P14-T01 — finalization BLOCKED: independent audit not run
+
+- **Automated gates all green.** `scripts/verify_release.sh` -> **exit 0** (rust-tests 201 passed; clippy, build, python-contracts, integration-smoke, recording-integration, javascript-syntax, mocked-browser; real-browser-to-server E2E/DENIAL/CRASH-RECOVERY/CANCELLATION/UNSAFE-RETRY). Full ledger in `docs/HANDOFF-P14-T01.md`.
+- **Independent verification did NOT run.** The verification sub-agent was rejected twice: the first packet was missing `<verification_packet>`, and the corrected body was rejected as *not valid JSON*; the tool returned `verification_packet_validation_failed_twice` and forbade further verifier attempts this request. This is an orchestration validation failure, not a code failure.
+- **Status:** `docs/TASKS.md` P14-T01 `doing` -> `needs-verify` (**not done**). Push withheld; no commit and no push; branch `p14-durable-cancellation` still has no upstream; HEAD `9947c0b`.
+- **Next session:** independently audit all cancellation/retry changes using **exactly one `verification_packet` with a valid JSON body**, rerun affected/strict gates on any fix or drift, then commit and push to `origin p14-durable-cancellation`. No production deployment.
+- **Evidence references (remote MCP run_command task ids / logs):** setup `9d882be49907`; verify_local `6f0d5713b909` (rerun mocked-browser `/tmp/p14_vb2.log` exit 0); verify_e2e `851ceaba8d9f` (exit 1, defect found) then `8e1ce0ae5adb` (exit 0); verify_release `470cb50e9cd0` (exit 0). Logs under remote `/tmp/p14_*.log`.
+- UTC stamp: 2026-09-13T13:54Z.
+
+## 2026-09-13 · P14-T01 — strict release gate GREEN
+## 2026-09-13 · P14-T01 — strict release gate GREEN
+
+- **Strict non-deploying release gate:** `scripts/verify_release.sh` -> **exit 0**. local-contract (rust-tests 201 passed, clippy, build, python-contracts, integration-smoke, recording-integration, javascript-syntax, mocked-browser) and real-browser-to-server all PASS.
+- **Real e2e scenarios passed:** `E2E`, `DENIAL`, `CRASH-RECOVERY`, `CANCELLATION` (Stop during an 8 s slow provider wait, then exactly one safe-boundary retry, no replayed side effect), `UNSAFE-RETRY` (completed side effect -> hard 409 refusal, no retry turn created).
+- **Defect found and fixed by the e2e run:** a cancelled turn left its in-flight `model_call` step `running`; `agent_loop` now closes it as `interrupted` on every cancellation path (`finish_cancelled_step`).
+- **No commit or push performed.** Branch `p14-durable-cancellation` still has no upstream; HEAD `9947c0b`. Handoff: `docs/HANDOFF-P14-T01.md` (session update appended).
+- Task board: task 2 (implementation) completed; task 3 (independent verification) in_progress; task 4 (finalize/push) parent-owned.
+- UTC stamp: 2026-09-13T13:51:19Z.
+
+## 2026-09-13 · P14-T01 — mid-flight provider cancel, UI fix, real e2e coverage
+## 2026-09-13 · P14-T01 — mid-flight provider cancel, UI fix, real e2e coverage
+
+- **Mid-flight provider cancellation.** `agent_loop` now races every provider wait (streaming and tool-calling) against the durable cancel intent via `Ctx::race_cancellation` + `PROVIDER_CANCEL_POLL` (200 ms). On cancel the abandoned provider future is dropped, aborting the in-flight request instead of letting a stopped turn finish and commit. This closes the "cancel only before/after a provider call" gap.
+- **UI correctness fix.** The composer **Stop** control was briefly disabled while `busy`, i.e. exactly during the turn it must cancel. Stop is now gated only on having a pending request; the already-running receipt poll observes the `interrupted` terminal state. No `resumeRecording()` re-entry (avoids the busy guard).
+- **Real browser e2e coverage (not just mocked).** `tests/browser_e2e_failure.cjs` gains provider modes and two scenarios over the real axum + SQLite + filesystem stack: `cancellationThenSafeRetry` (Stop during an 8 s slow provider wait, then exactly one safe-boundary retry, asserting `run_controls` lineage and `safe_boundary_seq`) and `unsafeRetryIsRejected` (edit applies, provider then fails → retry is a 409 refusal and no retry turn/lineage is created). `configure()` gained a permission-mode argument.
+- **Contract fixture fix.** `tests/test_recording_contracts.py` applies migration `009_run_cancellation.sql` so the receipt read's `run_controls` join prepares against the actual schema.
+- **Evidence.** `scripts/verify_local.sh` (non-browser portion): rust-tests **201 passed**, rust-clippy PASS, rust-build PASS, python-contracts PASS, integration-smoke PASS, recording-integration PASS, javascript-syntax PASS, mocked-browser PASS (`stop_records_cancellation`, `safe_boundary_retry_posts_once`). Browser deps provisioned via `scripts/setup_browser_tests.sh` (exit 0). `scripts/verify_e2e.sh` in progress.
+- UTC stamp: 2026-09-13T13:48:27Z.
+
+## 2026-09-13 · P14-T01 durable cancellation — implementation increment
+## 2026-09-13 · P14-T01 durable cancellation — implementation increment
+
+- **Backend.** New `src/processes.rs` in-memory registry of live process groups per request. `run_capped_for` registers the foreground `bash`, edit-diagnostics and LSP-command process group under the request; `POST /chat/requests/{id}/cancel` commits durable intent and then terminates the live group. `agent_loop::run_task` now observes cancellation between provider calls and between sub-agent tool calls, records `subagent::Stop::Cancelled`, and finishes the delegation and its parent tool-call step as `interrupted` instead of a completed exploration.
+- **UI.** `static/index.html` adds a composer **Stop** control; `static/app.js` adds `cancelPending()` and `retryFromBoundary()`, a per-turn **Retry from safe boundary** button on terminal `failed`/`interrupted` turns, and surfaces 409 refusal reasons (unsafe / busy / not terminal). CSP-safe DOM construction retained.
+- **Tests.** `src/main.rs` adds five retry regression tests (admitted from a recorded non-mutating boundary with lineage; refused when a side-effecting tool completed; refused while the session has an unfinished turn; refused when not terminal; idempotent replay). `src/processes.rs` and `src/subagent.rs` gain unit tests; `tests/recording_ui.cjs` gains mocked Stop/Retry coverage.
+- **Evidence so far.** `node --check` app.js and all `.cjs` OK; `python3 tests/test_migrations.py` OK (user_version=9); `git diff --check` clean. Full non-browser `scripts/verify_local.sh` in progress (first run caught a moved-value compile error in a new test, now fixed and re-running).
+- UTC stamp: 2026-09-13T13:40Z.
+
+## 2026-09-13 · P14-T01 durable cancellation and safe-boundary retry — checkpoint
+## 2026-09-13 · P14-T01 durable cancellation and safe-boundary retry — checkpoint
+
+- Task: P14-T01; lane: workflow; status `doing` (marked done only after independent review).
+- Worktree: `p14-durable-cancellation` at `/root/development/harness-p14-cancellation`; HEAD `9947c0b`; no upstream configured yet; no commit or push performed.
+- Durable handoff: `docs/HANDOFF-P14-T01.md` — worktree/branch, exact task scope, existing changes, pending backend audit/UI/testing, latest evidence, blockers, commands and next actions (no secrets).
+- Preserved: schema v9 `run_controls` migration (untracked), cancel/retry endpoints and cooperative cancel checks; corrected `schema_version == 9` health assertion.
+- Pending: sub-agent and live process-group cancellation, Stop/Cancel and server Retry UI, focused race/restart/permission/side-effect regressions, then migration/cargo/JS/`verify_release.sh` gates. `verify_e2e.sh` remains browser-blocked in this runtime.
+- UTC stamp: 2026-09-13T13:35Z.
+
 ## 2026-09-13 · Notion AI via Local · P14-T04a started
 
 - Task: P14-T04a; priority: high; blocker: release-blocker; lane: provider-cost-safety. Status: `todo` → `doing`.
@@ -996,3 +1069,17 @@ exact failing request with the real browser origin -> 200; `https://evil.invalid
 **Delivered.** Browser navigation now rejects credential-bearing and non-HTTP(S) URLs, loopback/private/link-local/metadata/special-use literal destinations by default, and revalidates the captured URL after redirects and interactions; private-network access is an explicit operator opt-in and no model-facing transfer operation exists. Bash permission evidence now classifies network and protected-path access, and those classes cannot pass `auto_all` without approval. Edit, write, AST edit, LSP workspace rename/rollback, and recorded-change revert now revalidate canonical parent containment and Unix ownership immediately before atomic replacement, with a symlink-swap regression.
 
 **Verified.** Exact gate passed: 69 tool-focused Rust tests plus `tests/recording_integration.py`. Strict non-deploying release gate passed: Rust tests/clippy/build, Python contracts, integration smoke, recording integration, JavaScript syntax, both mocked-browser suites, and real browser-to-server success/denial/crash-recovery paths. `git diff --check` passed.
+
+---
+
+## 2026-09-13 — P14-T01 durable cancellation started
+
+**Scope.** Started schema-backed cancellation intent, cooperative turn/permission cancellation, and retry lineage that is accepted only when recorded tool evidence proves no side-effecting call completed or remained uncertain. Work is isolated on `p14-durable-cancellation`; no deployment is part of this tranche.
+
+---
+
+## 2026-09-14 · P11-T01 — Wake streams from committed events
+
+**Delivered.** Replaced 200 ms per-connection SQLite polling with commit notifications (`tokio::sync::broadcast`) plus cursor replay. Activity and generation streams wait via `tokio::time::timeout` utilizing `commit_notify.subscribe()` channel from `DbStore`. Idle stream heartbeat logic is intact, and transient database contentions correctly hold cursor and resume efficiently.
+
+**Verified.** `cargo test --locked streaming` and `python3 tests/recording_integration.py` pass without errors. `cargo test --locked -p harness` gives 207 passes.

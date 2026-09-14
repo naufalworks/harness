@@ -14,7 +14,7 @@ tungstenite = "0.30"
 dotenvy = "0.15"
 reqwest = { version = "0.12", features = ["json"] }
 anyhow = "1.0"
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.32", features = ["bundled", "hooks"] }
 uuid = { version = "1.10", features = ["v4"] }
 chrono = "0.4"
 # P2-T01: the SSE body is a stream; this is the `Stream` trait axum already depends on, so the
