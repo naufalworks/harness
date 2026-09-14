@@ -1389,46 +1389,6 @@ mod tests {
         }).await.unwrap()
     }
 
-    #[test]
-    fn tool_result_compaction_has_a_stable_three_call_boundary_and_reference() {
-        let full = "large deterministic output";
-        let mut messages = vec![json!({"role":"tool","tool_call_id":"call-1","content":full})];
-        let mut replays = vec![ToolReplay {
-            message_index: 0,
-            name: "read".into(),
-            step_seq: 2,
-            bytes: 26,
-            hash: "deadbeef".into(),
-            produced_after_call: 1,
-            compacted: false,
-        }];
-
-        compact_old_tool_results(&mut messages, &mut replays, 3);
-        assert_eq!(
-            messages[0]["content"], full,
-            "the first two later calls still get the full result"
-        );
-        compact_old_tool_results(&mut messages, &mut replays, 4);
-        assert_eq!(
-            messages[0]["content"],
-            "[tool read step 2, 26 bytes, hash deadbeef; call read again if needed]"
-        );
-        compact_old_tool_results(&mut messages, &mut replays, 20);
-        assert_eq!(
-            messages[0]["content"],
-            "[tool read step 2, 26 bytes, hash deadbeef; call read again if needed]",
-            "compaction is deterministic and idempotent"
-        );
-    }
-
-    #[test]
-    fn turn_compaction_triggers_at_seventy_percent_inclusively() {
-        assert!(!should_compact(None, 100));
-        assert!(!should_compact(Some(69), 100));
-        assert!(should_compact(Some(70), 100));
-        assert!(should_compact(Some(128_000), 128_000));
-    }
-
     #[tokio::test]
     async fn turn_compaction_records_a_receipt_keeps_two_tools_and_proposes_episode() {
         let db = DbStore::init(":memory:").unwrap();

@@ -50,8 +50,10 @@ Do not copy historical test counts or deployment IDs into current claims. Report
 
 | Path | Current role |
 |---|---|
-| `src/main.rs` | Axum router, authentication/session middleware, HTTP handlers, startup/shutdown |
-| `src/agent_loop.rs` | Recorded bounded model↔tool loop, compaction, verification |
+| `src/main.rs` | Process entry: `Harness` state, runtime identity, startup/shutdown |
+| `src/api/` | `routes.rs` routing table and handlers, `auth.rs` authentication/session/hardening middleware, `stream.rs` SSE, `assets.rs`, `error.rs` |
+| `src/agent_loop.rs` | Recorded bounded model↔tool loop: orchestration, budgets, permissions, tool calls, delegation |
+| `src/agent_loop/` | `steps.rs` durable step/permission transitions, `compaction.rs` provider-window compaction, `verification.rs` verification evidence |
 | `src/recording.rs`, `src/recording_sql.rs` | Durable admission, generation worker, event feed, extraction outbox |
 | `src/memory_agents.rs` | Provider adapter plus extraction/compaction/verification calls |
 | `src/storage.rs` | `DbStore`, schema initialization, scopes, memories, jobs, provenance |
