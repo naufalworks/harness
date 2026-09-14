@@ -10,7 +10,9 @@ fn arg_str<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
     args.get(key).and_then(Value::as_str)
 }
 fn arg_usize(args: &Value, key: &str) -> Option<usize> {
-    args.get(key).and_then(Value::as_u64).map(|v| v as usize)
+    args.get(key)
+        .and_then(Value::as_u64)
+        .and_then(|v| usize::try_from(v).ok())
 }
 
 pub(crate) fn read_text(path: &Path) -> Result<String, ToolResult> {

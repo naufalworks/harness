@@ -5,6 +5,7 @@
 //! reaches the verifier passes through `verification_text`, so redaction and truncation are
 //! applied once, here, rather than at each call site.
 use crate::{
+    limits::verification as vlimits,
     memory_agents::ToolCall,
     safety,
     tools::{Artifact, ToolResult, ToolStatus},
@@ -55,7 +56,7 @@ pub(super) fn tool_verification_evidence(
                 minus,
                 ..
             } => Some(json!({
-                "path":verification_text(path,500),"action":action,"before_hash":before_hash,
+                "path":verification_text(path,vlimits::MAX_EVIDENCE_SUMMARY_CHARS),"action":action,"before_hash":before_hash,
                 "after_hash":after_hash,"plus":plus,"minus":minus,"applied":true,
             })),
             Artifact::Plan { .. } => None,
@@ -69,7 +70,7 @@ pub(super) fn tool_verification_evidence(
         value: json!({
             "step_id":step_id,"seq":seq,"tool":call.name,"status":status,
             "arguments":verification_text(&arguments,MAX_VERIFICATION_ARGUMENT_CHARS),
-            "summary":verification_text(&result.summary,500),
+            "summary":verification_text(&result.summary,vlimits::MAX_EVIDENCE_SUMMARY_CHARS),
             "output":verification_text(&result.content,MAX_VERIFICATION_OUTPUT_CHARS),
             "error_code":result.error_code,"exit_code":result.exit_code,
             "file_changes":file_changes,

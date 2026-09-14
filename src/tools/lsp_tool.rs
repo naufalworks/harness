@@ -350,11 +350,13 @@ fn lsp_to_model(text: &str, position: &Value) -> Result<(usize, usize), String> 
     let line = position
         .get("line")
         .and_then(Value::as_u64)
-        .ok_or_else(|| "LSP position has no line".to_string())? as usize;
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or_else(|| "LSP position has no line".to_string())?;
     let units = position
         .get("character")
         .and_then(Value::as_u64)
-        .ok_or_else(|| "LSP position has no character".to_string())? as usize;
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or_else(|| "LSP position has no character".to_string())?;
     let (_, source) = line_slice(text, line)
         .ok_or_else(|| format!("LSP line {} is outside the file", line + 1))?;
     let (mut seen, mut column) = (0usize, 1usize);

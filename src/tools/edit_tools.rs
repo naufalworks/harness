@@ -111,7 +111,13 @@ fn plan_edit(ctx: &ToolCtx, args: &Value) -> Result<PendingChange, ToolResult> {
                 "anchor lines are 1-based",
             ));
         }
-        parsed.push((line as usize, hash));
+        let Ok(line) = usize::try_from(line) else {
+            return Err(ToolResult::err(
+                "invalid_arguments",
+                "anchor line is out of range for this file",
+            ));
+        };
+        parsed.push((line, hash));
     }
 
     // Every anchor must still match. Otherwise hand back the current lines so the model can
@@ -147,7 +153,7 @@ fn plan_edit(ctx: &ToolCtx, args: &Value) -> Result<PendingChange, ToolResult> {
     let end_line = args
         .get("end_line")
         .and_then(Value::as_u64)
-        .map(|v| v as usize)
+        .and_then(|v| usize::try_from(v).ok())
         .unwrap_or(last_anchor);
     if end_line < first || end_line > raw.len() {
         return Err(ToolResult::err(
@@ -456,7 +462,9 @@ pub(crate) fn run_capped_for(
     };
     // Held for the whole wait: dropping it on any exit path deregisters the group, so a later
     // cancellation can never signal a pid the OS has since reused.
-    let _group = request.map(|request| crate::processes::register(request, child.id() as i32));
+    let _group = request
+        .zip(i32::try_from(child.id()).ok())
+        .map(|(request, pgid)| crate::processes::register(request, pgid));
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(seconds);
     let (mut code, mut timed_out) = (None, false);
     loop {

@@ -946,8 +946,11 @@ impl OwnedBrowser {
 impl Drop for OwnedBrowser {
     fn drop(&mut self) {
         #[cfg(unix)]
-        unsafe {
-            let _ = kill(-(self.child.id() as i32), 9);
+        if let Ok(pid) = i32::try_from(self.child.id()) {
+            // Never negate an out-of-range pid: a wrapped value would name some other group.
+            unsafe {
+                let _ = kill(-pid, 9);
+            }
         }
         let _ = self.child.kill();
         let _ = self.child.wait();

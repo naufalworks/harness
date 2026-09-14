@@ -1090,6 +1090,7 @@ Send another message to continue from here, or raise the budget for this scope f
 mod tests {
     use super::*;
     use crate::recording::{self, Admission, CaptureInput, Generation};
+    use crate::patch::Patch;
     use crate::storage::{uid, ScopePatch};
     use std::collections::VecDeque;
     use std::sync::Mutex;
@@ -1302,7 +1303,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("notes.md"), "alpha\nbeta\n").unwrap();
         let patch = ScopePatch {
-            root_path: Some(Some(dir.to_string_lossy().into())),
+            root_path: Patch::Set(dir.to_string_lossy().into()),
             permission_mode: Some(mode.into()),
             ..patch
         };
@@ -1967,7 +1968,7 @@ mod tests {
             &db,
             "auto_all",
             ScopePatch {
-                max_steps: Some(Some(1)),
+                max_steps: Patch::Set(1),
                 ..Default::default()
             },
         )

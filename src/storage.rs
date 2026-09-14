@@ -1,6 +1,8 @@
 use crate::{
     ingest::Event,
+    limits::verification as vlimits,
     memory_agents::{ModelUsage, SpendLimits},
+    patch::Patch,
     safety,
 };
 use anyhow::{bail, Result};
@@ -123,9 +125,9 @@ pub const PLAN_STATUSES: [&str; 4] = ["pending", "in_progress", "done", "failed"
 /// Preview cap for the step API (P1-T12), matching the `substr(...,1,2048)` in `STEPS_LIST`.
 /// Kept next to that constant's only reader so the two cannot drift.
 pub const PREVIEW_BYTES: usize = 2048;
-const MAX_VERIFICATION_PROJECTION_CLAIMS: usize = 20;
-const MAX_VERIFICATION_PROJECTION_EVIDENCE_IDS: usize = 8;
-const MAX_VERIFICATION_PROJECTION_DIAGNOSTICS: usize = 10;
+// Verification projection caps live in `crate::limits::verification`: the producer-side
+// validator in `memory_agents` rejects reports against the same numbers, so a local copy
+// here could silently truncate a report that validation already accepted.
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ScopeConfig {
@@ -244,16 +246,16 @@ fn verification_projection(
         Vec::new()
     } else {
         parsed.get("claims").and_then(Value::as_array).into_iter().flatten()
-        .take(MAX_VERIFICATION_PROJECTION_CLAIMS).filter_map(|claim|{
+        .take(vlimits::MAX_CLAIMS).filter_map(|claim|{
             let claim_text=claim.get("claim")?.as_str()?;
             let claim_status=claim.get("status")?.as_str()?;
             if !matches!(claim_status,"verified"|"unverified") {return None;}
             let evidence_step_ids=claim.get("evidence_step_ids").and_then(Value::as_array).into_iter().flatten()
-                .filter_map(Value::as_str).take(MAX_VERIFICATION_PROJECTION_EVIDENCE_IDS)
-                .map(|id|bounded_projection_text(Some(id),128)).collect::<Vec<_>>();
-            Some(json!({"claim":bounded_projection_text(Some(claim_text),500),"status":claim_status,
+                .filter_map(Value::as_str).take(vlimits::MAX_EVIDENCE_IDS_PER_CLAIM)
+                .map(|id|bounded_projection_text(Some(id),vlimits::MAX_IDENTIFIER_CHARS)).collect::<Vec<_>>();
+            Some(json!({"claim":bounded_projection_text(Some(claim_text),vlimits::MAX_CLAIM_CHARS),"status":claim_status,
                 "evidence_step_ids":evidence_step_ids,
-                "reason":bounded_projection_text(claim.get("reason").and_then(Value::as_str),500)}))
+                "reason":bounded_projection_text(claim.get("reason").and_then(Value::as_str),vlimits::MAX_REASON_CHARS)}))
         }).collect::<Vec<_>>()
     };
     let skipped_diagnostics = if projection_capped {
@@ -265,8 +267,8 @@ fn verification_projection(
             .into_iter()
             .flatten()
             .filter_map(Value::as_str)
-            .take(MAX_VERIFICATION_PROJECTION_DIAGNOSTICS)
-            .map(|item| bounded_projection_text(Some(item), 240))
+            .take(vlimits::MAX_SKIPPED_DIAGNOSTICS)
+            .map(|item| bounded_projection_text(Some(item), vlimits::MAX_DIAGNOSTIC_CHARS))
             .collect::<Vec<_>>()
     };
     let unverified_claims = claims
@@ -275,7 +277,7 @@ fn verification_projection(
         .count();
     json!({"step_id":id,"status":status,"step_status":step_status,"claims":claims,
         "unverified_claims":unverified_claims,"skipped_diagnostics":skipped_diagnostics,
-        "model":bounded_projection_text(parsed.get("model").and_then(Value::as_str),128),
+        "model":bounded_projection_text(parsed.get("model").and_then(Value::as_str),vlimits::MAX_IDENTIFIER_CHARS),
         "error_code":error_code,"finished_at":finished_at,"projection_capped":projection_capped})
 }
 
@@ -328,29 +330,24 @@ pub(crate) fn write_plan(
     plan_rows(c, session_id)
 }
 
-fn patch_field<'de, D, T>(d: D) -> std::result::Result<Option<Option<T>>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: Deserialize<'de>,
-{
-    Option::deserialize(d).map(Some)
-}
-
+/// Absent / `null` / value are three different requests on this route, so every nullable field
+/// is a `Patch<T>` rather than a nested `Option`. See `crate::patch`.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ScopePatch {
-    #[serde(default, deserialize_with = "patch_field")]
-    pub root_path: Option<Option<String>>,
+    #[serde(default)]
+    pub root_path: Patch<String>,
+    /// Not nullable: the column always holds a mode, so `null` here is simply "unchanged".
     #[serde(default)]
     pub permission_mode: Option<String>,
-    #[serde(default, deserialize_with = "patch_field")]
-    pub diagnostics_cmd: Option<Option<String>>,
-    #[serde(default, deserialize_with = "patch_field")]
-    pub max_steps: Option<Option<i64>>,
-    #[serde(default, deserialize_with = "patch_field")]
-    pub max_tool_bytes: Option<Option<i64>>,
-    #[serde(default, deserialize_with = "patch_field")]
-    pub max_wall_seconds: Option<Option<i64>>,
+    #[serde(default)]
+    pub diagnostics_cmd: Patch<String>,
+    #[serde(default)]
+    pub max_steps: Patch<i64>,
+    #[serde(default)]
+    pub max_tool_bytes: Patch<i64>,
+    #[serde(default)]
+    pub max_wall_seconds: Patch<i64>,
 }
 
 impl ScopePatch {
@@ -358,51 +355,52 @@ impl ScopePatch {
     /// `upsert_scope` answers with the stored row instead of rewriting it, and `updated_at`
     /// moves only when a value actually moved.
     pub fn is_empty(&self) -> bool {
-        self.root_path.is_none()
+        self.root_path.is_unchanged()
             && self.permission_mode.is_none()
-            && self.diagnostics_cmd.is_none()
-            && self.max_steps.is_none()
-            && self.max_tool_bytes.is_none()
-            && self.max_wall_seconds.is_none()
+            && self.diagnostics_cmd.is_unchanged()
+            && self.max_steps.is_unchanged()
+            && self.max_tool_bytes.is_unchanged()
+            && self.max_wall_seconds.is_unchanged()
     }
     /// Normalize and reject before anything reaches SQLite, so a bad request is a 400 and
     /// never a CHECK-constraint failure. Canonicalizing `root_path` touches the filesystem.
     pub fn validate(mut self) -> std::result::Result<Self, &'static str> {
-        if let Some(Some(raw)) = &self.root_path {
+        if let Patch::Set(raw) = &self.root_path {
             let canonical = canonical_root(raw)?;
-            self.root_path = Some(Some(canonical));
+            self.root_path = Patch::Set(canonical);
         }
         if let Some(mode) = self.permission_mode.as_deref() {
             if crate::tools::PermissionMode::parse(mode).is_none() {
                 return Err("permission_mode must be ask, auto_edit or auto_all");
             }
         }
-        if let Some(Some(raw)) = &self.diagnostics_cmd {
+        if let Patch::Set(raw) = &self.diagnostics_cmd {
             let cmd = raw.trim().to_string();
             if cmd.is_empty() {
-                self.diagnostics_cmd = Some(None);
+                // An all-whitespace command states "no diagnostics", same as `null`.
+                self.diagnostics_cmd = Patch::Clear;
             } else if cmd.chars().count() > 512 || cmd.chars().any(char::is_control) {
                 return Err("diagnostics_cmd must be 1-512 characters without control characters");
             } else if crate::tools::is_dangerous_command(&cmd) {
                 return Err("diagnostics_cmd matches the destructive-command deny-list");
             } else {
-                self.diagnostics_cmd = Some(Some(cmd));
+                self.diagnostics_cmd = Patch::Set(cmd);
             }
         }
         bounded(
-            self.max_steps,
+            &self.max_steps,
             1,
             500,
             "max_steps must be between 1 and 500",
         )?;
         bounded(
-            self.max_tool_bytes,
+            &self.max_tool_bytes,
             1024,
             50_000_000,
             "max_tool_bytes must be between 1024 and 50000000",
         )?;
         bounded(
-            self.max_wall_seconds,
+            &self.max_wall_seconds,
             10,
             86_400,
             "max_wall_seconds must be between 10 and 86400",
@@ -411,14 +409,15 @@ impl ScopePatch {
     }
 }
 
+/// Only a supplied value is range-checked; clearing a limit restores the built-in default.
 fn bounded(
-    value: Option<Option<i64>>,
+    value: &Patch<i64>,
     low: i64,
     high: i64,
     message: &'static str,
 ) -> std::result::Result<(), &'static str> {
-    match value {
-        Some(Some(n)) if !(low..=high).contains(&n) => Err(message),
+    match value.value() {
+        Some(n) if !(low..=high).contains(n) => Err(message),
         _ => Ok(()),
     }
 }
@@ -837,7 +836,10 @@ impl DbStore {
                 if safety::sensitive(&value){continue;}
                 let content=format!("{key}\n{value}");
                 let content_hash=safety::fingerprint(&content);
-                let decoded=blob.as_deref().and_then(|bytes|crate::embeddings::decode(bytes,dimensions.unwrap_or_default() as usize));
+                // `dimensions` is whatever the row holds; a negative or oversized value must fail
+                // the cache lookup, not wrap into a huge length.
+                let stored_dimensions=dimensions.and_then(|value|usize::try_from(value).ok());
+                let decoded=blob.as_deref().zip(stored_dimensions).and_then(|(bytes,dims)|crate::embeddings::decode(bytes,dims));
                 let cache_hit=stored_hash.as_deref()==Some(&content_hash) && dimensions==Some(crate::embeddings::DIMENSIONS as i64) && decoded.is_some();
                 let vector=match decoded{Some(cached) if cache_hit=>cached,_=>crate::embeddings::embed(&content)};
                 if !cache_hit {
@@ -1158,24 +1160,15 @@ impl DbStore {
                 Some(row) => row,
                 None => ScopeConfig::blank(&scope),
             };
-            if let Some(value) = patch.root_path {
-                next.root_path = value;
-            }
+            // `apply` is the only merge path: an `Unchanged` field cannot silently write.
+            patch.root_path.apply(&mut next.root_path);
             if let Some(value) = patch.permission_mode {
                 next.permission_mode = value;
             }
-            if let Some(value) = patch.diagnostics_cmd {
-                next.diagnostics_cmd = value;
-            }
-            if let Some(value) = patch.max_steps {
-                next.max_steps = value;
-            }
-            if let Some(value) = patch.max_tool_bytes {
-                next.max_tool_bytes = value;
-            }
-            if let Some(value) = patch.max_wall_seconds {
-                next.max_wall_seconds = value;
-            }
+            patch.diagnostics_cmd.apply(&mut next.diagnostics_cmd);
+            patch.max_steps.apply(&mut next.max_steps);
+            patch.max_tool_bytes.apply(&mut next.max_tool_bytes);
+            patch.max_wall_seconds.apply(&mut next.max_wall_seconds);
             tx.execute(
                 crate::agentic_sql::SCOPE_UPSERT,
                 params![
@@ -2186,7 +2179,7 @@ mod tests {
         );
         assert_eq!(
             verification["claims"].as_array().unwrap().len(),
-            MAX_VERIFICATION_PROJECTION_CLAIMS
+            vlimits::MAX_CLAIMS
         );
         assert_eq!(
             verification["claims"][0]["claim"]
@@ -2209,14 +2202,14 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            MAX_VERIFICATION_PROJECTION_EVIDENCE_IDS
+            vlimits::MAX_EVIDENCE_IDS_PER_CLAIM
         );
         assert_eq!(
             verification["skipped_diagnostics"]
                 .as_array()
                 .unwrap()
                 .len(),
-            MAX_VERIFICATION_PROJECTION_DIAGNOSTICS
+            vlimits::MAX_SKIPPED_DIAGNOSTICS
         );
     }
 
@@ -2230,10 +2223,10 @@ mod tests {
         let dir = scope_dir();
         let canonical = std::fs::canonicalize(&dir).unwrap();
         let patch = ScopePatch {
-            root_path: Some(Some(dir.to_string_lossy().into())),
+            root_path: Patch::Set(dir.to_string_lossy().into()),
             permission_mode: Some("auto_edit".into()),
-            diagnostics_cmd: Some(Some("  cargo check -q  ".into())),
-            max_steps: Some(Some(12)),
+            diagnostics_cmd: Patch::Set("  cargo check -q  ".into()),
+            max_steps: Patch::Set(12),
             ..Default::default()
         }
         .validate()
@@ -2281,8 +2274,8 @@ mod tests {
             .upsert_scope(
                 "global".into(),
                 ScopePatch {
-                    root_path: Some(None),
-                    diagnostics_cmd: Some(None),
+                    root_path: Patch::Clear,
+                    diagnostics_cmd: Patch::Clear,
                     ..Default::default()
                 }
                 .validate()
@@ -2310,7 +2303,7 @@ mod tests {
                 "global".into(),
                 ScopePatch {
                     permission_mode: Some("auto_edit".into()),
-                    max_steps: Some(Some(7)),
+                    max_steps: Patch::Set(7),
                     ..Default::default()
                 }
                 .validate()
@@ -2347,6 +2340,28 @@ mod tests {
             "posting to a scope that does not exist still creates it"
         );
     }
+    /// The three wire states are three different requests. An absent field must not be read as
+    /// `null`, or a partial settings save would silently wipe fields the caller never mentioned.
+    #[test]
+    fn scope_patch_json_separates_absent_null_and_value() {
+        let absent: ScopePatch = serde_json::from_str("{}").unwrap();
+        assert!(absent.is_empty(), "an empty body states no intent");
+        assert!(matches!(absent.root_path, Patch::Unchanged));
+        assert!(matches!(absent.max_steps, Patch::Unchanged));
+
+        let cleared: ScopePatch =
+            serde_json::from_str(r#"{"root_path":null,"max_steps":null}"#).unwrap();
+        assert!(!cleared.is_empty(), "an explicit null is a stated change");
+        assert!(matches!(cleared.root_path, Patch::Clear));
+        assert!(matches!(cleared.max_steps, Patch::Clear));
+
+        let set: ScopePatch = serde_json::from_str(r#"{"root_path":"/tmp","max_steps":9}"#).unwrap();
+        assert_eq!(set.root_path.value().map(String::as_str), Some("/tmp"));
+        assert_eq!(set.max_steps.value().copied(), Some(9));
+
+        // A cleared limit carries no value, so range validation has nothing to reject.
+        assert!(cleared.clone().validate().is_ok());
+    }
     #[test]
     fn scopes_reject_unusable_configuration() {
         let dir = scope_dir();
@@ -2354,15 +2369,15 @@ mod tests {
         std::fs::write(&file, "x").unwrap();
         let rejected = [
             ScopePatch {
-                root_path: Some(Some("relative/dir".into())),
+                root_path: Patch::Set("relative/dir".into()),
                 ..Default::default()
             },
             ScopePatch {
-                root_path: Some(Some(dir.join("missing").to_string_lossy().into())),
+                root_path: Patch::Set(dir.join("missing").to_string_lossy().into()),
                 ..Default::default()
             },
             ScopePatch {
-                root_path: Some(Some(file.to_string_lossy().into())),
+                root_path: Patch::Set(file.to_string_lossy().into()),
                 ..Default::default()
             },
             ScopePatch {
@@ -2370,23 +2385,23 @@ mod tests {
                 ..Default::default()
             },
             ScopePatch {
-                diagnostics_cmd: Some(Some("x".repeat(513))),
+                diagnostics_cmd: Patch::Set("x".repeat(513)),
                 ..Default::default()
             },
             ScopePatch {
-                diagnostics_cmd: Some(Some("cargo check; rm -rf /".into())),
+                diagnostics_cmd: Patch::Set("cargo check; rm -rf /".into()),
                 ..Default::default()
             },
             ScopePatch {
-                max_steps: Some(Some(0)),
+                max_steps: Patch::Set(0),
                 ..Default::default()
             },
             ScopePatch {
-                max_tool_bytes: Some(Some(64)),
+                max_tool_bytes: Patch::Set(64),
                 ..Default::default()
             },
             ScopePatch {
-                max_wall_seconds: Some(Some(5)),
+                max_wall_seconds: Patch::Set(5),
                 ..Default::default()
             },
         ];

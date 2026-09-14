@@ -118,7 +118,11 @@ impl ArchiveStore {
         if encoded.len() > MAX_HEADER { bail!("archive header too large"); }
         let mut prefix = Vec::with_capacity(MAGIC.len() + 4 + encoded.len());
         prefix.extend_from_slice(MAGIC);
-        prefix.extend_from_slice(&(encoded.len() as u32).to_be_bytes());
+        // The MAX_HEADER check above already bounds this, but the on-disk format is a 4-byte
+        // length: a checked conversion keeps a future change to that check from silently
+        // writing a truncated header length.
+        let header_len = u32::try_from(encoded.len()).map_err(|_| anyhow!("archive header too large"))?;
+        prefix.extend_from_slice(&header_len.to_be_bytes());
         prefix.extend_from_slice(&encoded);
         let key = aead::LessSafeKey::new(aead::UnboundKey::new(&aead::AES_256_GCM, &self.keys.current.bytes).map_err(|_| anyhow!("invalid archive key"))?);
         let mut ciphertext = exact.to_vec();

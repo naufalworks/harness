@@ -19,7 +19,9 @@ mod archive; // P13 opt-in exact-original encryption and privacy audit policy
 mod context; // P3-T01 deterministic initial window and per-category byte receipts
 mod embeddings;
 mod ingest;
+mod limits; // P12-T04 bounds that two modules must agree on, defined once
 mod memory_agents;
+mod patch; // P12-T04 explicit absent/null/value semantics for PATCH bodies
 mod process_lock;
 mod processes; // P14-T01 live process-group handles so an explicit cancel can stop blocked work
 mod recording;
