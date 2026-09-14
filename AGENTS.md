@@ -56,9 +56,12 @@ Do not copy historical test counts or deployment IDs into current claims. Report
 | `src/agent_loop/` | `steps.rs` durable step/permission transitions, `compaction.rs` provider-window compaction, `verification.rs` verification evidence |
 | `src/recording.rs`, `src/recording_sql.rs` | Durable admission, generation worker, event feed, extraction outbox |
 | `src/memory_agents.rs` | Provider adapter plus extraction/compaction/verification calls |
-| `src/storage.rs` | `DbStore`, schema initialization, scopes, memories, jobs, provenance |
+| `src/storage.rs` | `DbStore` and schema initialization; row persistence only |
+| `src/storage/` | `scope.rs` scope limits/plan validation/root canonicalisation, plus `config.rs`, `turns.rs`, `memories.rs`, `jobs.rs`, `provenance.rs`, `provider.rs` |
 | `src/embeddings.rs` | Deterministic local feature-hashing vectors used with FTS5 recall |
 | `src/tools/` | Read/grep/glob, edit/write, bash, think/todo, skill/task, AST, LSP, and CDP browser tools |
+| `src/tools/lsp_tool/` | `protocol.rs` caps/argument preparation, `session.rs` framing and teardown, `format.rs` diagnostics/references, `rename.rs` workspace edits |
+| `src/tools/browser_tool/` | `protocol.rs` caps/destination validation, `snapshot.rs` accessibility snapshots, `cdp.rs` socket and browser launch, `session.rs` page lifecycle |
 | `src/archive/` | Opt-in encrypted exact-original archive and privacy actions |
 | `migrations/` | Applied schema chain, currently 001–007 |
 | `tools/schemas/` | Model-facing tool definitions |

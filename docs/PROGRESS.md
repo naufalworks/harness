@@ -1,5 +1,39 @@
 # PROGRESS — journal
 
+## 2026-09-14T18:40:00Z · P12-T02 — nine seams, and the line-multiset check that made them boring
+
+P12-T02 is done. Storage, the browser tool and the LSP tool were each cut along the boundaries
+the task named — protocol, session, validation, apply — in nine separately committed seams, and
+the interesting part was the method rather than the result. Every seam was produced by a small
+script and then checked with a line-multiset comparison against the previous commit: every
+non-blank line of the parent had to reappear somewhere in the module tree, and the only
+permitted differences were ones named in advance (`pub(super)` markers, a module doc comment,
+`use super::*;`, and occasional rustfmt signature reflow). That check is what turns "I moved
+code" into evidence. It caught nothing dramatic, which is the point: a refactor whose safety
+rests on reading the diff is a refactor that silently drops a validation arm.
+
+Where the files landed:
+
+- `src/storage.rs` 1475 -> 1138, with `storage/scope.rs` (scope limits, plan constraints
+  mirroring the 003 CHECKs, `ScopePatch`, root-path canonicalisation) joining the existing
+  `config`, `jobs`, `memories`, `provenance`, `provider` and `turns` modules. `DbStore` now only
+  persists values those types already validated.
+- `src/tools/browser_tool.rs` 1953 -> 549, with `protocol` (caps, destination validation,
+  argument parsing), `snapshot`, `cdp` (socket, launch, process-group isolation) and `session`.
+- `src/tools/lsp_tool.rs` 1607 -> 306, with `protocol` (caps, position conversion), `session`
+  (framing, diagnostics wait, kill-group teardown), `format`, and `rename` (workspace planning
+  and application).
+
+No cap, permission diff, rollback path or recording call changed value or order; the seams moved
+code, not behaviour. Gate after every seam and again at the end: the full test suite passes and
+`scripts/verify_release.sh` reports `0 failing check(s)` with `documentation-claims` and the
+strict release gate PASS.
+
+Two things stay open on purpose. The remaining bulk in all three parents is `mod tests`, which
+cannot move without inventing test-only visibility — the same boundary P12-T01 recorded and
+declined to cross. And the environment SKIPs are unchanged: coverage, signing, aarch64 and the
+public HTTPS smoke are CI-declared and still have not run on this offline host.
+
 ## 2026-09-14T16:15:00Z · P12-T06 — the deploy gate caught the new release lane clobbering the live binary
 
 P12-T06 is integrated, pushed and deployed (`ae97327`, pid 342042, schema 10), and the strict

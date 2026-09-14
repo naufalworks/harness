@@ -709,7 +709,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - note: raised by P12-T01 after seven verified seams. Also open: the 37 loop tests (~1,570 lines) that still live in the parent because they drive `run` through a scripted provider; only the two pure compaction tests could move without inventing test-only visibility.
 
 ### P12-T02 · Decompose storage, browser and LSP internals
-- status: todo
+- status: done
 - priority: high
 - lane: architecture-tools
 - parallel: yes
@@ -718,6 +718,13 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - files: src/storage.rs, src/storage/*, src/tools/browser_tool.rs, src/tools/browser/*, src/tools/lsp_tool.rs, src/tools/lsp/*
 - done-when: repository boundaries and protocol/session/validation/apply modules replace the three oversized files without weakening caps, rollback or recording.
 - verify: bash scripts/verify_release.sh
+- note: nine verified seams, each committed separately with a line-multiset check proving no logic
+  was dropped. `storage.rs` 1475 -> 1138 (895 of those lines are tests) with `storage/scope.rs`
+  joining config/jobs/memories/provenance/provider/turns; `browser_tool.rs` 1953 -> 549 with
+  protocol/snapshot/cdp/session; `lsp_tool.rs` 1607 -> 306 with protocol/session/format/rename.
+  Caps, permission diffs, rollback and recording moved unchanged. Still open and deliberately
+  not done here: the remaining parent bulk in all three files is `mod tests`, which cannot move
+  without inventing test-only visibility — the same boundary P12-T01 recorded.
 
 ### P12-T03 · Introduce typed API and database contracts
 - status: todo
