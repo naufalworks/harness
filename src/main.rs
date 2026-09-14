@@ -1,16 +1,13 @@
 use anyhow::{bail, Result};
 use axum::{
-    body::Bytes,
-    extract::{
-        rejection::JsonRejection, DefaultBodyLimit, FromRequest, Path, Query, Request, State,
-    },
+    extract::{DefaultBodyLimit, Path, Query, Request, State},
     http::{header, HeaderMap, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
-use serde::{de::DeserializeOwned, Deserialize};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
@@ -27,6 +24,7 @@ use tokio::sync::Semaphore;
 use uuid::Uuid;
 mod agent_loop; // P1-T10 agentic turn loop: steps, tools, activity events, budgets
 mod agentic_sql; // P1 SQL constants (schema 003); contract-tested by tests/test_agentic_sql.py
+mod api; // P12-T01 HTTP surface split into cohesive modules
 mod archive; // P13 opt-in exact-original encryption and privacy audit policy
 mod context; // P3-T01 deterministic initial window and per-category byte receipts
 mod embeddings;
@@ -43,6 +41,8 @@ mod storage;
 mod subagent; // P5-T03 read-only exploration sub-agent: tools, bounds, report shape
 mod tools; // P1-T05/T06 tool registry (needs-verify: written without cargo) // P4-T02 deterministic offline vectors and cosine scoring
 use memory_agents::MemoryAgents;
+use api::assets::{css, index, js};
+use api::error::{db_error, invalid, ApiError, ApiResult, JsonBody};
 use process_lock::ProcessLock;
 use storage::DbStore;
 
@@ -182,86 +182,8 @@ impl AuthState {
         true
     }
 }
-struct ApiError(StatusCode, &'static str);
-impl IntoResponse for ApiError {
-    fn into_response(self) -> Response {
-        (self.0, Json(json!({"error":self.1}))).into_response()
-    }
-}
-type ApiResult<T> = std::result::Result<T, ApiError>;
-fn db_error(_: anyhow::Error) -> ApiError {
-    eprintln!("{{\"event\":\"storage_operation_failed\"}}");
-    ApiError(
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "Storage operation failed. No successful save is implied.",
-    )
-}
-fn invalid(message: &'static str) -> ApiError {
-    ApiError(StatusCode::BAD_REQUEST, message)
-}
 fn default_scope() -> String {
     "global".into()
-}
-
-// axum answers extractor rejections itself, with a text/plain 422 the browser cannot parse; the UI
-// then reports "Unexpected response (<status>)" and keeps the draft. Map those rejections onto
-// ApiError so every failure on a JSON route stays a JSON {"error": ...} the UI can show verbatim.
-//
-// The body must also be a JSON *object*. serde's derive accepts a sequence as well as a map for
-// any struct, so a top-level array satisfies any struct whose every field has a default: a `[]`
-// posted to the scope route deserialized into an all-defaults `ScopePatch` and answered 200 after
-// rewriting the row. `deny_unknown_fields` cannot catch that, because an array carries no field
-// names to reject. Requiring an object here closes the hole for every JSON route at once,
-// including target types added later, instead of leaving each handler to remember.
-struct JsonBody<T>(T);
-/// One rejection path for every JSON route: the parser's own detail goes to the journal, and the
-/// reader gets a fixed sentence they can act on.
-fn reject_body(detail: &str) -> ApiError {
-    eprintln!(
-        "{}",
-        json!({"event":"request_body_rejected","detail":detail})
-    );
-    invalid("Request body was not accepted. Reload this tab, then send again")
-}
-/// Mirrors axum's own rule (`application/json`, or any `application/...+json`). Buffering the body
-/// here means `Json`'s content-type check is never reached, so it has to live here instead.
-fn json_content_type(headers: &HeaderMap) -> bool {
-    headers
-        .get(header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .map(|value| {
-            value
-                .split(';')
-                .next()
-                .unwrap_or_default()
-                .trim()
-                .to_ascii_lowercase()
-        })
-        .is_some_and(|essence| {
-            essence == "application/json"
-                || (essence.starts_with("application/") && essence.ends_with("+json"))
-        })
-}
-impl<S, T> FromRequest<S> for JsonBody<T>
-where
-    T: DeserializeOwned,
-    S: Send + Sync,
-{
-    type Rejection = ApiError;
-    async fn from_request(request: Request, state: &S) -> ApiResult<Self> {
-        if !json_content_type(request.headers()) {
-            return Err(reject_body("Body is not declared as JSON"));
-        }
-        let bytes = Bytes::from_request(request, state)
-            .await
-            .map_err(|rejection| reject_body(&rejection.body_text()))?;
-        if bytes.iter().copied().find(|b| !b.is_ascii_whitespace()) != Some(b'{') {
-            return Err(reject_body("Body is not a JSON object"));
-        }
-        Json::<T>::from_bytes(&bytes)
-            .map(|Json(value)| Self(value))
-            .map_err(|rejection: JsonRejection| reject_body(&rejection.body_text()))
-    }
 }
 
 #[allow(deprecated)]
@@ -409,120 +331,6 @@ async fn headers(State(state): State<Harness>, request: Request, next: Next) -> 
     }
     response
 }
-// P11-T05: the static assets are compiled into this binary, so the build commit identifies
-// their bytes exactly and is a sound strong validator. `index.html` requests `/app.js` and
-// `/style.css` with a `?v=<commit>` fingerprint, which is why those two may be cached
-// immutably: a new build changes the URL. The document itself must revalidate on every load,
-// otherwise a cached page would keep pointing at a retired build and trip "Stale UI detected".
-const ASSET_IMMUTABLE: &str = "public, max-age=31536000, immutable";
-const ASSET_REVALIDATE: &str = "no-cache";
-// P11-T06: gzip bytes produced by build.rs. Empty means the build had no gzip available, in
-// which case negotiation is skipped and identity bytes are served.
-const INDEX_GZ: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/index.html.gz"));
-const APP_JS_GZ: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/app.js.gz"));
-const STYLE_CSS_GZ: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/style.css.gz"));
-// Accept only an explicit, non-rejected gzip token. `gzip;q=0` means "do not send gzip", and a
-// client that says nothing must keep receiving identity bytes.
-fn accepts_gzip(request_headers: &HeaderMap) -> bool {
-    request_headers
-        .get(header::ACCEPT_ENCODING)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| {
-            value.split(',').any(|candidate| {
-                let mut parts = candidate.split(';');
-                let token = parts.next().unwrap_or("").trim();
-                if !token.eq_ignore_ascii_case("gzip") && token != "*" {
-                    return false;
-                }
-                !parts.any(|parameter| {
-                    let parameter = parameter.trim().replace(' ', "");
-                    parameter == "q=0" || parameter.starts_with("q=0.0")
-                })
-            })
-        })
-}
-fn asset(
-    request_headers: &HeaderMap,
-    content_type: &'static str,
-    cache_control: &'static str,
-    name: &str,
-    body: String,
-    gzipped: &'static [u8],
-) -> Response {
-    // Encodings are different representations, so they need different validators and a `Vary`,
-    // otherwise a shared cache could hand gzip bytes to a client that cannot decode them.
-    let gzip = !gzipped.is_empty() && accepts_gzip(request_headers);
-    let etag = if gzip {
-        format!("\"{BUILD_COMMIT}-{name}-gzip\"")
-    } else {
-        format!("\"{BUILD_COMMIT}-{name}\"")
-    };
-    // A conditional request may send several validators, and a proxy may weaken them.
-    let unchanged = request_headers
-        .get(header::IF_NONE_MATCH)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| {
-            value
-                .split(',')
-                .any(|candidate| candidate.trim().trim_start_matches("W/") == etag)
-        });
-    let validators = [
-        (header::CACHE_CONTROL, cache_control.to_string()),
-        (header::ETAG, etag),
-        (header::VARY, header::ACCEPT_ENCODING.to_string()),
-    ];
-    if unchanged {
-        return (StatusCode::NOT_MODIFIED, validators).into_response();
-    }
-    if gzip {
-        return (
-            validators,
-            [
-                (header::CONTENT_TYPE, content_type),
-                (header::CONTENT_ENCODING, "gzip"),
-            ],
-            Bytes::from_static(gzipped),
-        )
-            .into_response();
-    }
-    (
-        validators,
-        [(header::CONTENT_TYPE, content_type)],
-        body,
-    )
-        .into_response()
-}
-async fn index(request_headers: HeaderMap) -> Response {
-    asset(
-        &request_headers,
-        "text/html; charset=utf-8",
-        ASSET_REVALIDATE,
-        "index.html",
-        include_str!("../static/index.html").replace("__HARNESS_BUILD_COMMIT__", BUILD_COMMIT),
-        INDEX_GZ,
-    )
-}
-async fn js(request_headers: HeaderMap) -> Response {
-    asset(
-        &request_headers,
-        "text/javascript; charset=utf-8",
-        ASSET_IMMUTABLE,
-        "app.js",
-        include_str!("../static/app.js").replace("__HARNESS_BUILD_COMMIT__", BUILD_COMMIT),
-        APP_JS_GZ,
-    )
-}
-async fn css(request_headers: HeaderMap) -> Response {
-    asset(
-        &request_headers,
-        "text/css; charset=utf-8",
-        ASSET_IMMUTABLE,
-        "style.css",
-        include_str!("../static/style.css").to_string(),
-        STYLE_CSS_GZ,
-    )
-}
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ChatRequest {
@@ -1684,6 +1492,7 @@ async fn main() -> Result<()> {
 mod tests {
     use super::*;
     use axum::body::Body;
+    use crate::api::assets::{APP_JS_GZ, INDEX_GZ, STYLE_CSS_GZ};
     use tower::ServiceExt;
     fn test_identity() -> Arc<RuntimeIdentity> {
         Arc::new(RuntimeIdentity::current().unwrap())

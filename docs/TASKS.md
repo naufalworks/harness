@@ -683,7 +683,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 ## P12 · Maintainability, API, CI, and releases
 
 ### P12-T01 · Decompose HTTP and agent orchestration modules
-- status: todo
+- status: doing
 - priority: high
 - lane: architecture
 - parallel: no

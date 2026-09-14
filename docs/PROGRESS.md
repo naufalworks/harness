@@ -1,5 +1,38 @@
 # PROGRESS — journal
 
+## 2026-09-14T08:25:00Z · P12-T01 — started; HTTP assets and error layer extracted
+
+P12-T01 is `doing`. `src/main.rs` was 3,947 lines and held the whole HTTP surface, so the work
+is being done as a sequence of verified extractions rather than one sweeping rewrite: each step
+moves code verbatim, keeps public behaviour identical, and is proved by the existing suites
+before the next step starts.
+
+Two cohesive modules exist so far, both under the new `src/api/`:
+
+- `src/api/assets.rs` (117 lines) owns static delivery: the `ASSET_IMMUTABLE`/`ASSET_REVALIDATE`
+  policies, the build-time gzip blobs, `accepts_gzip`, `asset`, and the `index`/`js`/`css`
+  handlers. `include_str!`/`include_bytes!` paths were repointed to `../../static/…`.
+- `src/api/error.rs` (90 lines) owns the JSON failure shape and the object-only body extractor:
+  `ApiError`, `ApiResult`, `db_error`, `invalid`, `JsonBody`, `reject_body`, `json_content_type`,
+  and the `FromRequest` implementation. `default_scope` stayed in `main.rs`, where it is a serde
+  field default rather than part of the error layer.
+
+`main.rs` is now 3,756 lines and its axum/serde imports shrank to what it still uses. Nothing was
+rewritten while moving, so the behaviour these modules define is the behaviour that shipped in
+a9de940.
+
+Evidence: `cargo test --locked` 217 passed, 0 failed. `scripts/verify_local.sh` LOCAL_EXIT=0 and
+the task's own gate `scripts/verify_release.sh` RELEASE_EXIT=0, with `[PASS]` for rust-tests,
+rust-clippy, rust-build, python-contracts, integration-smoke, recording-integration,
+javascript-syntax, mocked-browser, local-contract, real-browser-to-server, and the strict release
+gate (`/tmp/p12t01_local.log`, `/tmp/p12t01_release.log`).
+
+Not done yet, so the task stays `doing`: SSE/streaming (`STREAM_*`, `Frames`, `activity_stream`,
+`generation_stream`), the middleware and routing table, and the `src/agent/*` split of the
+3,214-line `src/agent_loop.rs` into orchestration, budgets, permissions, tools, delegation, and
+verification. Those touch shared `Harness` state, so they are deliberately left to their own
+verified steps instead of being rushed into this checkpoint.
+
 ## 2026-09-14T07:25:00Z · P11-T06 — deployed to the harness unit
 
 `scripts/deploy.sh` deployed a9de940 to the `harness` unit: pid 263233, release sha256
