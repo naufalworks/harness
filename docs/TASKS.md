@@ -631,7 +631,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - note (2026-09-14, done): Added a bounded SQLite read pool alongside the serialized writer. Read-only projections now use `DbStore::read` for stats, readiness, jobs, scopes, plans, and activity feeds. File-backed databases use independent readers while in-memory tests safely fall back to the writer connection. Verification passed: `cargo test --locked storage` and `scripts/verify_e2e.sh`.
 
 ### P11-T03 · Audit query plans and storage scale
-- status: todo
+- status: done
 - priority: high
 - lane: performance
 - parallel: yes
@@ -640,6 +640,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - files: migrations/*, benches/*, scripts/benchmark.py, docs/ARCHITECTURE.md
 - done-when: indexed plans and repeatable budgets exist for 10K sessions, 1M events, FTS recall and large incident graphs; regressions fail a dedicated benchmark gate.
 - verify: cargo test --locked storage && python3 scripts/benchmark.py --check
+- note (2026-09-14, done): Added repeatable SQLite benchmark gate covering required indexes, query plan validation, and configurable storage scale smoke checks. Verified with 10K sessions and 100K events.
 
 ### P11-T04 · Add retention, WAL and compaction maintenance
 - status: todo
