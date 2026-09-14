@@ -2,22 +2,67 @@ name: harness-checks
 on: [push, pull_request, workflow_dispatch]
 permissions:
   contents: read
+
+# Every action is pinned to an immutable commit SHA. A tag like @v4 is a moving
+# target: whoever controls the action repository can repoint it at new code that
+# then runs with this workflow's token. The trailing comment records which tag
+# the SHA corresponded to when it was pinned; scripts/check_supply_chain.py
+# fails the build if any ref here is not a 40-character SHA.
 jobs:
-  test:
+  quality:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          components: rustfmt, clippy
+
+      # Formatting and the warning budget come first: they are fast and they
+      # fail for reasons that never require reading a test log.
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - run: cargo build --locked
+      - run: cargo test --locked
+
+      # Shell lint. The release host has no shellcheck, so this step is the only
+      # place it actually runs; `bash -n` in the local gate is a syntax check,
+      # not a substitute for it.
+      - run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - run: shellcheck scripts/*.sh
+
+      # Python suites run with ResourceWarning promoted to an error so a leaked
+      # socket or file handle fails here instead of becoming flake later.
+      - run: python3 -W error::ResourceWarning -m unittest discover -s tests -p 'test_*.py' -v
+      - run: python3 -W error::ResourceWarning tests/integration_smoke.py
+      - run: python3 -W error::ResourceWarning tests/recording_integration.py
+
+      # Claim gates: documentation/route/deployment drift and supply-chain shape.
+      - run: python3 scripts/check_docs.py
+      - run: python3 scripts/check_supply_chain.py
+
+  supply-chain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+
+      # These two need network access to advisory and license data, so they can
+      # only run here, never on the offline release host. Failing this job is the
+      # only signal that a dependency carries a known advisory or a disallowed
+      # licence; the local gate asserts only that these steps still exist.
+      - run: cargo install --locked cargo-audit cargo-deny
+      - run: cargo audit --deny warnings
+      - run: cargo deny check licenses bans sources
+
+  browser-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm
-      - run: cargo test --locked
-      - run: cargo clippy --locked --all-targets
-      - run: cargo build --locked
-      - run: python3 -m unittest discover -s tests -p 'test_*.py' -v
-      - run: python3 tests/integration_smoke.py
-      - run: python3 tests/recording_integration.py
       - run: node --check static/app.js
       - run: npm ci --no-audit --no-fund
       - run: npx playwright install --with-deps chromium

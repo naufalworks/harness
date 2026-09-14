@@ -759,15 +759,23 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - verify: bash -n scripts/verify_local.sh scripts/verify_release.sh scripts/deploy.sh && bash scripts/verify_release.sh
 
 ### P12-T05b · Strengthen CI quality and supply-chain gates
-- status: todo
+- status: done
 - priority: high
 - lane: ci
 - parallel: yes
 - depends: P12-T05a
 - design: docs/ROADMAP.md#p12-maintainability-api-ci-and-release-engineering
-- files: .github/workflows/*, scripts/verify_release.sh, Cargo.toml, package.json
+- files: .github/workflows/ci.yml, scripts/check_supply_chain.py, scripts/verify_local.sh, tests/integration_smoke.py, tests/recording_integration.py, tests/test_agentic_sql.py, tests/test_recording_contracts.py
 - done-when: fmt, warning budget, ResourceWarning, Rust/Python/shell/JS lint, dependency vulnerability/license policy, pinned actions and fallback-tool tests run reproducibly.
 - verify: bash scripts/verify_release.sh
+- notes: run locally and proven: `cargo fmt --all -- --check` (rust-fmt suite), clippy `-D warnings` as the warning budget, `bash -n` over all six shell scripts (shell-syntax), `node --check static/app.js` (javascript-syntax), pinned-action and dependency-shape checks (scripts/check_supply_chain.py), and ResourceWarning promotion. Honest limits, so nobody reads more into the green than it earns:
+  (a) `cargo audit` and `cargo deny` are DECLARED IN CI ONLY. Neither is installed here and crates.io answers HTTP 403, so the local check asserts only that the CI steps EXIST. That is not evidence a vulnerability or license scan ever passed; the first real scan happens on a networked runner.
+  (b) `shellcheck` and `ruff` are not installed locally. `bash -n` is a syntax check and is NOT a shellcheck substitute; no Python linter runs locally.
+  (c) the supply-chain `lock` check reports SKIP offline (`cargo metadata` needs the network) and the script prints skips separately and does NOT count them as passes.
+  (d) local `eslint` is v6 and needs an `.eslintrc`, so it was deliberately NOT wired; `node --check` remains the JS gate.
+  (e) no duplicate `supply-chain` suite was added to scripts/verify_release.sh because that script runs scripts/verify_local.sh, which now runs it. One wiring, not two.
+- evidence: scripts/verify_local.sh exit 0, 11 suites PASS, 1 SKIP (lock), 0 ResourceWarning occurrences. scripts/verify_release.sh: local-contract PASS, real-browser-to-server PASS, documentation-claims routes/ledger/counts PASS. The ResourceWarning wrapper was negative-tested both ways: a deliberately leaky probe FAILED it (exit 1) while raw `python3 -W error::ResourceWarning` exited 0 on the same probe, and a clean probe PASSED (exit 0).
+- found-and-fixed: promoting ResourceWarning exposed 9 real leaks from `with sqlite3.connect(...)`, which commits but never closes; tests/recording_integration.py now uses contextlib.closing. Separately, the whole-tree `cargo fmt` in cb999fe silently broke tests/test_agentic_sql.py and tests/test_recording_contracts.py: both scraped `pub const NAME: &str = r#"..."#;` with the `=` required on one line, and rustfmt wrapped 7 of 31 declarations, so the scrape returned 24 of 31 constants. Both scrapers now tolerate whitespace around `=` and assert the scraped set equals the declared set, so a future reformat cannot quietly shrink what these suites test.
 
 ### P12-T06 · Add coverage, property, fuzz and release evidence
 - status: todo

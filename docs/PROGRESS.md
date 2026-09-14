@@ -1,5 +1,40 @@
 # PROGRESS — journal
 
+## 2026-09-14T15:45:00Z · P12-T05b — the gate caught my own last commit
+
+Two findings, both from gates rather than from reading.
+
+Promoting `ResourceWarning` to an error was supposed to be routine. It exposed 9 real leaks:
+`with sqlite3.connect(...)` commits the transaction but does **not** close the connection, so
+every read in `tests/recording_integration.py` leaked a handle. Worse, the promotion alone did
+not fail anything — a warning raised inside a deallocator is printed as "Exception ignored" and
+the process still exits 0. A leaky probe run under raw `python3 -W error::ResourceWarning`
+exited **0**. So the suites now run through a wrapper that fails on the *text* as well as the
+exit status, negative-tested both ways: leaky probe exit 1, clean probe exit 0.
+
+The second finding is the one worth writing down. My previous commit, cb999fe, was a whole-tree
+`cargo fmt` I described as "no behaviour change", and `cargo test` agreed: 220 passed. It still
+broke two Python suites. They scrape Rust source as text for
+`pub const NAME: &str = r#"..."#;` with the `=` required on one line, and rustfmt wrapped 7 of
+31 declarations. The scrape returned 24 of 31 constants and `test_all_constants_present`
+failed — but the quieter half is that the other tests kept "passing" against a silently smaller
+dictionary. I verified the cause rather than assuming it: the suite is OK at `cb999fe~1` and
+FAILED at HEAD, in a throwaway worktree. Both scrapers now tolerate whitespace around `=` and
+assert the scraped set equals the declared set, so a reformat cannot quietly shrink coverage
+again.
+
+What this task did **not** earn: `cargo audit` and `cargo deny` are declared in the CI workflow
+and have never run. They are not installed here and crates.io returns 403, so the local check
+asserts only that those steps exist. `shellcheck` and `ruff` are also absent, so `bash -n` is a
+syntax check and nothing more, and the supply-chain `lock` check stays SKIP offline and is
+counted separately from passes. The 7 GitHub Action references are pinned to immutable commit
+SHAs, resolved over SSH because HTTPS to GitHub is blocked here too.
+
+The strict gate's one remaining FAIL is honest and expected: `deployment` reports that live
+7480753 trails HEAD and that Rust files differ. cb999fe is the first non-docs-only divergence,
+so the check that has been quiet for several doc commits finally has something to say. Deploy
+follows this commit.
+
 ## 2026-09-14T15:30:00Z · P12-T07b — a gate for the failure mode this session kept demonstrating
 
 Chosen because the drift was mine, twice in one session: I wrote that archiving was

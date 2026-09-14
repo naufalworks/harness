@@ -19,6 +19,12 @@ import urllib.request
 import uuid
 from pathlib import Path
 
+# P12-T05b: `with sqlite3.connect(...)` commits the transaction but does NOT close
+# the connection, so every read below leaked a handle and the interpreter reported
+# it as a ResourceWarning at shutdown. These reads are read-only, so closing() is
+# the correct wrapper.
+from contextlib import closing
+
 from mock_provider import MockProvider, failure, text, tool_calls
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -242,7 +248,11 @@ def main() -> None:
                 with urllib.request.urlopen(request, timeout=10) as response:
                     return response.status, json.load(response)
             except urllib.error.HTTPError as error:
-                return error.code, json.loads(error.read())
+                # P12-T05b: close the error response. An unclosed HTTPError owns a
+                # socket and reports a ResourceWarning from a deallocator, which
+                # -W error::ResourceWarning cannot turn into a failure.
+                with error:
+                    return error.code, json.loads(error.read())
 
         def open_stream(path: str, timeout: float = 8):
             """P2-T01: an SSE reader. Never pass a streaming path to `call`; it reads to EOF."""
@@ -307,7 +317,7 @@ def main() -> None:
             deadline = time.time() + timeout
             last: list[tuple] = []
             while time.time() < deadline:
-                with sqlite3.connect(db) as connection:
+                with closing(sqlite3.connect(db)) as connection:
                     last = connection.execute("SELECT seq,kind,status,tool_name,error_code FROM turn_steps WHERE request_id=? ORDER BY seq", (request_id,)).fetchall()
                 if predicate(last):
                     return last
@@ -401,7 +411,7 @@ def main() -> None:
             explored_done = wait_receipt(explored["request_id"], "complete")
             assert explored_done["response"] == "A sub-agent found gamma on line 2."
             assert (root / "deny.md").read_text() == "keep this file\n", "delegation must not reach a side-effecting tool"
-            with sqlite3.connect(db) as connection:
+            with closing(sqlite3.connect(db)) as connection:
                 tree = connection.execute(
                     "SELECT s.kind,s.status,s.tool_name,s.error_code,COALESCE(p.seq,-1) FROM turn_steps s "
                     "LEFT JOIN turn_steps p ON p.id=s.parent_step_id WHERE s.request_id=? ORDER BY s.seq",
@@ -721,7 +731,7 @@ def main() -> None:
                 for event in failed_generation
             ), failed_generation
 
-            with sqlite3.connect(db) as connection:
+            with closing(sqlite3.connect(db)) as connection:
                 assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
                 assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
             print("PASS: tool calls including approved ast_edit and multi-file lsp rename, read-only LSP queries, durable diffs, stale anchors, sandboxing, permission deny, budgets, detached-process recovery, interrupted recovery, and provider failure")

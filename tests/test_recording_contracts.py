@@ -5,7 +5,13 @@ All fixtures synthetic; no provider calls and no legacy user database involved.
 import json, re, sqlite3, tempfile, unittest
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
-SQL=dict(re.findall(r'pub const (\w+): &str = r#"(.*?)"#;', (ROOT/'src/recording_sql.rs').read_text(),re.S))
+# P12-T05b: see tests/test_agentic_sql.py. rustfmt may wrap a long declaration, so
+# the match must tolerate whitespace around `=`, and the scrape must assert it saw
+# every declared constant rather than silently testing a subset.
+_RECORDING_RUST=(ROOT/'src/recording_sql.rs').read_text()
+SQL=dict(re.findall(r'pub const (\w+): &str\s*=\s*r#"(.*?)"#;', _RECORDING_RUST,re.S))
+_DECLARED=set(re.findall(r'pub const (\w+): &str', _RECORDING_RUST))
+assert _DECLARED==set(SQL), f"SQL scrape missed constants: {sorted(_DECLARED - set(SQL))}"
 RUST=(ROOT/'src/recording.rs').read_text()
 def statement(prefix):
     for text in re.findall(r'"((?:[^"\\]|\\.)*)"', RUST):

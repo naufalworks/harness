@@ -6,7 +6,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 RUST = (ROOT / "src/agentic_sql.rs").read_text()
-SQL = {m.group(1): m.group(2) for m in re.finditer(r'pub const (\w+): &str = r#"(.*?)"#;', RUST, re.S)}
+# P12-T05b: match across the `=` tolerantly. rustfmt wraps long declarations onto
+# the next line, and a regex that required `= r#"` on one line silently dropped 7
+# of 31 constants: the scrape returned fewer keys instead of failing loudly.
+SQL = {m.group(1): m.group(2) for m in re.finditer(r'pub const (\w+): &str\s*=\s*r#"(.*?)"#;', RUST, re.S)}
+# Guard the scrape itself, so a future formatting or syntax change cannot quietly
+# reduce this suite to testing nothing.
+_DECLARED = set(re.findall(r'pub const (\w+): &str', RUST))
+assert _DECLARED == set(SQL), f"SQL scrape missed constants: {sorted(_DECLARED - set(SQL))}"
 NOW = "2026-09-09T00:00:00Z"
 LATER = "2026-09-09T00:30:00Z"
 

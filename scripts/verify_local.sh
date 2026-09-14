@@ -21,15 +21,50 @@ command -v cargo >/dev/null || { echo '[BLOCKED] rust: cargo is required' >&2; e
 command -v python3 >/dev/null || { echo '[BLOCKED] python: python3 is required' >&2; exit 2; }
 command -v node >/dev/null || { echo '[BLOCKED] javascript: node is required' >&2; exit 2; }
 
+# P12-T05b: formatting first. It is the cheapest failure in the suite and it
+# fails for a reason that never requires reading a test log.
+run_suite rust-fmt cargo fmt --all -- --check
 run_suite rust-tests cargo test --locked
 # P12-T04: --all-features widens coverage and -D warnings makes the zero-warning state
 # self-defending. Without -D this suite passed with 42 accumulated warnings, and without
 # --all-targets it cannot see unused imports consumed only by #[cfg(test)] code.
 run_suite rust-clippy cargo clippy --locked --all-targets --all-features -- -D warnings
 run_suite rust-build cargo build --locked
-run_suite python-contracts python3 -m unittest discover -s tests -p 'test_*.py' -v
-run_suite integration-smoke python3 tests/integration_smoke.py
-run_suite recording-integration python3 tests/recording_integration.py
+# P12-T05b: ResourceWarning is promoted to an error so a leaked socket, file or
+# database handle fails here rather than turning into flake somewhere later.
+# Exit status alone is NOT sufficient evidence: a warning raised inside a
+# deallocator is reported as "Exception ignored" and the process still exits 0.
+# This wrapper therefore also fails when the text appears in the output, which is
+# how nine leaked sqlite connections were found in recording_integration.py.
+run_python_suite() {
+  local name=$1
+  shift
+  echo "[RUN] $name"
+  local log
+  log=$(mktemp)
+  if ! python3 -W error::ResourceWarning "$@" >"$log" 2>&1; then
+    cat "$log"
+    echo "[FAIL] $name (non-zero exit)" >&2
+    rm -f "$log"
+    exit 1
+  fi
+  if grep -q 'ResourceWarning' "$log"; then
+    cat "$log"
+    grep -n 'ResourceWarning' "$log" >&2
+    echo "[FAIL] $name: leaked resources reported from a deallocator, where -W error cannot fail the process" >&2
+    rm -f "$log"
+    exit 1
+  fi
+  cat "$log"
+  rm -f "$log"
+  echo "[PASS] $name"
+}
+
+run_python_suite python-contracts -m unittest discover -s tests -p 'test_*.py' -v
+run_python_suite integration-smoke tests/integration_smoke.py
+run_python_suite recording-integration tests/recording_integration.py
+run_suite shell-syntax bash -n scripts/deploy.sh scripts/setup_browser_tests.sh scripts/verify_browser.sh scripts/verify_e2e.sh scripts/verify_local.sh scripts/verify_release.sh
+run_suite supply-chain python3 scripts/check_supply_chain.py
 run_suite javascript-syntax node --check static/app.js
 
 if [ -d node_modules ]; then

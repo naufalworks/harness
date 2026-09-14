@@ -40,7 +40,10 @@ def main():
             try:
                 with urllib.request.urlopen(req,timeout=10) as response:return response.status,json.load(response)
             except urllib.error.HTTPError as e:
-                raw=e.read()
+                # P12-T05b: HTTPError is a response object and owns a socket. Without
+                # closing it the interpreter reclaims it later and emits a
+                # ResourceWarning from a deallocator, where -W error cannot fail the run.
+                with e:raw=e.read()
                 try:payload=json.loads(raw)
                 except json.JSONDecodeError:payload={'error':raw.decode(errors='replace')}
                 return e.code,payload
