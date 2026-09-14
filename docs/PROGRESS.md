@@ -1,5 +1,11 @@
 # PROGRESS — journal
 
+## 2026-09-14T06:55:30Z · P11-T04 — deployed to the harness unit
+
+- Pushed `184ddbf` to `origin main` (`34fe779..184ddbf`), then ran `scripts/deploy.sh` on the committed tree.
+- Deploy evidence: `deployed 184ddbf to harness: pid 251951, release sha256 e8bad476aaf68129f60376de3edd5497f0703d2e4206708ea04c82708fd4b482, schema 10, readiness verified, API answering, non-object body refused with 400`.
+- The live schema is now 10 and readiness reports maintenance timestamps; retention stays disabled until an owner enables a policy with `scripts/maintenance.py policy`.
+
 ## 2026-09-14T06:55:00Z · P11-T04 — retention, WAL and compaction maintenance verified; task complete
 
 - Shipped append-only migration `010_retention_maintenance.sql` (user_version 9 -> 10): `retention_policies` (targets restricted to `generation_chunks` and `activity_events`, `keep_days >= 1`, disabled by default), `maintenance_runs` evidence table with an action allow-list, and `generation_events.compacted_chunks`.
