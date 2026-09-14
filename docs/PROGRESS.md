@@ -1,5 +1,52 @@
 # PROGRESS — journal
 
+## 2026-09-14T15:00:00Z · P13-T02b and P12-T04 — the dead-code clause closes in two directions
+
+The archive group and the retention group were both unreachable, and P12-T04 had kept both
+behind documented allows. They did not deserve the same answer. Archiving had no second
+implementation and no owner, so it was wired. Retention had one: `scripts/maintenance.py`
+already does the same deletions against the same tables with the same evidence rows. Exposing
+the Rust half would have shipped two implementations of the same destructive logic, kept in
+sync by hand, one of them reachable with a stolen HTTP token. So it was retired (3165eed,
+−11.7 KB from `src/storage.rs`), and the script is the single owner. Migration 010 and the
+readiness projection stay, so `/memory/status` still reports when each maintenance action last
+ran; the kept test seeds `maintenance_runs` the way the script does and proves the projection
+is real rather than hard-coded.
+
+**Wiring found a production bug that the library tests could not.** `KeyRing::by_id` was
+`[current, previous].into_iter()` gated behind `self.previous.as_ref()?` — the `?` returns
+`None` from the whole function when no rotation key is configured, which is the default. A
+single-key deployment could write archives it could never read back. Every unit test passed,
+because the one single-key read asserted a "deleted" error that fired before the key lookup.
+The HTTP round-trip test caught it on the first run. This is the argument for the routing work
+stated as evidence rather than as principle: a feature reachable end-to-end gets tested
+differently from a library.
+
+**Deploying found a second one, and only the wire could.** With archiving unconfigured, `GET`
+and `DELETE /archives/{id}` answered `no bytes were stored` — a write-path sentence describing
+an action that was never attempted. The tests asserted the status code, not the prose, so they
+were green. The four routes share one refusal, so the sentence is now action-neutral
+(8c9f241). Small, but it is the class of thing that only exists in the deployed artifact.
+
+**On the 501.** Unconfigured archiving is not a fault, so 500 is wrong; nothing was stored, so
+2xx is a lie. 501 naming the missing configuration is the only answer that an operator can act
+on. Authentication still runs first, so an unauthenticated caller gets 401 and learns nothing
+about which routes exist.
+
+**Archiving is deliberately left off in production.** The key is long-lived and there is no
+recovery path: lose it and every archived byte is unreadable. Generating and backing up that
+key is an owner decision, not something a deploy should do quietly on someone's behalf.
+`README.md` now documents the three variables and that constraint.
+
+**Evidence.** clippy `-D warnings` exit 0 · 220 passed, 0 failed · `verify_local.sh` exit 0 ·
+`verify_release.sh` exit 0, 12 [PASS] · deployed 8c9f241, pid 316123, `/health` `commit` and
+`binary_sha256 25c91fa7…` both matching HEAD, schema 10, workers up. Checked on the wire: 401
+before 501 on all four routes, provenance 200 for a valid UUID and 400 for a malformed one.
+
+**P12-T04 is now `done`.** The sixth clause holds in the code, not by decision. Deviations (2)
+and (3) stand — the provenance validation chain is still test-only, and nine browser/LSP panic
+sites are still retained deliberately, because converting them reshapes the call path.
+
 ## 2026-09-14T14:30:00Z · P12-T04 — the last three implementation clauses; still `doing`
 
 Three clauses, taken in order, each gated before the next began.

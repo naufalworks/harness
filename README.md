@@ -36,6 +36,28 @@ no configuration. Note that a Funnel route on :443 is a *different* listener —
 pointing a public domain at this service would place it on the open internet
 behind nothing but the token.
 
+## Exact archiving (opt-in)
+
+Exact archiving stores encrypted source bytes and records privacy actions. It
+is off unless both variables are set in `.env`:
+
+```sh
+HARNESS_ARCHIVE_ROOT=/var/lib/harness/archives
+HARNESS_ARCHIVE_KEY=/etc/harness/archive.key
+HARNESS_ARCHIVE_KEY_PREVIOUS=/etc/harness/archive.key.old   # optional, rotation only
+```
+
+The key file must be 32 raw bytes or 64 hexadecimal characters and must be
+owner-only (`chmod 600`); the server refuses to start otherwise, rather than
+failing at the first request. During rotation, set the retired key as
+`HARNESS_ARCHIVE_KEY_PREVIOUS` so existing archives stay readable — it must
+differ from the current key.
+
+**Back the key up before archiving anything.** Archives are unreadable without
+it; there is no recovery path. With no key configured, the archive routes
+answer `501` naming the missing configuration, so an unconfigured server never
+implies that bytes were kept.
+
 ## Layout
 
 | Path | Purpose |
