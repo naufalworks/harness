@@ -1287,3 +1287,72 @@ exact failing request with the real browser origin -> 200; `https://evil.invalid
 **Verified.** clippy `-D warnings` exit 0; `cargo test --locked` 217 passed, 0 failed; `scripts/verify_release.sh` exit 0 with 12 `[PASS]` under the hardened gate; `git diff --check` exit 0. Deploy verified independently of the deploy script: served `/health` reports commit 97f39c6 matching HEAD, `binary_sha256` b6f6fa88 matching local `sha256sum`, schema 10, ready, `quick_check: ok`, recording and extraction workers up, unit active, rollback snapshot capturing 805e648.
 
 **Next.** P12-T04 stays `doing`. Four done-when clauses are untouched: shared limits for magic values, checked numeric casts, explicit nested patch-option semantics, and the production-panic audit.
+
+## 2026-09-14 · P12-T04 — The panic audit, and why 842 was the wrong number
+
+The done-when clause said "production panics are audited". The obvious way to
+start is `grep -rn 'unwrap()' src`, which returns 842 hits. That number is
+useless: grep cannot tell a production call site from one inside a
+`#[cfg(test)]` module, and this repository keeps most of its tests inline
+beside the code they cover. Acting on 842 would have meant either a
+multi-thousand-line churn commit or, more likely, giving up.
+
+So the audit needed a parser, not a pattern. `/tmp/panic_audit.py` walks each
+file tracking brace depth, remembers the depth at which a `#[cfg(test)]` module
+or a `#[test]`/`#[tokio::test]` function opened, and strips string literals and
+line comments first so that braces inside them cannot corrupt the depth count.
+Result: **21 production sites and 841 test sites.** `src/recording_tests.rs` is
+entirely tests; `main.rs`, `agent_loop.rs` and `storage.rs` earn their large raw
+counts almost wholly from test modules.
+
+That is the same lesson the auth seam taught when the compiler found three
+`E0624` errors a grep had missed, and the same one the clippy gate taught when
+`--all-targets` without `-D warnings` reported `[PASS]` over 42 warnings: a
+grep count is a hypothesis. Twenty-one sites is small enough to read every one
+in context, which is what an audit actually is.
+
+Reading all 21 showed none were reachable-and-broken today. But the distinction
+worth acting on is not "does it panic" — it is **how far away the invariant
+lives from the code depending on it**:
+
+- `api/routes.rs:99` was the one genuine concern: `receipt["request_id"]
+  .as_str().unwrap()` directly inside the compatibility `/chat` handler.
+  `admit_chat` does populate the field, but that is a cross-module promise, and
+  a JSON `unwrap()` in a live HTTP handler converts a broken promise into a
+  panicked request. It now returns the durable 202 receipt instead; a receipt
+  that cannot be polled is still a correct answer.
+- `recording.rs:244,259` read a receipt back inside the very transaction that
+  wrote it. `None` means the database contradicted itself — worth an error the
+  caller records, not a panic unwinding the DB worker mid-transaction.
+- `storage.rs:842` was safe *only* because `cache_hit` included
+  `decoded.is_some()`, three lines up. Matching on `decoded` makes the compiler
+  enforce what an adjacent boolean used to promise.
+- `memory_agents.rs:97,99` were correct only because of an argument on the
+  previous line (`Some(32)`); `unwrap_or(32)` states the default at the point
+  of use.
+- `auth.rs` ×5 parsed static header strings. `HeaderValue::from_static` moves
+  the check to compile time, so the panic branch stops existing rather than
+  being merely unreachable.
+- `ingest.rs:132` was guarded by `starts_with("```")` on the line above;
+  `if let Some(kind)` makes the guarantee local and costs nothing.
+
+Twelve removed, **21 → 9**. The nine kept are a decision, not an oversight: 8
+validated-before-dispatch arms in `tools/browser_tool.rs` and one
+`expect("inserted above")` in `lsp_tool.rs`. Making browser dispatch return
+errors reshapes the call path — a behaviour change, which is exactly what a
+cleanup task must not smuggle in.
+
+One verification detail mattered more than the code: rewriting the five header
+parses is the kind of "obviously equivalent" edit that silently drops a header.
+Unit tests would not catch it, so after deploy the hardening headers were read
+back off the wire from the running process — `cache-control`, `nosniff`,
+`referrer-policy` and the full CSP all still served. Evidence, not equivalence
+by inspection.
+
+Gate: clippy `--all-targets --all-features -D warnings` exit 0; 217 tests pass;
+`verify_release.sh` exit 0 with 12 `[PASS]`. Deployed 4d3f589 (pid 300082,
+sha256 f615c826…, schema 10) and confirmed `/health` `commit` and
+`binary_sha256` match HEAD and the local binary.
+
+P12-T04 stays `doing`: three clauses remain — shared limits for magic values,
+checked numeric casts, and explicit nested patch-option semantics.
