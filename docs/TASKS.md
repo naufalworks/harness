@@ -683,15 +683,29 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 ## P12 · Maintainability, API, CI, and releases
 
 ### P12-T01 · Decompose HTTP and agent orchestration modules
-- status: doing
+- status: done
 - priority: high
 - lane: architecture
 - parallel: no
 - depends: P10-T03
 - design: docs/ROADMAP.md#p12-maintainability-api-ci-and-release-engineering
-- files: src/main.rs, src/api/*, src/agent_loop.rs, src/agent/*
+- files: src/main.rs, src/api/*, src/agent_loop.rs, src/agent_loop/*
 - done-when: routes/middleware/SSE and orchestration/budgets/permissions/tools/delegation/verification are cohesive modules with unchanged public behavior and smaller reviewable units.
 - verify: bash scripts/verify_release.sh
+- note (2026-09-14, done): seven verified verbatim seams, each compiled, tested and released before the next began. `src/main.rs` 3,947 → 2,530 with the HTTP surface now in `src/api/` (`routes.rs` 813, `auth.rs` 260, `stream.rs` 217, `assets.rs` 117, `error.rs` 90, `mod.rs` 9). `src/agent_loop.rs` 3,214 → 2,658 with `steps.rs` 340 (durable step/permission transitions), `compaction.rs` 171 (provider-window compaction plus its two pure unit tests), `verification.rs` 96 (verification evidence). Deployed as `b50811f`; `scripts/verify_release.sh` exit 0, 12 `[PASS]`, 217 Rust tests, and `/health` served commit + `binary_sha256` + `schema_version` 10 matching HEAD.
+- deviations: the planned six-way `src/agent/` split was not carried out and the module was **not** renamed to `agent`. Three genuine boundaries existed (durable persistence, compaction, verification evidence) and were taken; the remaining `run` + `impl Ctx` (orchestration, budgets, permissions, tools, delegation) share the same eight private `Ctx` fields, so splitting them further would produce smaller files without a new boundary — and the rename would invalidate ~30 truthful historical doc references while changing nothing structural. Both are deferred to P12-T01b rather than forced here.
+
+### P12-T01b · Optional further agent_loop decomposition and rename
+- status: todo
+- priority: low
+- lane: architecture
+- parallel: yes
+- depends: P12-T01
+- design: docs/ROADMAP.md#p12-maintainability-api-ci-and-release-engineering
+- files: src/agent_loop.rs, src/agent_loop/*, src/main.rs, src/api/routes.rs, src/recording.rs, AGENTS.md, docs/design/*
+- done-when: either a new boundary is justified before any further split of `run`/`impl Ctx` (they share eight private `Ctx` fields today, so line count alone is not a reason), or the decision to stop is recorded; if the module is renamed to `agent`, every external reference and current-state doc moves with it and historical journal entries are left untouched.
+- verify: bash scripts/verify_release.sh
+- note: raised by P12-T01 after seven verified seams. Also open: the 37 loop tests (~1,570 lines) that still live in the parent because they drive `run` through a scripted provider; only the two pure compaction tests could move without inventing test-only visibility.
 
 ### P12-T02 · Decompose storage, browser and LSP internals
 - status: todo

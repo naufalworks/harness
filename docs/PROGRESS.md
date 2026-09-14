@@ -1,5 +1,58 @@
 # PROGRESS — journal
 
+## 2026-09-14T09:45:00Z · P12-T01 — done; seven verified seams, deployed as `b50811f`
+
+P12-T01 is `done`. The decomposition was carried out as seven verbatim seams, each compiled,
+tested and release-gated before the next began, so no seam could hide behind a later one.
+
+**HTTP surface.** `src/main.rs` 3,947 → 2,530 lines. `src/api/` now owns it: `routes.rs` (813)
+the routing table and handlers, `auth.rs` (260) `AuthState`/`AuthKind`, the constant-time token
+comparison, the authenticate and response-hardening middleware, `stream.rs` (217) SSE,
+`assets.rs` (117), `error.rs` (90), `mod.rs` (9). `main.rs` keeps only the process entry:
+`Harness`, runtime identity, startup and shutdown.
+
+**Agent loop.** `src/agent_loop.rs` 3,214 → 2,658 lines, with three child modules:
+`steps.rs` (340) the durable step/permission transitions and the `impl DbStore` half,
+`compaction.rs` (171) the provider-window compaction plus its two pure unit tests, and
+`verification.rs` (96) the verification evidence. The verification seam was deliberately
+non-contiguous: `CompletedToolCall` and `Delegated` sat inside the same block but belong to the
+loop and to delegation, so they stayed in the parent.
+
+**Two defects the process caught, worth recording.** First, the compiler: a pre-move grep said
+`Ctx::allow` had no external callers, a test disagreed, and three `E0624: method is private`
+errors followed — the grep was a hypothesis, the compile was the evidence. Second, and not
+catchable by any gate we run: the compaction seam left `DEFAULT_CONTEXT_TOKENS`'s doc comment
+behind in the parent, where it silently became the documentation for `MAX_VERIFICATION_STEPS`.
+It compiled, 217 tests passed, and the documentation was wrong. That prompted a doc-adjacency
+re-check of all earlier seams (`git show --unified=4` filtered for `///`/`//!` on removed lines
+across `8c51c94 fdd830a fea3f18 40dd26d b30bcdc`), which came back clean: every doc comment had
+travelled with its item.
+
+**Not done, on purpose.** The planned six-way `src/agent/` split and the `agent_loop` → `agent`
+rename were both dropped, and P12-T01b records why. `run` (~320 lines) and `impl Ctx` (~620)
+share the same eight private `Ctx` fields: splitting them yields smaller files and no new
+boundary, which is churn dressed as architecture. The rename would have invalidated ~30
+truthful historical references in this journal and in `docs/TASKS.md` while changing nothing
+structural. The 37 loop tests (~1,570 lines) stay in the parent because they drive `run`
+through a scripted provider; only the two pure compaction tests could move without inventing
+test-only visibility.
+
+**No behaviour was changed.** The task was decomposition, so it did not touch performance,
+hardening or bounds — those belong to P12-T04 and P12-T05b, separately gated, not smuggled into
+a move commit.
+
+**Evidence.** `cargo test --locked` → 217 passed, 0 failed; `cargo test --locked --no-run`
+clean of new `unused`/`error` lines (the 31–32 pre-existing dead-code warnings are the unchanged
+baseline); `scripts/verify_release.sh` → exit 0 with 12 `[PASS]`; `git diff --check` → exit 0.
+Deployed from a clean tree: `scripts/deploy.sh` restarted the unit (pid 289107) and `/health`
+answers `ready: true`, commit `b50811fda8b7eb09189cc44956fc0fec41018f28`, binary sha256
+`8b934fc6…de34dd` matching `target/release/harness`, `schema_version` 10, `quick_check: ok`,
+both workers live, and `POST /chat/submit` with `[]` still refused with 400. Rollback artifacts
+captured under `.harness/deploy/` for the previous binary (`a9de940`).
+
+Commits: `8c51c94` assets/error, `fdd830a` stream, `fea3f18` auth, `40dd26d` routes,
+`b30bcdc` steps, `40536bb` compaction, `3f5af41` verification, `b50811f` test move + map.
+
 ## 2026-09-14T08:25:00Z · P12-T01 — started; HTTP assets and error layer extracted
 
 P12-T01 is `doing`. `src/main.rs` was 3,947 lines and held the whole HTTP surface, so the work
