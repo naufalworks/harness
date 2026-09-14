@@ -1,8 +1,4 @@
-use crate::{
-    ingest::Event,
-    limits::verification as vlimits,
-    patch::Patch,
-};
+use crate::{ingest::Event, limits::verification as vlimits, patch::Patch};
 use anyhow::{bail, Result};
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -58,12 +54,12 @@ pub struct Job {
 // P12-T02: the provenance writer/reader and the bounded incident projection now live in
 // `storage/provenance.rs`. The constants stay re-exported from `crate::storage` so no
 // caller path changes with the file move.
-mod provenance;
-mod turns;
-mod provider;
 mod config;
-mod memories;
 mod jobs;
+mod memories;
+mod provenance;
+mod provider;
+mod turns;
 #[allow(unused_imports)]
 pub use provenance::{PROVENANCE_NODE_KINDS, PROVENANCE_RELATIONS};
 // ---- Scopes (P1-T04) ----------------------------------------------------------------
