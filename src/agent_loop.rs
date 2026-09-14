@@ -32,15 +32,13 @@ const PERMISSION_TTL_SECONDS: i64 = 30 * 60;
 /// What the assistant says when the provider returns neither text nor a tool call. Saying this
 /// is honest; inventing a summary of work that did not happen is not.
 const NO_TEXT: &str = "(the model returned no answer text for this turn)";
-const MAX_VERIFICATION_STEPS: usize = 24;
-const MAX_VERIFICATION_ANSWER_CHARS: usize = 12_000;
-const MAX_VERIFICATION_ARGUMENT_CHARS: usize = 2_000;
-const MAX_VERIFICATION_OUTPUT_CHARS: usize = 4_000;
 
 mod compaction;
 mod steps;
+mod verification;
 
 use compaction::*;
+use verification::*;
 pub use steps::{NewPermission, NewStep, Resolution, StepOutcome};
 
 
@@ -67,15 +65,6 @@ pub enum Outcome {
     ProviderFailed,
 }
 
-
-#[derive(Clone)]
-struct VerificationEvidence {
-    step_id: String,
-    seq: i64,
-    priority: bool,
-    value: Value,
-}
-
 struct CompletedToolCall {
     step_id: String,
     result: ToolResult,
@@ -89,76 +78,6 @@ struct Delegated {
     tool_bytes: i64,
 }
 
-fn verification_text(text: &str, max_chars: usize) -> String {
-    crate::tools::truncate_chars(&safety::redact(text), max_chars)
-}
-
-fn tool_verification_evidence(
-    step_id: String,
-    seq: i64,
-    call: &ToolCall,
-    result: &ToolResult,
-) -> VerificationEvidence {
-    let status = match result.status {
-        ToolStatus::Complete => "complete",
-        ToolStatus::Failed => "failed",
-    };
-    let arguments = call
-        .arguments()
-        .map(|value| value.to_string())
-        .unwrap_or_else(|_| call.arguments_json.clone());
-    let file_changes = result
-        .artifacts
-        .iter()
-        .filter_map(|artifact| match artifact {
-            Artifact::FileChange {
-                path,
-                action,
-                before_hash,
-                after_hash,
-                plus,
-                minus,
-                ..
-            } => Some(json!({
-                "path":verification_text(path,500),"action":action,"before_hash":before_hash,
-                "after_hash":after_hash,"plus":plus,"minus":minus,"applied":true,
-            })),
-            Artifact::Plan { .. } => None,
-        })
-        .collect::<Vec<_>>();
-    let priority = call.name == "bash" || !file_changes.is_empty();
-    VerificationEvidence {
-        step_id: step_id.clone(),
-        seq,
-        priority,
-        value: json!({
-            "step_id":step_id,"seq":seq,"tool":call.name,"status":status,
-            "arguments":verification_text(&arguments,MAX_VERIFICATION_ARGUMENT_CHARS),
-            "summary":verification_text(&result.summary,500),
-            "output":verification_text(&result.content,MAX_VERIFICATION_OUTPUT_CHARS),
-            "error_code":result.error_code,"exit_code":result.exit_code,
-            "file_changes":file_changes,
-        }),
-    }
-}
-
-fn select_verification_evidence(evidence: &[VerificationEvidence]) -> Vec<VerificationEvidence> {
-    let mut selected = Vec::new();
-    for priority in [true, false] {
-        for item in evidence
-            .iter()
-            .rev()
-            .filter(|item| item.priority == priority)
-        {
-            if selected.len() >= MAX_VERIFICATION_STEPS {
-                break;
-            }
-            selected.push(item.clone());
-        }
-    }
-    selected.sort_by_key(|item| item.seq);
-    selected
-}
 
 struct Ctx<'a> {
     store: &'a DbStore,
