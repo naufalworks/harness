@@ -1273,3 +1273,17 @@ exact failing request with the real browser origin -> 200; `https://evil.invalid
 **Delivered.** Replaced 200 ms per-connection SQLite polling with commit notifications (`tokio::sync::broadcast`) plus cursor replay. Activity and generation streams wait via `tokio::time::timeout` utilizing `commit_notify.subscribe()` channel from `DbStore`. Idle stream heartbeat logic is intact, and transient database contentions correctly hold cursor and resume efficiently.
 
 **Verified.** `cargo test --locked streaming` and `python3 tests/recording_integration.py` pass without errors. `cargo test --locked -p harness` gives 207 passes.
+
+---
+
+## 2026-09-14 · P12-T04 — Zero clippy warnings and a gate that keeps them at zero
+
+**Delivered.** `cargo clippy --locked --all-targets --all-features -- -D warnings` passes for the first time in this repo, down from a 42-warning baseline. Real fixes: an orphaned activity-feed doc comment that had drifted onto `reserve_provider_call` was reattached to `activity_since`; a no-op `drop()` removed; `process_lock.rs` made truncation explicit with `.truncate(false)`; `as_chunks::<4>()` in `embeddings.rs` removed an infallible `try_into().unwrap()`; `div_ceil` replaced a manual round-up; five `Budgets` test setups became struct literals. Deployed as 97f39c6.
+
+**Gate hardening.** `scripts/verify_local.sh` ran plain `cargo clippy --locked --all-targets`, so 42 warnings accumulated while the suite reported `[PASS]`. It now runs `--all-targets --all-features -- -D warnings`. This closes a real gate defect found earlier in the same session: `cargo test --locked --no-run | grep unused` cannot see unused imports consumed only by `#[cfg(test)]` code, and four such warnings survived five refactor seams because of it.
+
+**Deviation worth stating plainly.** About 26 warnings were silenced with documented `#[allow(dead_code)]`, not fixed. `src/archive/` (P13-T02) and the DbStore retention/maintenance surface are implemented and test-covered but reachable from no route. `git grep` at fdd830a proved the retention group was already unreachable before the P12-T01 routes seam, so it is pre-existing debt rather than seam fallout. Connecting them is a routing change, now tracked as P13-T02b, which requires removing those allows. The provenance validation chain is test-only, but production inserts go through raw SQL in `agent_loop::steps` where migration 006 CHECK constraints enforce the same kinds, relations, id lengths and self-edge ban, so no correctness hole exists.
+
+**Verified.** clippy `-D warnings` exit 0; `cargo test --locked` 217 passed, 0 failed; `scripts/verify_release.sh` exit 0 with 12 `[PASS]` under the hardened gate; `git diff --check` exit 0. Deploy verified independently of the deploy script: served `/health` reports commit 97f39c6 matching HEAD, `binary_sha256` b6f6fa88 matching local `sha256sum`, schema 10, ready, `quick_check: ok`, recording and extraction workers up, unit active, rollback snapshot capturing 805e648.
+
+**Next.** P12-T04 stays `doing`. Four done-when clauses are untouched: shared limits for magic values, checked numeric casts, explicit nested patch-option semantics, and the production-panic audit.
