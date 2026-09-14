@@ -38,9 +38,8 @@ mod steps;
 mod verification;
 
 use compaction::*;
-use verification::*;
 pub use steps::{NewPermission, NewStep, Resolution, StepOutcome};
-
+use verification::*;
 
 // ---- The loop -------------------------------------------------------------------------
 
@@ -77,7 +76,6 @@ struct Delegated {
     model_calls: i64,
     tool_bytes: i64,
 }
-
 
 struct Ctx<'a> {
     store: &'a DbStore,
@@ -291,9 +289,9 @@ pub async fn run<S: GenerationSink>(turn: Turn<'_>, sink: &mut S) -> Result<Outc
                 Raced::Done(replied) => replied,
             }
         } else {
-            let called = ctx
-                .agents
-                .complete_with_tools(&ctx.model, messages.clone(), tools.clone());
+            let called =
+                ctx.agents
+                    .complete_with_tools(&ctx.model, messages.clone(), tools.clone());
             match ctx.race_cancellation(called).await? {
                 Raced::Cancelled => {
                     ctx.finish_cancelled_step(step).await?;
@@ -423,7 +421,9 @@ pub async fn run<S: GenerationSink>(turn: Turn<'_>, sink: &mut S) -> Result<Outc
 
 impl Ctx<'_> {
     async fn cancelled(&self) -> Result<bool> {
-        self.store.cancellation_requested(self.request.clone()).await
+        self.store
+            .cancellation_requested(self.request.clone())
+            .await
     }
 
     /// P14-T01: wait for a provider future while polling the durable cancel intent. Returns
@@ -778,9 +778,9 @@ impl Ctx<'_> {
             // closed `interrupted` on cancellation, and the post-response guard below catches a
             // cancel that lands while the reply was in flight, so a cancelled turn can never record
             // a completed final answer.
-            let called = self
-                .agents
-                .complete_with_tools(&self.model, messages.clone(), definitions.clone());
+            let called =
+                self.agents
+                    .complete_with_tools(&self.model, messages.clone(), definitions.clone());
             let replied = match self.race_cancellation(called).await? {
                 Raced::Cancelled => {
                     self.finish_cancelled_step(model_step).await?;
@@ -923,7 +923,10 @@ impl Ctx<'_> {
                 step,
                 call,
                 if cancelled {
-                    ToolResult::err("cancelled", "the request was cancelled while the sub-agent ran")
+                    ToolResult::err(
+                        "cancelled",
+                        "the request was cancelled while the sub-agent ran",
+                    )
                 } else {
                     ToolResult::ok(subagent::label(&ask), content)
                 },
@@ -1089,8 +1092,8 @@ Send another message to continue from here, or raise the budget for this scope f
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::recording::{self, Admission, CaptureInput, Generation};
     use crate::patch::Patch;
+    use crate::recording::{self, Admission, CaptureInput, Generation};
     use crate::storage::{uid, ScopePatch};
     use std::collections::VecDeque;
     use std::sync::Mutex;

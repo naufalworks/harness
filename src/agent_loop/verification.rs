@@ -78,7 +78,9 @@ pub(super) fn tool_verification_evidence(
     }
 }
 
-pub(super) fn select_verification_evidence(evidence: &[VerificationEvidence]) -> Vec<VerificationEvidence> {
+pub(super) fn select_verification_evidence(
+    evidence: &[VerificationEvidence],
+) -> Vec<VerificationEvidence> {
     let mut selected = Vec::new();
     for priority in [true, false] {
         for item in evidence

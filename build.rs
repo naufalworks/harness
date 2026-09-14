@@ -4,7 +4,10 @@ use std::process::{Command, Stdio};
 
 fn git(args: &[&str]) -> Option<String> {
     let output = Command::new("git").args(args).output().ok()?;
-    output.status.success().then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 // P11-T06: precompress the embedded static assets at build time.
@@ -50,7 +53,8 @@ fn precompress(name: &str, commit: &str, out_dir: &str) {
 }
 
 fn main() {
-    let commit = std::env::var("HARNESS_BUILD_COMMIT").ok()
+    let commit = std::env::var("HARNESS_BUILD_COMMIT")
+        .ok()
         .or_else(|| git(&["rev-parse", "HEAD"]))
         .unwrap_or_else(|| "unknown".into());
     println!("cargo:rustc-env=HARNESS_GIT_COMMIT={commit}");

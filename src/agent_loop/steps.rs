@@ -283,9 +283,20 @@ impl DbStore {
             }
             tx.execute(
                 sql::PROVENANCE_EDGE_INSERT,
-                params![uid(), request, "permission", id,
-                    if decision == "approved" { "authorizes" } else { "triggers" },
-                    "step", step, stamp],
+                params![
+                    uid(),
+                    request,
+                    "permission",
+                    id,
+                    if decision == "approved" {
+                        "authorizes"
+                    } else {
+                        "triggers"
+                    },
+                    "step",
+                    step,
+                    stamp
+                ],
             )?;
             let session: String =
                 tx.query_row(sql::SESSION_OF_REQUEST, [&request], |r| r.get(0))?;

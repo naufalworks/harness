@@ -1525,11 +1525,16 @@ mod tests {
 
         let readiness = db.readiness().await.unwrap();
         let maintenance = &readiness["maintenance"];
-        assert_eq!(maintenance["last_retention_at"], "2026-01-01T00:00:00+00:00");
-        assert_eq!(maintenance["last_compaction_at"], "2026-01-02T00:00:00+00:00");
         assert_eq!(
-            maintenance["last_wal_checkpoint_at"],
-            "2026-01-03T00:00:00+00:00",
+            maintenance["last_retention_at"],
+            "2026-01-01T00:00:00+00:00"
+        );
+        assert_eq!(
+            maintenance["last_compaction_at"],
+            "2026-01-02T00:00:00+00:00"
+        );
+        assert_eq!(
+            maintenance["last_wal_checkpoint_at"], "2026-01-03T00:00:00+00:00",
             "each action must project its own latest run, not the newest row of any action"
         );
         assert_eq!(
@@ -2091,7 +2096,8 @@ mod tests {
         assert!(matches!(cleared.root_path, Patch::Clear));
         assert!(matches!(cleared.max_steps, Patch::Clear));
 
-        let set: ScopePatch = serde_json::from_str(r#"{"root_path":"/tmp","max_steps":9}"#).unwrap();
+        let set: ScopePatch =
+            serde_json::from_str(r#"{"root_path":"/tmp","max_steps":9}"#).unwrap();
         assert_eq!(set.root_path.value().map(String::as_str), Some("/tmp"));
         assert_eq!(set.max_steps.value().copied(), Some(9));
 

@@ -247,7 +247,10 @@ pub(crate) async fn headers(
     if !h.contains_key(header::CACHE_CONTROL) {
         h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     }
-    h.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
+    h.insert(
+        "x-content-type-options",
+        HeaderValue::from_static("nosniff"),
+    );
     h.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
     h.insert("content-security-policy",HeaderValue::from_static("default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"));
     if state.hsts {

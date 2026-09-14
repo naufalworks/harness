@@ -173,10 +173,22 @@ async fn retry_request(
     Uuid::parse_str(&id).map_err(|_| invalid("Invalid request identifier"))?;
     match h.store.retry_recording(id).await.map_err(db_error)? {
         recording::RetryAdmission::Saved(receipt) => Ok((StatusCode::ACCEPTED, Json(receipt))),
-        recording::RetryAdmission::NotFound => Err(ApiError(StatusCode::NOT_FOUND, "Recording receipt not found")),
-        recording::RetryAdmission::NotTerminal => Err(ApiError(StatusCode::CONFLICT, "Only failed or interrupted requests can be retried")),
-        recording::RetryAdmission::Busy => Err(ApiError(StatusCode::CONFLICT, "This conversation already has an unfinished answer")),
-        recording::RetryAdmission::Unsafe => Err(ApiError(StatusCode::CONFLICT, "Retry refused because the run crossed or may have crossed a mutating boundary")),
+        recording::RetryAdmission::NotFound => Err(ApiError(
+            StatusCode::NOT_FOUND,
+            "Recording receipt not found",
+        )),
+        recording::RetryAdmission::NotTerminal => Err(ApiError(
+            StatusCode::CONFLICT,
+            "Only failed or interrupted requests can be retried",
+        )),
+        recording::RetryAdmission::Busy => Err(ApiError(
+            StatusCode::CONFLICT,
+            "This conversation already has an unfinished answer",
+        )),
+        recording::RetryAdmission::Unsafe => Err(ApiError(
+            StatusCode::CONFLICT,
+            "Retry refused because the run crossed or may have crossed a mutating boundary",
+        )),
     }
 }
 
@@ -805,10 +817,7 @@ fn archive_read_error(error: anyhow::Error) -> ApiError {
     }
     // The client gets a fixed sentence; the operator needs the reason, and an archive fault the
     // logs cannot explain is not auditable.
-    eprintln!(
-        "{}",
-        json!({"event":"archive_read_failed","error":detail})
-    );
+    eprintln!("{}", json!({"event":"archive_read_failed","error":detail}));
     ApiError(
         StatusCode::INTERNAL_SERVER_ERROR,
         "Stored bytes could not be returned; they did not authenticate or are unavailable",
@@ -830,7 +839,10 @@ async fn archive_source(
         .archive_exact_via(&h.store, source, body.to_vec())
         .await
         .map_err(db_error)?;
-    Ok((StatusCode::CREATED, Json(json!({ "archive_id": archive_id }))))
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({ "archive_id": archive_id })),
+    ))
 }
 async fn read_archive(State(h): State<Harness>, Path(id): Path<String>) -> ApiResult<Response> {
     let store = archive_store(&h)?;
@@ -839,11 +851,7 @@ async fn read_archive(State(h): State<Harness>, Path(id): Path<String>) -> ApiRe
         .read_exact_via(&h.store, id)
         .await
         .map_err(archive_read_error)?;
-    Ok((
-        [(header::CONTENT_TYPE, "application/octet-stream")],
-        bytes,
-    )
-        .into_response())
+    Ok(([(header::CONTENT_TYPE, "application/octet-stream")], bytes).into_response())
 }
 /// Deleting an archive is not the same act as forgetting a source: this removes stored bytes and
 /// records that removal, and leaves every other privacy state untouched.

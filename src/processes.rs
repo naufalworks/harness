@@ -56,10 +56,16 @@ pub struct GroupGuard {
 
 pub fn register(request: &str, pgid: i32) -> GroupGuard {
     if pgid <= 0 {
-        return GroupGuard { request: request.to_string(), pgid, registered: false };
+        return GroupGuard {
+            request: request.to_string(),
+            pgid,
+            registered: false,
+        };
     }
     let late = {
-        let mut reg = registry().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut reg = registry()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if reg.sealed.contains(request) {
             true
         } else {
@@ -69,9 +75,17 @@ pub fn register(request: &str, pgid: i32) -> GroupGuard {
     };
     if late {
         signal_group(pgid);
-        return GroupGuard { request: request.to_string(), pgid, registered: false };
+        return GroupGuard {
+            request: request.to_string(),
+            pgid,
+            registered: false,
+        };
     }
-    GroupGuard { request: request.to_string(), pgid, registered: true }
+    GroupGuard {
+        request: request.to_string(),
+        pgid,
+        registered: true,
+    }
 }
 
 impl Drop for GroupGuard {
@@ -129,7 +143,9 @@ fn signal_group(_pgid: i32) {}
 /// sealed first, so a group that registers only after this returns is still stopped.
 pub fn terminate(request: &str) -> usize {
     let drained = {
-        let mut reg = registry().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut reg = registry()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         seal(&mut reg, request);
         drain(&mut reg, request)
     };
@@ -161,7 +177,10 @@ mod tests {
         let _b = register("b", 22);
         let first = drain(&mut registry().lock().unwrap(), "a");
         assert_eq!(first, vec![11]);
-        assert_eq!(drain(&mut registry().lock().unwrap(), "a"), Vec::<i32>::new());
+        assert_eq!(
+            drain(&mut registry().lock().unwrap(), "a"),
+            Vec::<i32>::new()
+        );
         assert!(live("a").is_none());
         assert_eq!(live("b"), Some(vec![22]));
     }
@@ -234,7 +253,10 @@ mod tests {
             let _ = child.kill();
             let _ = child.wait();
         }
-        assert!(status.is_some(), "a group spawned after cancel survived its registration");
+        assert!(
+            status.is_some(),
+            "a group spawned after cancel survived its registration"
+        );
         assert!(
             status.unwrap().code().is_none(),
             "the late group was not signalled at registration"
@@ -243,7 +265,10 @@ mod tests {
 
         // The delayed side effect must never land.
         std::thread::sleep(Duration::from_millis(200));
-        assert!(!side_effect.exists(), "a cancelled group produced its delayed side effect");
+        assert!(
+            !side_effect.exists(),
+            "a cancelled group produced its delayed side effect"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -189,7 +189,14 @@ fn cancel_tx(
     tx.execute(sql::EVENT, params![request, "interrupted", stamp])?;
     tx.execute(
         agentic::EVENT,
-        params![request, session, None::<String>, "turn_cancelled", "{}", stamp],
+        params![
+            request,
+            session,
+            None::<String>,
+            "turn_cancelled",
+            "{}",
+            stamp
+        ],
     )?;
     tx.execute(
         "INSERT INTO generation_events(request_id,session_id,state,content,error_code,created_at) VALUES(?1,?2,'interrupted','','cancelled',?3)",
@@ -205,7 +212,9 @@ fn cancel_pending_tx(tx: &rusqlite::Transaction<'_>, request: &str, stamp: &str)
         [request],
         |r| r.get(0),
     ).optional()?;
-    let Some(session) = session else { return Ok(false); };
+    let Some(session) = session else {
+        return Ok(false);
+    };
     cancel_tx(tx, request, &session, stamp)?;
     Ok(true)
 }
@@ -318,7 +327,8 @@ impl DbStore {
             let cancelled = cancel_pending_tx(&tx, &request, &now())?;
             tx.commit()?;
             Ok(cancelled)
-        }).await
+        })
+        .await
     }
     pub async fn retry_recording(&self, request: String) -> Result<RetryAdmission> {
         self.run(move |c| {

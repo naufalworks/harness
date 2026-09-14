@@ -136,10 +136,7 @@ async fn generation_replay_attributes_multiple_turns_and_resumes_by_cursor() {
         .generation_since("session".into(), first_cursor)
         .await
         .unwrap();
-    assert_eq!(
-        tail["events"],
-        json!([events[1].clone()])
-    );
+    assert_eq!(tail["events"], json!([events[1].clone()]));
     assert_eq!(tail["next_after_seq"], events[1]["seq"]);
     assert!(
         db.generation_since("other".into(), 0).await.unwrap()["events"]

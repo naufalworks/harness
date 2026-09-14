@@ -154,9 +154,7 @@ impl Stop {
             Self::ProviderFailed => {
                 "stopped because the model call failed, so this may be incomplete"
             }
-            Self::Cancelled => {
-                "stopped because the request was cancelled, so this is incomplete"
-            }
+            Self::Cancelled => "stopped because the request was cancelled, so this is incomplete",
         }
     }
 }

@@ -32,9 +32,9 @@ mod skills; // P5-T02 skills index and bounded SKILL.md bodies
 mod storage;
 mod subagent; // P5-T03 read-only exploration sub-agent: tools, bounds, report shape
 mod tools; // P1-T05/T06 tool registry (needs-verify: written without cargo) // P4-T02 deterministic offline vectors and cosine scoring
-use memory_agents::MemoryAgents;
 use api::auth::AuthState;
 use api::routes::router;
+use memory_agents::MemoryAgents;
 use process_lock::ProcessLock;
 use storage::DbStore;
 
@@ -91,7 +91,6 @@ struct Harness {
     /// instead of implying that exact bytes were stored.
     archive: Option<Arc<archive::ArchiveStore>>,
 }
-
 
 static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 #[cfg(unix)]
@@ -272,13 +271,13 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::assets::{APP_JS_GZ, INDEX_GZ, STYLE_CSS_GZ};
+    use crate::api::auth::AuthKind;
+    use crate::api::stream::{heartbeat_due, STREAM_HEARTBEAT};
     use axum::body::Body;
     use axum::{http::StatusCode, response::Response, Router};
     use serde_json::Value;
     use std::time::Instant;
-    use crate::api::assets::{APP_JS_GZ, INDEX_GZ, STYLE_CSS_GZ};
-    use crate::api::stream::{heartbeat_due, STREAM_HEARTBEAT};
-    use crate::api::auth::AuthKind;
     use tower::ServiceExt;
     fn test_identity() -> Arc<RuntimeIdentity> {
         Arc::new(RuntimeIdentity::current().unwrap())
@@ -383,10 +382,8 @@ mod tests {
         }
     }
     fn archive_fixture() -> (std::path::PathBuf, Arc<archive::ArchiveStore>) {
-        let dir = std::env::temp_dir().join(format!(
-            "harness-routes-archive-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("harness-routes-archive-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let key = dir.join("current.key");
         std::fs::write(
@@ -910,21 +907,37 @@ mod tests {
             // A client that asks for nothing must never receive encoded bytes, and every
             // representation must advertise that the body varies by encoding so a shared cache
             // cannot hand gzip to a client that did not ask for it.
-            assert!(identity.headers().get(header::CONTENT_ENCODING).is_none(), "{uri}");
-            assert_eq!(identity.headers().get(header::VARY).unwrap(), "accept-encoding");
+            assert!(
+                identity.headers().get(header::CONTENT_ENCODING).is_none(),
+                "{uri}"
+            );
+            assert_eq!(
+                identity.headers().get(header::VARY).unwrap(),
+                "accept-encoding"
+            );
             let identity_etag = validator(&identity);
             assert!(!identity_etag.contains("-gzip"), "{uri}");
             let identity_bytes = asset_bytes(identity).await;
 
             let compressed = fetch_asset(&uri, Some("gzip, deflate, br"), None).await;
             assert_eq!(compressed.status(), StatusCode::OK, "{uri}");
-            assert_eq!(compressed.headers().get(header::CONTENT_ENCODING).unwrap(), "gzip");
-            assert_eq!(compressed.headers().get(header::VARY).unwrap(), "accept-encoding");
+            assert_eq!(
+                compressed.headers().get(header::CONTENT_ENCODING).unwrap(),
+                "gzip"
+            );
+            assert_eq!(
+                compressed.headers().get(header::VARY).unwrap(),
+                "accept-encoding"
+            );
             let gzip_etag = validator(&compressed);
             assert!(gzip_etag.ends_with("-gzip\""), "{uri}: {gzip_etag}");
             assert_ne!(gzip_etag, identity_etag, "{uri}");
             let gzip_bytes = asset_bytes(compressed).await;
-            assert_eq!(&gzip_bytes[..3], &[0x1f, 0x8b, 0x08], "{uri} is not a gzip member");
+            assert_eq!(
+                &gzip_bytes[..3],
+                &[0x1f, 0x8b, 0x08],
+                "{uri} is not a gzip member"
+            );
             assert!(
                 gzip_bytes.len() < identity_bytes.len(),
                 "{uri}: {} compressed vs {} identity",
@@ -972,7 +985,10 @@ mod tests {
             ("app.js", APP_JS_GZ),
             ("style.css", STYLE_CSS_GZ),
         ] {
-            assert!(bytes.len() > 18, "{name}.gz is empty; gzip was unavailable at build time");
+            assert!(
+                bytes.len() > 18,
+                "{name}.gz is empty; gzip was unavailable at build time"
+            );
         }
     }
     #[test]
@@ -983,7 +999,8 @@ mod tests {
         assert!(source.contains("const MAX_RENDERED_MESSAGES = 300, MAX_RENDERED_SESSIONS = 200;"));
         assert!(source.contains("function boundLog("));
         assert!(source.contains("boundLog(older);"));
-        assert!(source.contains("if ($('sessionlist').childNodes.length >= MAX_RENDERED_SESSIONS) break;"));
+        assert!(source
+            .contains("if ($('sessionlist').childNodes.length >= MAX_RENDERED_SESSIONS) break;"));
     }
     #[tokio::test]
     async fn configured_origin_is_allowed() {
@@ -1071,7 +1088,10 @@ mod tests {
         let first = app.clone().oneshot(cancel()).await.unwrap();
         assert_eq!(first.status(), StatusCode::OK);
         let receipt = body_json(first).await;
-        assert_eq!((receipt["state"].as_str(), receipt["error_code"].as_str()), (Some("interrupted"), Some("cancelled")));
+        assert_eq!(
+            (receipt["state"].as_str(), receipt["error_code"].as_str()),
+            (Some("interrupted"), Some("cancelled"))
+        );
         assert!(receipt["cancel_requested_at"].is_string());
         assert!(receipt["cancelled_at"].is_string());
         let replay = app.clone().oneshot(cancel()).await.unwrap();
@@ -1089,15 +1109,27 @@ mod tests {
         let store = DbStore::init(":memory:").unwrap();
         let app = app_with(store.clone());
         let (request, session) = (storage::uid(), storage::uid());
-        store.capture_chat(recording::CaptureInput {
-            request: request.clone(), session, scope: "global".into(), prompt: "stop later".into(),
-            model: "m".into(), signature: storage::uid(), redacted: false,
-        }).await.unwrap();
+        store
+            .capture_chat(recording::CaptureInput {
+                request: request.clone(),
+                session,
+                scope: "global".into(),
+                prompt: "stop later".into(),
+                model: "m".into(),
+                signature: storage::uid(),
+                redacted: false,
+            })
+            .await
+            .unwrap();
         store.claim_recording().await.unwrap().unwrap();
-        let response = app.oneshot(
-            authorized("POST", &format!("/chat/requests/{request}/cancel"))
-                .body(Body::empty()).unwrap(),
-        ).await.unwrap();
+        let response = app
+            .oneshot(
+                authorized("POST", &format!("/chat/requests/{request}/cancel"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::ACCEPTED);
         let receipt = body_json(response).await;
         assert_eq!(receipt["state"], json!("generating"));
@@ -1105,11 +1137,18 @@ mod tests {
         assert!(store.cancellation_requested(request.clone()).await.unwrap());
         assert!(store.finalize_cancellation(request.clone()).await.unwrap());
         let terminal = store.recording_receipt(request).await.unwrap().unwrap();
-        assert_eq!((terminal["state"].as_str(), terminal["error_code"].as_str()), (Some("interrupted"), Some("cancelled")));
+        assert_eq!(
+            (terminal["state"].as_str(), terminal["error_code"].as_str()),
+            (Some("interrupted"), Some("cancelled"))
+        );
     }
 
     async fn assert_cancelled_once(store: &DbStore, request: &str) -> Value {
-        let receipt = store.recording_receipt(request.into()).await.unwrap().unwrap();
+        let receipt = store
+            .recording_receipt(request.into())
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(receipt["state"], "interrupted");
         assert_eq!(receipt["error_code"], "cancelled");
         assert!(receipt["cancel_requested_at"].is_string());
@@ -1153,25 +1192,44 @@ mod tests {
         let (request, session) = (storage::uid(), storage::uid());
         capture_turn(&store, &request, &session, "stop before saving").await;
         store.claim_recording().await.unwrap().unwrap();
-        store.save_recording_context(request.clone(), json!({})).await.unwrap();
+        store
+            .save_recording_context(request.clone(), json!({}))
+            .await
+            .unwrap();
         // Deterministic ordering at the race boundary: the worker checked, then Stop committed.
         assert!(!store.cancellation_requested(request.clone()).await.unwrap());
-        let response = app_with(store.clone()).oneshot(
-            authorized("POST", &format!("/chat/requests/{request}/cancel"))
-                .body(Body::empty()).unwrap(),
-        ).await.unwrap();
+        let response = app_with(store.clone())
+            .oneshot(
+                authorized("POST", &format!("/chat/requests/{request}/cancel"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::ACCEPTED);
-        store.complete_recording(request.clone(), "must not be saved".into()).await.unwrap();
+        store
+            .complete_recording(request.clone(), "must not be saved".into())
+            .await
+            .unwrap();
         let terminal = assert_cancelled_once(&store, &request).await;
         assert!(!store.finalize_cancellation(request.clone()).await.unwrap());
-        store.fail_recording(request.clone(), "answer_save_failed").await.unwrap();
+        store
+            .fail_recording(request.clone(), "answer_save_failed")
+            .await
+            .unwrap();
         assert_eq!(assert_cancelled_once(&store, &request).await, terminal);
         assert!(store.claim_recording().await.unwrap().is_none());
     }
 
     #[tokio::test]
     async fn cancellation_committed_after_worker_check_wins_over_every_failure() {
-        for code in ["context_failed", "provider_failed", "generation_stream_save_failed", "answer_save_failed", "worker_failed"] {
+        for code in [
+            "context_failed",
+            "provider_failed",
+            "generation_stream_save_failed",
+            "answer_save_failed",
+            "worker_failed",
+        ] {
             let store = DbStore::init(":memory:").unwrap();
             let (request, session) = (storage::uid(), storage::uid());
             capture_turn(&store, &request, &session, "stop before failure").await;
@@ -1193,18 +1251,42 @@ mod tests {
             capture_turn(&store, &request, &session, "finish first").await;
             store.claim_recording().await.unwrap().unwrap();
             if complete {
-                store.save_recording_context(request.clone(), json!({})).await.unwrap();
-                store.complete_recording(request.clone(), "saved answer".into()).await.unwrap();
+                store
+                    .save_recording_context(request.clone(), json!({}))
+                    .await
+                    .unwrap();
+                store
+                    .complete_recording(request.clone(), "saved answer".into())
+                    .await
+                    .unwrap();
             } else {
-                store.fail_recording(request.clone(), "provider_failed").await.unwrap();
+                store
+                    .fail_recording(request.clone(), "provider_failed")
+                    .await
+                    .unwrap();
             }
-            let terminal = store.recording_receipt(request.clone()).await.unwrap().unwrap();
-            let response = app_with(store.clone()).oneshot(
-                authorized("POST", &format!("/chat/requests/{request}/cancel"))
-                    .body(Body::empty()).unwrap(),
-            ).await.unwrap();
+            let terminal = store
+                .recording_receipt(request.clone())
+                .await
+                .unwrap()
+                .unwrap();
+            let response = app_with(store.clone())
+                .oneshot(
+                    authorized("POST", &format!("/chat/requests/{request}/cancel"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
             assert_eq!(response.status(), StatusCode::CONFLICT);
-            assert_eq!(store.recording_receipt(request.clone()).await.unwrap().unwrap(), terminal);
+            assert_eq!(
+                store
+                    .recording_receipt(request.clone())
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                terminal
+            );
             assert!(!store.cancellation_requested(request).await.unwrap());
         }
     }
@@ -1218,16 +1300,31 @@ mod tests {
         let (request, session) = (storage::uid(), storage::uid());
         capture_turn(&store, &request, &session, "cancel before restart").await;
         store.claim_recording().await.unwrap().unwrap();
-        let step = store.begin_step(agent_loop::NewStep {
-            request: request.clone(), session: session.clone(), kind: "tool_call",
-            tool_name: Some("write".into()), tool_call_id: Some(storage::uid()),
-            input: json!({}), event: "tool_started", payload: json!({}),
-        }).await.unwrap();
-        let accepted = store.request_cancellation(request.clone()).await.unwrap().unwrap();
+        let step = store
+            .begin_step(agent_loop::NewStep {
+                request: request.clone(),
+                session: session.clone(),
+                kind: "tool_call",
+                tool_name: Some("write".into()),
+                tool_call_id: Some(storage::uid()),
+                input: json!({}),
+                event: "tool_started",
+                payload: json!({}),
+            })
+            .await
+            .unwrap();
+        let accepted = store
+            .request_cancellation(request.clone())
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(accepted["state"], "generating");
         let other = storage::uid();
         capture_turn(&store, &other, &storage::uid(), "ordinary restart").await;
-        assert_eq!(store.claim_recording().await.unwrap().unwrap().request, other);
+        assert_eq!(
+            store.claim_recording().await.unwrap().unwrap().request,
+            other
+        );
         let queued = storage::uid();
         capture_turn(&store, &queued, &storage::uid(), "still queued").await;
         drop(store);
@@ -1235,30 +1332,57 @@ mod tests {
         for _ in 0..2 {
             let store = DbStore::init(path.to_str().unwrap()).unwrap();
             let terminal = assert_cancelled_once(&store, &request).await;
-            assert_eq!(terminal["cancel_requested_at"], accepted["cancel_requested_at"]);
-            if let Some(first) = &first_terminal { assert_eq!(&terminal, first); }
+            assert_eq!(
+                terminal["cancel_requested_at"],
+                accepted["cancel_requested_at"]
+            );
+            if let Some(first) = &first_terminal {
+                assert_eq!(&terminal, first);
+            }
             first_terminal = Some(terminal);
-            let response = app_with(store.clone()).oneshot(
-                authorized("POST", &format!("/chat/requests/{request}/cancel"))
-                    .body(Body::empty()).unwrap(),
-            ).await.unwrap();
+            let response = app_with(store.clone())
+                .oneshot(
+                    authorized("POST", &format!("/chat/requests/{request}/cancel"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
             assert_eq!(response.status(), StatusCode::OK);
             let step = step.clone();
-            store.run(move |c| {
-                let state: (String, Option<String>) = c.query_row(
-                    "SELECT status,error_code FROM turn_steps WHERE id=?1", [step],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )?;
-                assert_eq!(state, ("interrupted".into(), Some("cancelled".into())));
-                Ok(())
-            }).await.unwrap();
-            let restarted = store.recording_receipt(other.clone()).await.unwrap().unwrap();
+            store
+                .run(move |c| {
+                    let state: (String, Option<String>) = c.query_row(
+                        "SELECT status,error_code FROM turn_steps WHERE id=?1",
+                        [step],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )?;
+                    assert_eq!(state, ("interrupted".into(), Some("cancelled".into())));
+                    Ok(())
+                })
+                .await
+                .unwrap();
+            let restarted = store
+                .recording_receipt(other.clone())
+                .await
+                .unwrap()
+                .unwrap();
             assert_eq!(restarted["state"], "interrupted");
             assert_eq!(restarted["error_code"], "process_restarted");
-            assert_eq!(store.recording_receipt(queued.clone()).await.unwrap().unwrap()["state"], "captured");
+            assert_eq!(
+                store
+                    .recording_receipt(queued.clone())
+                    .await
+                    .unwrap()
+                    .unwrap()["state"],
+                "captured"
+            );
         }
         let store = DbStore::init(path.to_str().unwrap()).unwrap();
-        assert_eq!(store.claim_recording().await.unwrap().unwrap().request, queued);
+        assert_eq!(
+            store.claim_recording().await.unwrap().unwrap().request,
+            queued
+        );
         assert!(store.claim_recording().await.unwrap().is_none());
         drop(store);
         std::fs::remove_dir_all(dir).unwrap();
@@ -1368,7 +1492,10 @@ mod tests {
             })
             .await
             .unwrap();
-        assert!(boundary.is_some(), "a completed non-mutating step must be a safe boundary");
+        assert!(
+            boundary.is_some(),
+            "a completed non-mutating step must be a safe boundary"
+        );
         assert_eq!(retried_by.as_deref(), Some(retry_id.as_str()));
         assert_eq!(lineage.as_deref(), Some(request.as_str()));
     }
@@ -1490,7 +1617,6 @@ mod tests {
         assert_eq!(second.status(), StatusCode::ACCEPTED);
         assert_eq!(body_json(second).await["request_id"], json!(first_id));
     }
-
 
     #[tokio::test]
     async fn scopes_are_absent_until_configured_then_read_back_canonicalized() {
