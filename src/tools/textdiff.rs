@@ -302,7 +302,7 @@ mod tests {
     /// The guard that matters: a file whose recorded lines moved on must not be "restored" from a
     /// stale diff. Drift *outside* every hunk is invisible here by construction — a diff carries no
     /// claim about lines it never touched — so the caller proves the whole file by hash on both
-    /// sides before and after rebuilding. `restore_change` in src/main.rs does exactly that.
+    /// sides before and after rebuilding. `restore_change` in src/api/routes.rs does exactly that.
     #[test]
     fn reverse_refuses_content_the_recorded_changes_did_not_produce() {
         let d = unified("f", "a\nb\nc\n", "a\nB\nc\n");

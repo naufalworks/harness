@@ -5,4 +5,5 @@
 pub(crate) mod assets;
 pub(crate) mod auth;
 pub(crate) mod error;
+pub(crate) mod routes;
 pub(crate) mod stream;
