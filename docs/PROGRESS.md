@@ -1,5 +1,27 @@
 # PROGRESS — journal
 
+## 2026-09-14T18:52:00Z · P12-T02 — integrated, pushed and promoted; the gate caught the live binary trailing HEAD
+
+The decomposition existed only on `p12-t02-decompose` until now: `main` was still at `99e3972`
+and `git branch --merged main` listed nothing else, so the nine seams, the ledger flip and the
+rewritten AGENTS.md path table were not integration evidence yet. Integration was a clean
+fast-forward `99e3972..b9e9b9c` (0 commits behind, no conflicts), then `origin/main` was updated.
+
+The first strict gate run after integration reported `1 failing check(s)`:
+`deployment: live 99e3972 trails HEAD b9e9b9c and code differs`. That is the gate working as
+designed — everything else passed (native, contracts, property/fuzz, release artifact and
+reproducibility, HTTP, mocked-browser, and the real browser-to-server E2E including the denial,
+crash-recovery, cancellation/retry and unsafe-retry refusal paths), but a merged refactor that
+is not the running binary is not a deployed refactor. `scripts/deploy.sh` promoted `b9e9b9c`
+(pid 413812, release sha256 `8d6e611b`, schema 10, readiness verified, authenticated API
+answering, non-object body refused with 400) after backing up the previous executable, and the
+re-run gate reported `0 failing check(s)` with `deployment: live binary matches HEAD (b9e9b9c)`.
+
+Unchanged and still open: the environment SKIPs (coverage, signing, cross-target, public HTTPS
+smoke) remain CI-only on this offline host, and the two standing WARNs for the P17-T04/T05
+verify commands stay until those tasks build their scripts. Next eligible work is P12-T03
+(typed API and database contracts, `parallel: no`); P12-T01b remains optional.
+
 ## 2026-09-14T18:40:00Z · P12-T02 — nine seams, and the line-multiset check that made them boring
 
 P12-T02 is done. Storage, the browser tool and the LSP tool were each cut along the boundaries
