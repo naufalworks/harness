@@ -10,7 +10,13 @@ sys.path.insert(0,str(ROOT/'scripts'))
 from backup import backup
 from migrate_legacy import migrate
 MIGRATIONS=['001_core.sql','002_recording.sql','003_agentic.sql','004_memory_kinds.sql']
-RUST=(ROOT/'src/storage.rs').read_text()
+# P12-T02: the storage module was split into src/storage.rs plus src/storage/*.rs, so
+# the shipped SQL now lives across those files. The submodules hold the implementation
+# statements and src/storage.rs keeps its `mod tests` fixtures, some of which share a
+# prefix with the real ones; before the split the implementation simply appeared earlier
+# in the single file. Read the submodules first so first-match still picks implementation
+# SQL over test fixtures, and sort them for determinism.
+RUST='\n'.join([p.read_text() for p in sorted((ROOT/'src/storage').glob('*.rs'))]+[(ROOT/'src/storage.rs').read_text()])
 def sql_start(prefix):
     for raw in re.findall(r'(?:tx|c)\.execute\("((?:[^"\\]|\\.)*)"',RUST):
         sql=json.loads('"'+raw+'"')
