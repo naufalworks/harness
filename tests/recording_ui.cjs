@@ -59,7 +59,12 @@ const root=path.resolve(__dirname,'..'), out=path.join(root,'docs/qa');fs.mkdirS
   const shot=async(name)=>{
    assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),name+' overflow');
    await page.screenshot({path:path.join(out,name+'.png'),fullPage:true});
-   let snapshot=await page.evaluate(()=>{ const copy=document.documentElement.cloneNode(true); for(const input of document.querySelectorAll('textarea')) copy.querySelector('#'+input.id).textContent=input.value; return '<!doctype html>'+copy.outerHTML; });snapshot=snapshot.replace(/<script[^>]*>[\s\S]*?<\/script>/g,'').replace('<link rel="stylesheet" href="/style.css">','<style>'+fs.readFileSync(path.join(root,'static/style.css'),'utf8')+'</style>');
+   // P11-T05: the stylesheet href now carries a `?v=<commit>` fingerprint, so inline the sheet
+   // by pattern instead of by one literal URL; a missed replacement would silently unstyle the snapshot.
+   let snapshot=await page.evaluate(()=>{ const copy=document.documentElement.cloneNode(true); for(const input of document.querySelectorAll('textarea')) copy.querySelector('#'+input.id).textContent=input.value; return '<!doctype html>'+copy.outerHTML; });
+   const sheet=/<link rel="stylesheet" href="\/style\.css(\?[^"]*)?">/;
+   assert(sheet.test(snapshot),name+' stylesheet link not found');
+   snapshot=snapshot.replace(/<script[^>]*>[\s\S]*?<\/script>/g,'').replace(sheet,'<style>'+fs.readFileSync(path.join(root,'static/style.css'),'utf8')+'</style>');
    if(name.includes('dark'))snapshot=snapshot.replace('@media(prefers-color-scheme:dark)','@media all');
    fs.writeFileSync(path.join(out,name+'.html'),snapshot);
   };

@@ -77,6 +77,20 @@ async function showReceipt(id, content, button) {
   } catch (error) { if (token && myEpoch === epoch) content.replaceChildren(node('p', `Could not load receipt. ${error.message}`, 'muted')); }
   finally { button.disabled = false; }
 }
+// P11-T05: a long-lived tab must not grow without bound. The visible log keeps at most
+// MAX_RENDERED_MESSAGES nodes and the sidebar at most MAX_RENDERED_SESSIONS entries. Nothing is
+// lost by trimming: the server remains the source of truth and "Load older messages" re-fetches
+// anything dropped, so this bounds DOM size and layout cost, never history.
+const MAX_RENDERED_MESSAGES = 300, MAX_RENDERED_SESSIONS = 200;
+function boundLog(prepended = false) {
+  const log = $('log');
+  let extra = log.childNodes.length - MAX_RENDERED_MESSAGES;
+  if (extra <= 0) return;
+  // Trim the end the reader is moving away from: paging upwards drops the far bottom,
+  // newer arrivals drop the oldest nodes at the top.
+  while (extra-- > 0 && log.childNodes.length) log.removeChild(prepended ? log.lastChild : log.firstChild);
+  if (!prepended && historyCursor) $('oldermessages').hidden = false;
+}
 function message(m, target = $('log')) {
   const box = node('article', undefined, `message ${m.role === 'user' ? 'user' : 'assistant'}`);
   box.append(node('strong', m.role === 'user' ? 'You' : 'Harness'), node('span', m.content));
@@ -137,6 +151,8 @@ async function loadHistory(older = false) {
   else { $('log').replaceChildren(fragment); $('chatscroll').scrollTop = $('chatscroll').scrollHeight; }
   if (!data.messages.length && !older) $('log').append(node('p', 'Say hi to get started. Harness keeps up with the conversation and remembers what matters.', 'empty'));
   historyCursor = data.next_before_seq; $('oldermessages').hidden = !data.has_more;
+  // Bound the rendered log after the cursor is known, so trimming can re-expose "Load older".
+  boundLog(older);
   if (!older) {
     const last = [...data.messages].reverse().find(m => m.role === 'user');
     captureLabel(last ? stateLabels[last.generation_state] || '' : '');
@@ -150,6 +166,7 @@ async function loadSessions(older = false) {
   if (!token || myEpoch !== epoch) return;
   if (!older) $('sessionlist').replaceChildren();
   for (const item of data.sessions) {
+    if ($('sessionlist').childNodes.length >= MAX_RENDERED_SESSIONS) break;
     const button = node('button', undefined, 'session-entry secondary'); button.type = 'button';
     button.append(node('strong', item.title), node('span', `${item.scope} · ${item.message_count} messages`, 'muted'));
     button.addEventListener('click', async () => {
@@ -469,7 +486,7 @@ for (const tab of document.querySelectorAll('[data-view]')) tab.addEventListener
   for (const t of document.querySelectorAll('[data-view]')) { const active = t === tab; t.classList.toggle('active', active); t.setAttribute('aria-pressed', String(active)); $(`view-${t.dataset.view}`).hidden = !active; }
   try { if (tab.dataset.view === 'memory') await loadCandidates(); if (tab.dataset.view === 'imports') await loadJobs(); if (tab.dataset.view === 'settings') { const data = await api('/config'); $('mainmodel').value = data.main || ''; $('extractmodel').value = data.extraction || ''; $('verificationmodel').value = data.verification || ''; } } catch (error) { notice(error.message, true); }
 });
-setInterval(() => { if (token && !document.hidden) { refreshStatus().catch(() => {}); refreshInlineSuggestions().catch(() => {}); } }, 5000);
+// P11-T05: the two always-on clocks are now one tick, installed at the end of this file.
 
 // P1-T13: the agent activity view reads the recorded rows; the durable receipt remains the
 // source of truth, while these read-only endpoints make the current turn visible between model
@@ -830,13 +847,39 @@ async function decideAgentPermission(decision) {
 $('permission-approve').addEventListener('click', () => decideAgentPermission('approve'));
 $('permission-deny').addEventListener('click', () => decideAgentPermission('deny'));
 
-// The turn's own clock. While the stream is live this only re-renders the running step's
-// elapsed time from rows already fetched; with no stream it is the P1-T13 poll, unchanged.
-setInterval(() => {
-  if (!token || !pending || document.hidden) return;
-  if (activityStream.live) { if (agentState.steps.length) renderAgentSteps(agentState.steps); }
-  else refreshAgentTurn().catch(() => {});
-}, 1000);
+// P11-T05: one clock for the whole tab. Before this there were two unconditional timers (1 s
+// for the running turn, 5 s for status and inline suggestions) that kept firing while the tab
+// was hidden and only then checked `document.hidden`, so a backgrounded tab still woke the
+// event loop twice a second forever. Now a hidden tab runs no timer at all: it is stopped on
+// `visibilitychange`, and becoming visible does one immediate catch-up tick before restarting.
+// The work itself is unchanged — while the stream is live the turn only re-renders elapsed time
+// from rows already fetched; with no stream it is still the P1-T13 poll — so this changes when
+// idle work runs, never what it reads or displays.
+const idleClock = { timer: null, ticks: 0 };
+const IDLE_TICK_MS = 1000, STATUS_EVERY_TICKS = 5;
+function idleTick() {
+  if (!token) return;
+  idleClock.ticks++;
+  if (pending) {
+    if (activityStream.live) { if (agentState.steps.length) renderAgentSteps(agentState.steps); }
+    else refreshAgentTurn().catch(() => {});
+  }
+  if (idleClock.ticks % STATUS_EVERY_TICKS === 0) { refreshStatus().catch(() => {}); refreshInlineSuggestions().catch(() => {}); }
+}
+function startIdleClock() {
+  if (idleClock.timer || document.hidden) return;
+  idleClock.timer = setInterval(idleTick, IDLE_TICK_MS);
+}
+function stopIdleClock() {
+  if (!idleClock.timer) return;
+  clearInterval(idleClock.timer); idleClock.timer = null;
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { stopIdleClock(); return; }
+  // Coming back visible: re-read once immediately so the view is not a tick behind.
+  idleClock.ticks = STATUS_EVERY_TICKS - 1; idleTick(); startIdleClock();
+});
+startIdleClock();
 
 function fillProjectSettings(data) {
   $('rootpath').value = data.root_path || '';

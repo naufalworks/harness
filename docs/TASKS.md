@@ -655,7 +655,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - note (2026-09-14, done): Added append-only migration 010 (user_version 10) with disabled-by-default `retention_policies`, `maintenance_runs` evidence and `generation_events.compacted_chunks`; storage now exposes retention policy config, finished-turn chunk compaction, WAL checkpoint/optimize/analyze/incremental-vacuum with readiness reporting, plus `scripts/maintenance.py --check`. Receipts, provenance and live turns are never deleted. Verified: `python3 tests/test_migrations.py` (001 -> 010) + `cargo test --locked retention` 3 passed / 0 failed, `scripts/verify_local.sh` exit 0, strict `scripts/verify_release.sh` exit 0.
 
 ### P11-T05 · Optimize frontend delivery and idle work
-- status: todo
+- status: done
 - priority: medium
 - lane: frontend-performance
 - parallel: yes
@@ -664,6 +664,20 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - files: static/*, src/main.rs, tests/ui_smoke.cjs
 - done-when: redundant timers stop, hidden tabs pause nonessential work, long views are bounded/virtualized, assets are compressed/fingerprinted, and optional panels load without enlarging the initial path.
 - verify: node --check static/app.js && scripts/verify_browser.sh
+- note (2026-09-14, done): Replaced the two always-on timers (1 s turn clock, 5 s status/suggestions) with one visibility-aware clock: a hidden tab now runs no timer at all and does one immediate catch-up tick when it becomes visible again. Long views are bounded (at most 300 rendered messages and 200 session entries; trimming only drops rendered nodes and re-exposes "Load older messages", never history). Assets are fingerprinted: `index.html` requests `/app.js?v=<commit>` and `/style.css?v=<commit>`, those two are served `public, max-age=31536000, immutable` with a build-scoped ETag and answer `If-None-Match` with 304 and no body, while `/` is `no-cache` so a cached document can never point at a retired build, and every other route keeps `no-store`. Verified: exact gate `node --check static/app.js && scripts/verify_browser.sh` exit 0 (44 browser checks), `cargo test --locked` new asset/frontend tests passed, `scripts/verify_local.sh` exit 0, strict `scripts/verify_release.sh` exit 0.
+- note (2026-09-14, gap): Response compression is NOT done and is tracked as P11-T06. gzip/brotli needs a new dependency (`flate2`/`async-compression`/`tower-http` compression feature) and no such crate is present in Cargo.lock or the local registry cache, so it cannot be added or tested offline. No optional panel work was needed: the initial path already loads one script and one stylesheet.
+
+### P11-T06 · Serve compressed static responses
+- status: todo
+- priority: low
+- lane: frontend-performance
+- parallel: yes
+- depends: P11-T05
+- design: docs/ROADMAP.md#p11-runtime-and-storage-performance
+- files: Cargo.toml, src/main.rs, tests/ui_smoke.cjs
+- done-when: text assets and JSON responses negotiate gzip (and optionally brotli) from `Accept-Encoding`, identity stays correct for clients that do not ask, ETag/304 behaviour from P11-T05 still holds per encoding, and the dependency is pinned in Cargo.lock.
+- verify: cargo test --locked compression && node --check static/app.js
+- note (2026-09-14, blocked): Needs network access once to vendor the compression crate; everything else is local.
 
 ## P12 · Maintainability, API, CI, and releases
 

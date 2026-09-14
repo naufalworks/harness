@@ -1,5 +1,22 @@
 # PROGRESS — journal
 
+## 2026-09-14T07:10:00Z · P11-T05 — frontend delivery and idle work verified; task complete
+
+- Idle work: the two always-on timers (1 s turn clock, 5 s status/inline-suggestions) are now a single `idleClock`. A hidden tab runs no timer at all — the clock is stopped on `visibilitychange` and, on becoming visible, does one immediate catch-up tick before restarting. The work each tick performs is unchanged, so this changes when idle work runs, never what it reads or renders.
+- Bounded views: at most 300 rendered messages and 200 session entries. Trimming removes rendered nodes only and re-exposes "Load older messages"; the server stays the source of truth, so no history is lost.
+- Delivery: `index.html` now requests `/app.js?v=<commit>` and `/style.css?v=<commit>`. Those two are served `public, max-age=31536000, immutable` with a build-scoped ETag and answer a matching `If-None-Match` with `304` and an empty body; `/` is `no-cache` so a cached document can never point at a retired build and trip the "Stale UI detected" guard. The `no-store` middleware now only fills in a missing `Cache-Control`, so every API response is still uncacheable — asserted by a new test.
+- New tests in `src/main.rs`: `fingerprinted_assets_are_cacheable_and_revalidate_without_a_body`, `api_responses_are_still_never_stored`, `frontend_runs_one_visibility_aware_clock`, `frontend_bounds_long_lists`. `tests/recording_ui.cjs` now matches the stylesheet link by regex so the `?v=` fingerprint cannot silently skip its snapshot rewrite.
+- Verified (exact `verify:`): `node --check static/app.js && scripts/verify_browser.sh` exit 0 (20 + 24 browser checks, no JavaScript exceptions). Then `scripts/verify_local.sh` exit 0 and strict `scripts/verify_release.sh` exit 0 (rust-tests, rust-clippy, rust-build, python-contracts, integration-smoke, recording-integration, javascript-syntax, mocked-browser, local-contract, real-browser-to-server).
+- Gap, not a pass: response compression (gzip/brotli) is NOT implemented. It needs a crate that is absent from `Cargo.lock` and the local registry cache, and the sandbox cannot fetch it, so it is tracked as new task P11-T06 rather than claimed. No optional-panel work was needed — the initial path is already one script and one stylesheet.
+- Status: P11-T05 `doing` -> `done`. Deployment recorded separately below.
+
+## 2026-09-14T07:00:00Z · P11-T05 — frontend delivery and idle work started
+
+- Baseline: `main` clean at `e52d0c9`, nothing unpushed, P11-T04 deployed (schema 10, readiness verified). `depends: P11-T01` is `done`, so P11-T05 is the highest-priority eligible task.
+- Status: P11-T05 `todo` -> `doing`.
+- Plan: consolidate the remaining unconditional 5s/idle timers behind visibility-aware scheduling, bound long conversation/session lists, serve `/app.js`, `/style.css` and `/index.html` with compression plus fingerprinted immutable caching and ETag/304 revalidation, and load optional panels only when first opened. UI contracts in `tests/ui_smoke.cjs` and `tests/recording_ui.cjs` must keep passing unchanged.
+- Verification target (exact): `node --check static/app.js && scripts/verify_browser.sh`, then `scripts/verify_local.sh` and strict `scripts/verify_release.sh` before any commit or deploy.
+
 ## 2026-09-14T06:55:30Z · P11-T04 — deployed to the harness unit
 
 - Pushed `184ddbf` to `origin main` (`34fe779..184ddbf`), then ran `scripts/deploy.sh` on the committed tree.

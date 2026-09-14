@@ -392,7 +392,12 @@ async fn create_browser_session(State(h): State<Harness>, headers: HeaderMap) ->
 async fn headers(State(state): State<Harness>, request: Request, next: Next) -> Response {
     let mut response = next.run(request).await;
     let h = response.headers_mut();
-    h.insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+    // P11-T05: a handler that already chose a caching policy keeps it; every other response
+    // stays uncacheable. Only the fingerprinted static assets opt out of `no-store`, so no API
+    // payload or receipt can be stored by a proxy because of this change.
+    if !h.contains_key(header::CACHE_CONTROL) {
+        h.insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+    }
     h.insert("x-content-type-options", "nosniff".parse().unwrap());
     h.insert("referrer-policy", "no-referrer".parse().unwrap());
     h.insert("content-security-policy","default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'".parse().unwrap());
@@ -404,22 +409,69 @@ async fn headers(State(state): State<Harness>, request: Request, next: Next) -> 
     }
     response
 }
-async fn index() -> impl IntoResponse {
+// P11-T05: the static assets are compiled into this binary, so the build commit identifies
+// their bytes exactly and is a sound strong validator. `index.html` requests `/app.js` and
+// `/style.css` with a `?v=<commit>` fingerprint, which is why those two may be cached
+// immutably: a new build changes the URL. The document itself must revalidate on every load,
+// otherwise a cached page would keep pointing at a retired build and trip "Stale UI detected".
+const ASSET_IMMUTABLE: &str = "public, max-age=31536000, immutable";
+const ASSET_REVALIDATE: &str = "no-cache";
+fn asset(
+    request_headers: &HeaderMap,
+    content_type: &'static str,
+    cache_control: &'static str,
+    name: &str,
+    body: String,
+) -> Response {
+    let etag = format!("\"{BUILD_COMMIT}-{name}\"");
+    // A conditional request may send several validators, and a proxy may weaken them.
+    let unchanged = request_headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value
+                .split(',')
+                .any(|candidate| candidate.trim().trim_start_matches("W/") == etag)
+        });
+    let validators = [
+        (header::CACHE_CONTROL, cache_control.to_string()),
+        (header::ETAG, etag),
+    ];
+    if unchanged {
+        return (StatusCode::NOT_MODIFIED, validators).into_response();
+    }
     (
-        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
-        include_str!("../static/index.html"),
+        validators,
+        [(header::CONTENT_TYPE, content_type)],
+        body,
+    )
+        .into_response()
+}
+async fn index(request_headers: HeaderMap) -> Response {
+    asset(
+        &request_headers,
+        "text/html; charset=utf-8",
+        ASSET_REVALIDATE,
+        "index.html",
+        include_str!("../static/index.html").replace("__HARNESS_BUILD_COMMIT__", BUILD_COMMIT),
     )
 }
-async fn js() -> impl IntoResponse {
-    (
-        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+async fn js(request_headers: HeaderMap) -> Response {
+    asset(
+        &request_headers,
+        "text/javascript; charset=utf-8",
+        ASSET_IMMUTABLE,
+        "app.js",
         include_str!("../static/app.js").replace("__HARNESS_BUILD_COMMIT__", BUILD_COMMIT),
     )
 }
-async fn css() -> impl IntoResponse {
-    (
-        [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
-        include_str!("../static/style.css"),
+async fn css(request_headers: HeaderMap) -> Response {
+    asset(
+        &request_headers,
+        "text/css; charset=utf-8",
+        ASSET_IMMUTABLE,
+        "style.css",
+        include_str!("../static/style.css").to_string(),
     )
 }
 
@@ -1865,6 +1917,141 @@ mod tests {
         assert!(script.contains(BUILD_COMMIT));
         assert!(!script.contains("__HARNESS_BUILD_COMMIT__"));
         assert!(script.contains("Stale UI detected"));
+    }
+    // P11-T05: delivery evidence. The document must revalidate, the fingerprinted assets must
+    // be cacheable and answer a matching validator with 304 and no body, and nothing else may
+    // lose `no-store` because the middleware now defers to the handler.
+    #[tokio::test]
+    async fn fingerprinted_assets_are_cacheable_and_revalidate_without_a_body() {
+        let document = app()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(document.status(), StatusCode::OK);
+        assert_eq!(
+            document.headers().get(header::CACHE_CONTROL).unwrap(),
+            "no-cache"
+        );
+        let html = String::from_utf8(
+            axum::body::to_bytes(document.into_body(), 1024 * 1024)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(html.contains(&format!("/app.js?v={BUILD_COMMIT}")));
+        assert!(html.contains(&format!("/style.css?v={BUILD_COMMIT}")));
+        assert!(!html.contains("__HARNESS_BUILD_COMMIT__"));
+
+        for (uri, expected_type) in [
+            (
+                format!("/app.js?v={BUILD_COMMIT}"),
+                "text/javascript; charset=utf-8",
+            ),
+            (
+                format!("/style.css?v={BUILD_COMMIT}"),
+                "text/css; charset=utf-8",
+            ),
+        ] {
+            let first = app()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri(&uri)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(first.status(), StatusCode::OK);
+            assert_eq!(
+                first.headers().get(header::CONTENT_TYPE).unwrap(),
+                expected_type
+            );
+            assert_eq!(
+                first.headers().get(header::CACHE_CONTROL).unwrap(),
+                "public, max-age=31536000, immutable"
+            );
+            let etag = first
+                .headers()
+                .get(header::ETAG)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_string();
+            assert!(etag.contains(BUILD_COMMIT));
+
+            let cached = app()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri(&uri)
+                        .header(header::IF_NONE_MATCH, format!("W/{etag}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(cached.status(), StatusCode::NOT_MODIFIED);
+            assert_eq!(cached.headers().get(header::ETAG).unwrap(), etag.as_str());
+            let body = axum::body::to_bytes(cached.into_body(), 1024 * 1024)
+                .await
+                .unwrap();
+            assert!(body.is_empty());
+
+            let stale = app()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri(&uri)
+                        .header(header::IF_NONE_MATCH, "\"some-other-build\"")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(stale.status(), StatusCode::OK);
+        }
+    }
+    #[tokio::test]
+    async fn api_responses_are_still_never_stored() {
+        let response = app()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/health")
+                    .header("Authorization", format!("Bearer {}", "x".repeat(32)))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL).unwrap(),
+            "no-store"
+        );
+    }
+    // P11-T05: the idle clock must stay consolidated and visibility-aware. A reintroduced
+    // always-on timer is exactly the regression this task removed, so assert the shape.
+    #[test]
+    fn frontend_runs_one_visibility_aware_clock() {
+        let source = include_str!("../static/app.js");
+        assert_eq!(source.matches("setInterval(").count(), 1);
+        assert!(source.contains("function stopIdleClock()"));
+        assert!(source.contains("if (document.hidden) { stopIdleClock(); return; }"));
+        assert!(source.contains("if (idleClock.timer || document.hidden) return;"));
+    }
+    // P11-T05: long views must stay bounded so a tab left open for days cannot grow the DOM
+    // without limit.
+    #[test]
+    fn frontend_bounds_long_lists() {
+        let source = include_str!("../static/app.js");
+        assert!(source.contains("const MAX_RENDERED_MESSAGES = 300, MAX_RENDERED_SESSIONS = 200;"));
+        assert!(source.contains("function boundLog("));
+        assert!(source.contains("boundLog(older);"));
+        assert!(source.contains("if ($('sessionlist').childNodes.length >= MAX_RENDERED_SESSIONS) break;"));
     }
     #[tokio::test]
     async fn configured_origin_is_allowed() {
