@@ -24,6 +24,7 @@ pub fn uid() -> String {
 #[derive(Clone)]
 pub struct DbStore {
     conn: Arc<Mutex<Connection>>,
+    read_conns: Arc<Mutex<VecDeque<Connection>>>,
     pub commit_notify: tokio::sync::broadcast::Sender<()>,
     permits: Arc<Semaphore>,
 }
@@ -510,8 +511,20 @@ impl DbStore {
             let _ = notify.send(());
             false
         }));
+        let mut readers: VecDeque<Connection> = VecDeque::new();
+        if path != ":memory:" {
+            for _ in 0..4 {
+                let reader = Connection::open(path)?;
+                reader.busy_timeout(std::time::Duration::from_secs(5))?;
+                reader.execute_batch(
+                    "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;",
+                )?;
+                readers.push_back(reader);
+            }
+        }
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
+            read_conns: Arc::new(Mutex::new(readers)),
             commit_notify,
             permits: Arc::new(Semaphore::new(32)),
         })
@@ -533,6 +546,40 @@ impl DbStore {
                 .lock()
                 .map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
             f(&mut conn)
+        })
+        .await?
+    }
+    /// Execute bounded read projections on dedicated read-only connections.
+    pub async fn read<T, F>(&self, f: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&Connection) -> Result<T> + Send + 'static,
+    {
+        let permit = self
+            .permits
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| anyhow::anyhow!("database queue full"))?;
+        let pool = self.read_conns.clone();
+        let writer = self.conn.clone();
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            let conn = pool
+                .lock()
+                .map_err(|_| anyhow::anyhow!("database read pool lock poisoned"))?
+                .pop_front();
+            if let Some(conn) = conn {
+                let result = f(&conn);
+                pool.lock()
+                    .map_err(|_| anyhow::anyhow!("database read pool lock poisoned"))?
+                    .push_back(conn);
+                result
+            } else {
+                let conn = writer
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
+                f(&conn)
+            }
         })
         .await?
     }
