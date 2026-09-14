@@ -1,10 +1,6 @@
 use anyhow::{bail, Result};
-use axum::{
-    http::{header, StatusCode},
-    response::Response,
-    Router,
-};
-use serde_json::{json, Value};
+use axum::http::header;
+use serde_json::json;
 use std::{
     env,
     fmt::Write as _,
@@ -13,7 +9,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
 use tokio::sync::Semaphore;
 mod agent_loop; // P1-T10 agentic turn loop: steps, tools, activity events, budgets
@@ -264,6 +260,9 @@ async fn main() -> Result<()> {
 mod tests {
     use super::*;
     use axum::body::Body;
+    use axum::{http::StatusCode, response::Response, Router};
+    use serde_json::Value;
+    use std::time::Instant;
     use crate::api::assets::{APP_JS_GZ, INDEX_GZ, STYLE_CSS_GZ};
     use crate::api::stream::{heartbeat_due, STREAM_HEARTBEAT};
     use crate::api::auth::AuthKind;

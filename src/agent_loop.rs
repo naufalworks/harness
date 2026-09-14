@@ -10,7 +10,7 @@
 use crate::{
     memory_agents::{self, GenerationSink, MemoryAgents, ModelTurn, ToolCall},
     safety,
-    storage::{uid, DbStore, ScopeConfig},
+    storage::{DbStore, ScopeConfig},
     subagent,
     tools::{Artifact, PermissionMode, Registry, ToolResult, ToolStatus, MAX_OUTPUT},
 };
@@ -1090,7 +1090,7 @@ Send another message to continue from here, or raise the budget for this scope f
 mod tests {
     use super::*;
     use crate::recording::{self, Admission, CaptureInput, Generation};
-    use crate::storage::ScopePatch;
+    use crate::storage::{uid, ScopePatch};
     use std::collections::VecDeque;
     use std::sync::Mutex;
 
