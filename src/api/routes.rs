@@ -775,10 +775,12 @@ async fn ingest_memory(
 
 /// Exact archiving is opt-in. With no key configured the honest answer names the missing
 /// configuration: a 500 would imply a fault, and a 2xx would imply bytes were kept.
+/// The sentence stays action-neutral because reads and deletes share it; claiming "no bytes
+/// were stored" on a GET would describe a write that was never attempted.
 fn archive_store(h: &Harness) -> ApiResult<Arc<ArchiveStore>> {
     h.archive.clone().ok_or(ApiError(
         StatusCode::NOT_IMPLEMENTED,
-        "Exact archiving is not configured on this server; no bytes were stored",
+        "Exact archiving is not configured on this server; no archive was written, read, or deleted",
     ))
 }
 /// Archive and source identifiers are opaque to this layer, so it bounds them rather than
