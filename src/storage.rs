@@ -487,9 +487,9 @@ impl DbStore {
         }
         if version < 8 {
             conn.execute_batch(include_str!("../migrations/008_provider_spend.sql"))?;
+        }
         if version < 9 {
             conn.execute_batch(include_str!("../migrations/009_run_cancellation.sql"))?;
-        }
         }
         conn.execute(
             "UPDATE provider_calls SET state='failed',usage_status='unavailable',reason='process_restarted_with_call_reserved',finished_at=?1 WHERE state='reserved'",
@@ -506,7 +506,10 @@ impl DbStore {
         // work exactly once; a rejected contender never resets another process's billed work.
         crate::recording::recover(&mut conn)?;
         let notify = commit_notify.clone();
-        conn.commit_hook(Some(move || { let _ = notify.send(()); false }));
+        conn.commit_hook(Some(move || {
+            let _ = notify.send(());
+            false
+        }));
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             commit_notify,
