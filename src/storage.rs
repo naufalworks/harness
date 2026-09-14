@@ -909,206 +909,6 @@ impl DbStore {
                 "last_retention_at":last_retention,"last_compaction_at":last_compaction}}))
         }).await
     }
-    /// Retention only ever targets derived, replayable rows. Receipts, provenance edges,
-    /// memories and privacy/archive rows are never deletable by maintenance, and a turn is
-    /// eligible only once its receipt reached a terminal state.
-    // P13 retention/maintenance surface. Implemented and covered by this module's tests,
-    // but no HTTP route calls it yet, so the binary build sees it as unreachable. Retained
-    // deliberately rather than deleted; exposing it is a routing change, not a cleanup.
-    #[allow(dead_code)]
-    pub const RETENTION_TARGETS: [&'static str; 2] = ["generation_chunks", "activity_events"];
-
-    #[allow(dead_code)]
-    pub async fn retention_policies(&self) -> Result<Value> {
-        self.read(|c| {
-            let mut stmt = c.prepare(
-                "SELECT name,keep_days,enabled,updated_at FROM retention_policies ORDER BY name",
-            )?;
-            let policies = stmt
-                .query_map([], |r| {
-                    Ok(json!({"name":r.get::<_,String>(0)?,"keep_days":r.get::<_,i64>(1)?,
-                        "enabled":r.get::<_,i64>(2)?==1,"updated_at":r.get::<_,String>(3)?}))
-                })?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            Ok(json!({ "policies": policies }))
-        })
-        .await
-    }
-
-    /// Configure one retention window. Unknown targets are refused so a typo can never be
-    /// interpreted as permission to delete receipts.
-    #[allow(dead_code)]
-    pub async fn set_retention_policy(
-        &self,
-        name: String,
-        keep_days: i64,
-        enabled: bool,
-    ) -> Result<Value> {
-        if !Self::RETENTION_TARGETS.contains(&name.as_str()) {
-            bail!("unknown retention target {name}");
-        }
-        if keep_days < 1 {
-            bail!("keep_days must be at least 1");
-        }
-        self.run(move |c| {
-            let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            tx.execute(
-                "INSERT INTO retention_policies(name,keep_days,enabled,updated_at) VALUES(?1,?2,?3,?4) ON CONFLICT(name) DO UPDATE SET keep_days=excluded.keep_days,enabled=excluded.enabled,updated_at=excluded.updated_at",
-                params![name, keep_days, i64::from(enabled), now()],
-            )?;
-            tx.commit()?;
-            Ok(json!({"name":name,"keep_days":keep_days,"enabled":enabled}))
-        })
-        .await
-    }
-
-    /// Collapse the chunk rows of finished turns into a single row that still replays the same
-    /// text. Terminal rows and receipts are untouched, and live turns are skipped entirely.
-    #[allow(dead_code)]
-    pub async fn compact_generation_chunks(&self, older_than_days: i64) -> Result<Value> {
-        let cutoff = (Utc::now() - chrono::Duration::days(older_than_days.max(0))).to_rfc3339();
-        self.run(move |c| {
-            let started = now();
-            let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            let requests: Vec<String> = {
-                let mut stmt = tx.prepare(
-                    "SELECT g.request_id FROM generation_events g JOIN chat_receipts r ON r.request_id=g.request_id \
-                     WHERE g.state='chunk' AND g.created_at<?1 AND r.state NOT IN ('captured','generating') \
-                     GROUP BY g.request_id HAVING count(*)>1",
-                )?;
-                let collected = stmt
-                    .query_map([&cutoff], |r| r.get(0))?
-                    .collect::<rusqlite::Result<Vec<_>>>()?;
-                collected
-            };
-            let mut compacted = 0i64;
-            let mut removed = 0i64;
-            for request_id in &requests {
-                let rows: Vec<(i64, String)> = {
-                    let mut stmt = tx.prepare(
-                        "SELECT seq,content FROM generation_events WHERE request_id=?1 AND state='chunk' ORDER BY seq",
-                    )?;
-                    let collected = stmt
-                        .query_map([request_id], |r| Ok((r.get(0)?, r.get(1)?)))?
-                        .collect::<rusqlite::Result<Vec<_>>>()?;
-                    collected
-                };
-                if rows.len() < 2 {
-                    continue;
-                }
-                let keep = rows[0].0;
-                let merged: String = rows.iter().map(|(_, content)| content.as_str()).collect();
-                tx.execute(
-                    "UPDATE generation_events SET content=?2,compacted_chunks=?3 WHERE seq=?1",
-                    params![keep, merged, rows.len() as i64],
-                )?;
-                removed += tx.execute(
-                    "DELETE FROM generation_events WHERE request_id=?1 AND state='chunk' AND seq<>?2",
-                    params![request_id, keep],
-                )? as i64;
-                compacted += 1;
-            }
-            tx.execute(
-                "INSERT INTO maintenance_runs(action,target,rows_affected,detail,started_at,finished_at) VALUES('compaction','generation_chunks',?1,?2,?3,?4)",
-                params![removed, format!("{compacted} request(s) compacted"), started, now()],
-            )?;
-            tx.commit()?;
-            Ok(json!({"requests_compacted":compacted,"chunk_rows_removed":removed,"cutoff":cutoff}))
-        })
-        .await
-    }
-
-    /// Apply every enabled retention policy. Disabled policies delete nothing, and each applied
-    /// policy leaves an evidence row in `maintenance_runs`.
-    #[allow(dead_code)]
-    pub async fn apply_retention(&self) -> Result<Value> {
-        self.run(move |c| {
-            let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            let policies: Vec<(String, i64, i64)> = {
-                let mut stmt = tx.prepare(
-                    "SELECT name,keep_days,enabled FROM retention_policies ORDER BY name",
-                )?;
-                let collected = stmt
-                    .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
-                    .collect::<rusqlite::Result<Vec<_>>>()?;
-                collected
-            };
-            let mut report = serde_json::Map::new();
-            for (name, keep_days, enabled) in policies {
-                if enabled != 1 {
-                    report.insert(name, json!({"status":"disabled","rows_deleted":0}));
-                    continue;
-                }
-                let started = now();
-                let cutoff = (Utc::now() - chrono::Duration::days(keep_days)).to_rfc3339();
-                let deleted = match name.as_str() {
-                    "generation_chunks" => tx.execute(
-                        "DELETE FROM generation_events WHERE state='chunk' AND created_at<?1 \
-                         AND request_id IN (SELECT request_id FROM chat_receipts WHERE state NOT IN ('captured','generating')) \
-                         AND request_id IN (SELECT request_id FROM generation_events WHERE state IN ('completed','interrupted','failed'))",
-                        [&cutoff],
-                    )?,
-                    "activity_events" => tx.execute(
-                        "DELETE FROM activity_events WHERE created_at<?1 \
-                         AND request_id IN (SELECT request_id FROM chat_receipts WHERE state NOT IN ('captured','generating'))",
-                        [&cutoff],
-                    )?,
-                    other => bail!("unknown retention target {other}"),
-                } as i64;
-                tx.execute(
-                    "INSERT INTO maintenance_runs(action,target,rows_affected,detail,started_at,finished_at) VALUES('retention',?1,?2,?3,?4,?5)",
-                    params![name, deleted, format!("keep_days={keep_days}"), started, now()],
-                )?;
-                report.insert(
-                    name,
-                    json!({"status":"applied","rows_deleted":deleted,"cutoff":cutoff}),
-                );
-            }
-            tx.commit()?;
-            Ok(Value::Object(report))
-        })
-        .await
-    }
-
-    /// WAL checkpoint monitoring plus optimize/analyze and incremental vacuum. Incremental
-    /// vacuum is reported as unavailable rather than silently skipped when auto_vacuum is off.
-    #[allow(dead_code)]
-    pub async fn maintenance(&self) -> Result<Value> {
-        self.run(|c| {
-            let started = now();
-            let journal_mode: String = c.query_row("PRAGMA journal_mode", [], |r| r.get(0))?;
-            let (busy, wal_pages, checkpointed): (i64, i64, i64) = c
-                .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
-                    Ok((r.get(0)?, r.get(1)?, r.get(2)?))
-                })
-                .unwrap_or((0, -1, -1));
-            c.execute_batch("PRAGMA optimize; ANALYZE;")?;
-            let auto_vacuum: i64 = c.query_row("PRAGMA auto_vacuum", [], |r| r.get(0))?;
-            let freelist_before: i64 = c.query_row("PRAGMA freelist_count", [], |r| r.get(0))?;
-            let vacuum = if auto_vacuum == 2 {
-                c.execute_batch("PRAGMA incremental_vacuum;")?;
-                "incremental_vacuum_ran"
-            } else {
-                "incremental_vacuum_unavailable_auto_vacuum_off"
-            };
-            let freelist_after: i64 = c.query_row("PRAGMA freelist_count", [], |r| r.get(0))?;
-            c.execute(
-                "INSERT INTO maintenance_runs(action,target,rows_affected,wal_pages,checkpointed_pages,freelist_pages,detail,started_at,finished_at) VALUES('wal_checkpoint','database',0,?1,?2,?3,?4,?5,?6)",
-                params![
-                    wal_pages,
-                    checkpointed,
-                    freelist_after,
-                    format!("journal_mode={journal_mode}; busy={busy}; {vacuum}"),
-                    started,
-                    now()
-                ],
-            )?;
-            Ok(json!({"journal_mode":journal_mode,"busy":busy,"wal_pages":wal_pages,
-                "checkpointed_pages":checkpointed,"freelist_before":freelist_before,
-                "freelist_after":freelist_after,"incremental_vacuum":vacuum}))
-        })
-        .await
-    }
     pub async fn jobs(&self) -> Result<Value> {
         self.read(|c|{let mut stmt=c.prepare("SELECT id,scope,source_id,status,attempts,last_error FROM jobs ORDER BY created_at DESC LIMIT 100")?;
             let rows=stmt.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"scope":r.get::<_,String>(1)?,"source_id":r.get::<_,String>(2)?,"status":r.get::<_,String>(3)?,"attempts":r.get::<_,i64>(4)?,"error":r.get::<_,Option<String>>(5)?})))?;
@@ -1688,117 +1488,54 @@ mod tests {
             .unwrap()
     }
 
+    /// P11-T04's readiness projection is what an operator actually reads, and now that the
+    /// duplicate Rust retention surface is retired, `scripts/maintenance.py` is the only writer
+    /// of `maintenance_runs`. This proves the projection reports, per action, what that writer
+    /// recorded -- so the retention story stays verifiable from the server even though the
+    /// server no longer performs it.
     #[tokio::test]
-    async fn retention_policies_start_disabled_and_reject_unknown_targets() {
+    async fn retention_and_maintenance_runs_surface_in_the_readiness_projection() {
         let db = DbStore::init(":memory:").unwrap();
         seed_retention_fixture(&db).await;
-        let policies = db.retention_policies().await.unwrap();
-        assert_eq!(policies["policies"].as_array().unwrap().len(), 2);
-        assert!(policies["policies"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|p| p["enabled"] == false));
-        assert!(db
-            .set_retention_policy("chat_receipts".into(), 30, true)
-            .await
-            .is_err());
-        assert!(db
-            .set_retention_policy("activity_events".into(), 0, true)
-            .await
-            .is_err());
-        // A disabled policy must delete nothing, even with expired rows present.
-        let report = db.apply_retention().await.unwrap();
-        assert_eq!(report["activity_events"]["status"], "disabled");
-        assert_eq!(count(&db, "SELECT count(*) FROM activity_events").await, 2);
-    }
-
-    #[tokio::test]
-    async fn retention_and_compaction_preserve_receipts_and_live_turns() {
-        let db = DbStore::init(":memory:").unwrap();
-        seed_retention_fixture(&db).await;
-        let compaction = db.compact_generation_chunks(1).await.unwrap();
-        assert_eq!(compaction["requests_compacted"], 1);
-        let merged: (String, i64) = db
-            .read(|c| {
-                Ok(c.query_row(
-                    "SELECT content,compacted_chunks FROM generation_events WHERE request_id='done-1' AND state='chunk'",
-                    [],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )?)
-            })
-            .await
-            .unwrap();
-        assert_eq!(merged, ("hello".to_string(), 3));
-        assert_eq!(
-            count(
-                &db,
-                "SELECT count(*) FROM generation_events WHERE request_id='live-1' AND state='chunk'"
-            )
-            .await,
-            3,
-            "a live turn must never be compacted"
+        let readiness = db.readiness().await.unwrap();
+        assert_eq!(readiness["schema_version"], 10);
+        assert_eq!(readiness["ready"], true);
+        assert!(
+            readiness["maintenance"]["last_retention_at"].is_null(),
+            "a database that was never maintained must not claim it was"
         );
+        assert!(readiness["maintenance"]["last_wal_checkpoint_at"].is_null());
 
-        db.set_retention_policy("generation_chunks".into(), 1, true)
-            .await
-            .unwrap();
-        db.set_retention_policy("activity_events".into(), 1, true)
-            .await
-            .unwrap();
-        let report = db.apply_retention().await.unwrap();
-        assert_eq!(report["generation_chunks"]["status"], "applied");
+        // Exactly what scripts/maintenance.py writes when it finishes each action.
+        db.run(|c| {
+            for (action, target, finished) in [
+                ("retention", "activity_events", "2026-01-01T00:00:00+00:00"),
+                ("compaction", "generation_chunks", "2026-01-02T00:00:00+00:00"),
+                ("wal_checkpoint", "database", "2026-01-03T00:00:00+00:00"),
+            ] {
+                c.execute(
+                    "INSERT INTO maintenance_runs(action,target,rows_affected,detail,started_at,finished_at) VALUES(?1,?2,0,'scripts/maintenance.py',?3,?3)",
+                    params![action, target, finished],
+                )?;
+            }
+            Ok(json!({}))
+        })
+        .await
+        .unwrap();
+
+        let readiness = db.readiness().await.unwrap();
+        let maintenance = &readiness["maintenance"];
+        assert_eq!(maintenance["last_retention_at"], "2026-01-01T00:00:00+00:00");
+        assert_eq!(maintenance["last_compaction_at"], "2026-01-02T00:00:00+00:00");
         assert_eq!(
-            count(
-                &db,
-                "SELECT count(*) FROM generation_events WHERE request_id='done-1' AND state='completed'"
-            )
-            .await,
-            1,
-            "terminal generation rows must survive retention"
+            maintenance["last_wal_checkpoint_at"],
+            "2026-01-03T00:00:00+00:00",
+            "each action must project its own latest run, not the newest row of any action"
         );
         assert_eq!(
             count(&db, "SELECT count(*) FROM chat_receipts").await,
             2,
-            "receipts are never deleted by maintenance"
-        );
-        assert_eq!(
-            count(
-                &db,
-                "SELECT count(*) FROM activity_events WHERE request_id='live-1'"
-            )
-            .await,
-            1,
-            "a live turn must never be trimmed"
-        );
-        assert_eq!(
-            count(
-                &db,
-                "SELECT count(*) FROM maintenance_runs WHERE action='retention'"
-            )
-            .await,
-            2
-        );
-    }
-
-    #[tokio::test]
-    async fn retention_maintenance_records_wal_checkpoint_evidence() {
-        let db = DbStore::init(":memory:").unwrap();
-        seed_retention_fixture(&db).await;
-        let result = db.maintenance().await.unwrap();
-        assert!(result["incremental_vacuum"].is_string());
-        assert!(result["freelist_after"].is_i64());
-        let readiness = db.readiness().await.unwrap();
-        assert_eq!(readiness["schema_version"], 10);
-        assert_eq!(readiness["ready"], true);
-        assert!(readiness["maintenance"]["last_wal_checkpoint_at"].is_string());
-        assert_eq!(
-            count(
-                &db,
-                "SELECT count(*) FROM maintenance_runs WHERE action='wal_checkpoint'"
-            )
-            .await,
-            1
+            "reading readiness must never touch evidence"
         );
     }
     #[tokio::test]
