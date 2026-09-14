@@ -1,5 +1,11 @@
 # PROGRESS — journal
 
+## 2026-09-14T07:12:00Z · P11-T05 — deployed to the harness unit
+
+- Pushed `5c69518` to `origin main` (`e52d0c9..5c69518`), then ran `scripts/deploy.sh` on the committed tree.
+- Deploy evidence: `deployed 5c69518 to harness: pid 259501, release sha256 c069191f14133ecb82000fc5c93d5cfb72a86994f763a88a10d191101a9df94c, schema 10, readiness verified, API answering, non-object body refused with 400`.
+- Live delivery check against the running unit: `/health` reports commit `5c69518a991df6ef6c4b61a7f97497c11e894c0d`; `/` returns `cache-control: no-cache`; `/app.js?v=<commit>` returns `public, max-age=31536000, immutable` with etag `"5c69518…-app.js"`; the same request with `If-None-Match` returns `304` with 0 bytes; the served document references `app.js?v=<commit>` and `style.css?v=<commit>`.
+
 ## 2026-09-14T07:10:00Z · P11-T05 — frontend delivery and idle work verified; task complete
 
 - Idle work: the two always-on timers (1 s turn clock, 5 s status/inline-suggestions) are now a single `idleClock`. A hidden tab runs no timer at all — the clock is stopped on `visibilitychange` and, on becoming visible, does one immediate catch-up tick before restarting. The work each tick performs is unchanged, so this changes when idle work runs, never what it reads or renders.
