@@ -4,3 +4,4 @@
 //! behaviour of a single concern can be reviewed without reading the whole server.
 pub(crate) mod assets;
 pub(crate) mod error;
+pub(crate) mod stream;
