@@ -1,5 +1,38 @@
 # PROGRESS — journal
 
+## 2026-09-14T16:05:00Z · P12-T06 — runnable evidence passed; networked evidence stays CI-only
+
+The exact task command, `bash scripts/verify_release.sh && scripts/verify_e2e.sh`, exited 0
+after the final workflow and release-script changes. The local gate now runs six named
+production property contracts and refuses a silently smaller inventory; deterministic fuzzing
+covers 2,000 import payloads, file-count/symlink boundaries, and every existing provider-stream
+protocol boundary. The storage budget uses 10,000 sessions and 100,000 messages. Disposable
+rollback passed. Two packages from the same release binary were byte-identical and each carried
+a CycloneDX SBOM, manifest, and verified SHA-256 checksum.
+
+The split is deliberate and visible. `cargo llvm-cov` is not installed, only the host Rust
+target is installed, cosign is absent, and no public HTTPS URL/token was supplied. Those four
+lanes printed **SKIP**, not PASS. A pinned networked CI job owns the 50% line floor, host and
+aarch64 checks, two independent optimized builds, and keyless Sigstore bundle. The production
+workflow owns the authenticated HTTPS smoke and cannot run without its environment variable
+and secret. These CI-only steps are automated but have not run here, so this commit is not
+evidence that coverage, cross-target compilation, signing, or public smoke passed.
+
+The gate itself was negative-tested before completion: deleting the `cargo llvm-cov`
+declaration made `check_release_quality.py` exit 1 naming the missing contract, and the workflow
+was restored byte-identical. One additional leak was removed while wiring the performance gate:
+`scripts/benchmark.py` now closes its in-memory SQLite connection explicitly. No production
+service was restarted, no branch was pushed, and the 18 pre-existing worktrees were untouched.
+
+## 2026-09-14T16:05:00Z · P12-T06 — release evidence started in an isolated worktree
+
+P12-T05b is integrated and deployed, so this dependency is now eligible. Work is isolated on
+`p12-t06`; the 18 pre-existing stale worktrees are intentionally untouched because some may
+contain unmerged work. The plan is fail-closed and offline-honest: deterministic property and
+protocol/import fuzz cases plus artifact/rollback checks run here; coverage, extra targets,
+continuous fuzzing, public smoke, SBOM publication and signing run on a networked CI runner.
+The local gate will distinguish a missing tool or unreachable public endpoint from a pass.
+
 ## 2026-09-14T15:45:00Z · P12-T05b — the gate caught my own last commit
 
 Two findings, both from gates rather than from reading.

@@ -778,7 +778,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - found-and-fixed: promoting ResourceWarning exposed 9 real leaks from `with sqlite3.connect(...)`, which commits but never closes; tests/recording_integration.py now uses contextlib.closing. Separately, the whole-tree `cargo fmt` in cb999fe silently broke tests/test_agentic_sql.py and tests/test_recording_contracts.py: both scraped `pub const NAME: &str = r#"..."#;` with the `=` required on one line, and rustfmt wrapped 7 of 31 declarations, so the scrape returned 24 of 31 constants. Both scrapers now tolerate whitespace around `=` and assert the scraped set equals the declared set, so a future reformat cannot quietly shrink what these suites test.
 
 ### P12-T06 · Add coverage, property, fuzz and release evidence
-- status: todo
+- status: done
 - priority: medium
 - lane: release-quality
 - parallel: yes
@@ -787,6 +787,9 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - files: .github/workflows/*, fuzz/*, tests/*, scripts/release.sh
 - done-when: redaction/SSE/diff/path/graph/context properties, import/protocol fuzzing, coverage, cross-target checks, performance budgets, SBOM/checksums/signatures, public smoke and rollback tests are automated.
 - verify: bash scripts/verify_release.sh && scripts/verify_e2e.sh
+- notes: The local `release-quality` suite fail-closed inventories and runs six existing production-level property contracts (redaction chunking, SSE cursor replay, diff reversal, sandboxed paths, closed incident graphs, and context budgets), 2,000 deterministic import payloads plus file/symlink/count and provider-stream protocol boundaries, the 10k-session/100k-message storage budget, disposable rollback, and a byte-for-byte reproducible release archive containing a CycloneDX SBOM and checksums. Deleting the coverage declaration was negative-tested: the gate exited 1 and the workflow was restored byte-identical.
+- CI-only evidence: `cargo llvm-cov` with a 50% line floor, host plus aarch64 checks, two independent release builds compared byte-for-byte, and keyless Sigstore signing are declared in the pinned `release-evidence` job. The authenticated HTTPS public smoke is a production-environment `workflow_dispatch` job and runs only when `HARNESS_PUBLIC_URL` and `HARNESS_PUBLIC_SMOKE_TOKEN` are configured. None of those networked lanes ran on this offline host; locally they report SKIP and are not counted as passes.
+- evidence: `bash scripts/verify_release.sh && scripts/verify_e2e.sh` exited 0 after the final code/workflow changes. All locally runnable property, fuzz, performance, rollback, artifact, mocked-browser, and real browser-to-server lanes passed. Local coverage/signature/cross-target/public-smoke remained explicitly SKIP. No service was restarted or deployed.
 
 ### P12-T07a · Reconcile the documented baseline
 - status: done

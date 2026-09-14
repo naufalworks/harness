@@ -7,6 +7,7 @@ The gate validates required indexes and representative SQLite query plans.
 from __future__ import annotations
 
 import argparse
+from contextlib import closing
 import sqlite3
 import sys
 import time
@@ -80,15 +81,15 @@ def main() -> int:
     parser.add_argument("--events", type=int, default=DEFAULT_EVENTS)
     args = parser.parse_args()
 
-    db = sqlite3.connect(":memory:")
-    load_schema(db)
+    with closing(sqlite3.connect(":memory:")) as db:
+        load_schema(db)
 
-    if args.check:
-        check_indexes(db)
-        check_query_plans(db)
-        run_scale_smoke(db, args.sessions, args.events)
-        print("benchmark gate OK: indexed plans available")
-        return 0
+        if args.check:
+            check_indexes(db)
+            check_query_plans(db)
+            run_scale_smoke(db, args.sessions, args.events)
+            print("benchmark gate OK: indexed plans available")
+            return 0
 
     print("Use --check for the storage benchmark gate")
     return 0

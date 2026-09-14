@@ -67,3 +67,48 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - run: npx playwright install --with-deps chromium
       - run: scripts/verify_e2e.sh
+
+  release-evidence:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          components: llvm-tools-preview
+          targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
+      - run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+      - run: cargo install --locked cargo-llvm-cov --version 0.6.13
+      - run: cargo llvm-cov --locked --all-features --workspace --fail-under-lines 50
+      - run: cargo check --locked --target x86_64-unknown-linux-gnu
+      - run: cargo check --locked --target aarch64-unknown-linux-gnu
+      - run: python3 tests/fuzz_import_protocol.py
+      - run: python3 scripts/benchmark.py --check --sessions 10000 --events 100000
+      - run: python3 tests/deploy_rollback.py
+      - name: Build reproducible release twice
+        run: |
+          SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) CARGO_TARGET_DIR=target-a cargo build --locked --release
+          SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) CARGO_TARGET_DIR=target-b cargo build --locked --release
+          cmp target-a/release/harness target-b/release/harness
+          install -D -m 0755 target-a/release/harness target/release/harness
+          HARNESS_RELEASE_SKIP_BUILD=1 scripts/release.sh
+          sha256sum -c dist/*.tar.gz.sha256
+          tar -tzf dist/*.tar.gz | grep '/sbom.cdx.json$'
+      - name: Sign checksum with keyless Sigstore identity
+        if: github.event_name != 'pull_request'
+        run: |
+          go install github.com/sigstore/cosign/v2/cmd/cosign@v2.4.1
+          "$(go env GOPATH)/bin/cosign" sign-blob --yes --bundle dist/release.sigstore.json dist/*.tar.gz.sha256
+
+  public-smoke:
+    if: github.event_name == 'workflow_dispatch' && vars.HARNESS_PUBLIC_URL != ''
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: python3 scripts/public_smoke.py --url "$HARNESS_PUBLIC_URL"
+        env:
+          HARNESS_PUBLIC_URL: ${{ vars.HARNESS_PUBLIC_URL }}
+          HARNESS_PUBLIC_SMOKE_TOKEN: ${{ secrets.HARNESS_PUBLIC_SMOKE_TOKEN }}
