@@ -643,7 +643,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - note (2026-09-14, done): Added repeatable SQLite benchmark gate covering required indexes, query plan validation, and configurable storage scale smoke checks. Verified with 10K sessions and 100K events.
 
 ### P11-T04 · Add retention, WAL and compaction maintenance
-- status: todo
+- status: done
 - priority: high
 - lane: database
 - parallel: no
@@ -652,6 +652,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - files: migrations/*, src/storage.rs, scripts/maintenance.py
 - done-when: configured retention, generation-chunk compaction, WAL checkpoint monitoring, optimize/analyze and incremental vacuum preserve receipts, provenance and user deletion semantics.
 - verify: python3 tests/test_migrations.py && cargo test --locked retention
+- note (2026-09-14, done): Added append-only migration 010 (user_version 10) with disabled-by-default `retention_policies`, `maintenance_runs` evidence and `generation_events.compacted_chunks`; storage now exposes retention policy config, finished-turn chunk compaction, WAL checkpoint/optimize/analyze/incremental-vacuum with readiness reporting, plus `scripts/maintenance.py --check`. Receipts, provenance and live turns are never deleted. Verified: `python3 tests/test_migrations.py` (001 -> 010) + `cargo test --locked retention` 3 passed / 0 failed, `scripts/verify_local.sh` exit 0, strict `scripts/verify_release.sh` exit 0.
 
 ### P11-T05 · Optimize frontend delivery and idle work
 - status: todo

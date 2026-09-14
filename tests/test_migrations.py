@@ -12,7 +12,7 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MIG = ROOT / "migrations"
-CHAIN = ["001_core.sql", "002_recording.sql", "003_agentic.sql", "004_memory_kinds.sql", "005_generation_stream.sql", "006_provenance_edges.sql", "007_privacy_archive.sql", "008_provider_spend.sql", "009_run_cancellation.sql"]
+CHAIN = ["001_core.sql", "002_recording.sql", "003_agentic.sql", "004_memory_kinds.sql", "005_generation_stream.sql", "006_provenance_edges.sql", "007_privacy_archive.sql", "008_provider_spend.sql", "009_run_cancellation.sql", "010_retention_maintenance.sql"]
 VERSIONS = [name.split("_", 1)[0] for name in CHAIN]
 LATEST_VERSION = int(VERSIONS[-1])
 OPEN_CONNECTIONS = []
@@ -27,6 +27,7 @@ EXPECTED_TABLES = {
     7: {"exact_archives", "source_privacy_state", "privacy_events"},
     8: {"provider_calls"},
     9: {"run_controls"},
+    10: {"retention_policies", "maintenance_runs"},
 }
 
 
@@ -285,6 +286,36 @@ def test_009_run_cancellation_constraints():
             raise AssertionError(f"run cancellation constraint was not enforced: {statement}")
 
 
+def test_010_retention_maintenance_constraints():
+    c = fresh()
+    apply(c, len(CHAIN))
+    now = "2026-01-01T00:00:00Z"
+    assert {r[0] for r in c.execute("SELECT name FROM retention_policies")} == {"generation_chunks", "activity_events"}
+    assert c.execute("SELECT count(*) FROM retention_policies WHERE enabled=1").fetchone()[0] == 0, "retention must be disabled until an owner enables it"
+    columns = {row[1] for row in c.execute("PRAGMA table_info('generation_events')")}
+    assert "compacted_chunks" in columns
+    assert c.execute("SELECT keep_days FROM retention_policies WHERE name='generation_chunks'").fetchone()[0] == 30
+    c.execute(
+        "INSERT INTO maintenance_runs(action,target,rows_affected,wal_pages,checkpointed_pages,freelist_pages,detail,started_at,finished_at)"
+        " VALUES('wal_checkpoint','database',0,4,4,0,'journal_mode=wal',?,?)",
+        (now, now),
+    )
+    assert c.execute("SELECT action,rows_affected FROM maintenance_runs").fetchone() == ("wal_checkpoint", 0)
+    for statement in (
+        "INSERT INTO retention_policies(name,keep_days,enabled,updated_at) VALUES('chat_receipts',30,1,'2026-01-01T00:00:00Z')",
+        "UPDATE retention_policies SET keep_days=0 WHERE name='activity_events'",
+        "UPDATE retention_policies SET enabled=2 WHERE name='activity_events'",
+        "INSERT INTO maintenance_runs(action,target,rows_affected,started_at,finished_at) VALUES('vacuum','database',0,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
+        "INSERT INTO maintenance_runs(action,target,rows_affected,started_at,finished_at) VALUES('retention','activity_events',-1,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
+    ):
+        try:
+            c.execute(statement)
+        except sqlite3.IntegrityError:
+            pass
+        else:
+            raise AssertionError(f"maintenance constraint was not enforced: {statement}")
+
+
 def main():
     try:
         check_fts5()
@@ -296,6 +327,7 @@ def main():
         test_006_provenance_constraints()
         test_007_privacy_archive_constraints()
         test_009_run_cancellation_constraints()
+        test_010_retention_maintenance_constraints()
         print(
             f"migrations OK: {' -> '.join(VERSIONS)}, "
             f"user_version={LATEST_VERSION}, data/FTS/FKs preserved"

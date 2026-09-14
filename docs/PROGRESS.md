@@ -1,5 +1,20 @@
 # PROGRESS — journal
 
+## 2026-09-14T06:55:00Z · P11-T04 — retention, WAL and compaction maintenance verified; task complete
+
+- Shipped append-only migration `010_retention_maintenance.sql` (user_version 9 -> 10): `retention_policies` (targets restricted to `generation_chunks` and `activity_events`, `keep_days >= 1`, disabled by default), `maintenance_runs` evidence table with an action allow-list, and `generation_events.compacted_chunks`.
+- `src/storage.rs`: `retention_policies`, `set_retention_policy` (unknown target or `keep_days < 1` is refused), `compact_generation_chunks` (merges chunk rows of terminal-state turns only, keeps the earliest seq with a chunk count), `apply_retention` (enabled policies only, finished receipts only, terminal generation rows always preserved), and `maintenance` (WAL checkpoint TRUNCATE, optimize, ANALYZE, incremental vacuum reported as unavailable when auto_vacuum is off). Readiness now requires schema_version 10 and reports journal mode plus the last checkpoint/retention/compaction timestamps.
+- Added `scripts/maintenance.py` (status/policy/retention/compact/checkpoint/run plus a `--check` self-test on a throwaway database) and updated the health assertion in `src/main.rs` to schema_version 10.
+- Verification: exact gate `python3 tests/test_migrations.py && cargo test --locked retention` -> `migrations OK: 001 -> ... -> 010, user_version=10` and 3 passed / 0 failed; `bash scripts/verify_local.sh` -> exit 0 (66 python contract tests, integration-smoke, recording-integration, JS syntax, both mocked-browser suites); `bash scripts/verify_release.sh` -> exit 0 strict gate including real browser-to-server success/denial/crash-recovery/cancellation/unsafe-retry suites. No service restarted during verification.
+- Status: P11-T04 `doing` -> `done`. Committed and pushed to `origin main`; deployment recorded separately below.
+
+## 2026-09-14T06:45:00Z · P11-T04 — retention, WAL and compaction maintenance started
+
+- Reviewed the committed baseline first: `main` clean at `34fe779`, nothing unpushed, P11-T03's exact gate reran green (`cargo test --locked storage` 14 passed / 0 failed; `python3 scripts/benchmark.py --check` reported indexed plans available) and `bash scripts/verify_local.sh` exited 0.
+- Status: P11-T04 `todo` -> `doing`. Highest-priority eligible task; `depends: P11-T03` is `done`.
+- Plan: append-only migration `010_retention_maintenance.sql` (user_version 9 -> 10) adding disabled-by-default `retention_policies`, `maintenance_runs` evidence and `generation_events.compacted_chunks`; retention/compaction/WAL-checkpoint/optimize/analyze/incremental-vacuum operations in `src/storage.rs`; new `scripts/maintenance.py` operator entry point. Receipts, provenance and user deletion semantics stay out of scope for deletion.
+- Verification target (exact): `python3 tests/test_migrations.py && cargo test --locked retention`, then `scripts/verify_local.sh` and the strict `scripts/verify_release.sh`. No deployment until those pass on a committed tree.
+
 ## 2026-09-14T03:07:07Z · P14-T01 — independent continuation verified; task complete
 
 - Resumed the dirty `p14-durable-cancellation` worktree at `9947c0b` and preserved all existing modified/untracked work. No commit, push, deploy, or production restart.
