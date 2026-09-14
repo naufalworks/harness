@@ -619,7 +619,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - verify: cargo test --locked streaming && python3 tests/recording_integration.py
 
 ### P11-T02 · Separate serialized writes from bounded reads
-- status: todo
+- status: done
 - priority: high
 - lane: database
 - parallel: no
@@ -628,6 +628,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - files: src/storage.rs, src/recording.rs, docs/ARCHITECTURE.md
 - done-when: one write owner preserves transactions while bounded read connections prevent long projections from blocking unrelated reads; no DB guard crosses provider awaits.
 - verify: cargo test --locked storage && scripts/verify_e2e.sh
+- note (2026-09-14, done): Added a bounded SQLite read pool alongside the serialized writer. Read-only projections now use `DbStore::read` for stats, readiness, jobs, scopes, plans, and activity feeds. File-backed databases use independent readers while in-memory tests safely fall back to the writer connection. Verification passed: `cargo test --locked storage` and `scripts/verify_e2e.sh`.
 
 ### P11-T03 · Audit query plans and storage scale
 - status: todo

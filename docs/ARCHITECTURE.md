@@ -26,7 +26,7 @@ The opt-in exact-original archive is isolated in `src/archive/`: callers must ex
 
 ## Database access and durability
 
-`DbStore::run` isolates synchronous rusqlite work using Tokio spawn_blocking. A semaphore bounds concurrent blocking tasks; a mutex serializes connection access. No database mutex is held across a provider await. A queue-full or lock/storage failure is an error, never an implicit success.
+`DbStore::run` isolates synchronous rusqlite write work using Tokio spawn_blocking. A semaphore bounds concurrent blocking tasks; a mutex serializes the single write owner. `DbStore::read` provides bounded read projections through a separate reader pool for file-backed SQLite databases, while in-memory test databases safely fall back to the writer connection because SQLite memory databases are connection-local. No database mutex is held across a provider await. A queue-full or lock/storage failure is an error, never an implicit success.
 
 The schema is transactional and versioned. WAL + FULL synchronous, foreign keys, constraints, and FTS triggers are enabled. Local filesystem durability still depends on the OS/storage respecting sync. Backup is a separately verified online SQLite snapshot, not copying the live `.db` alone.
 

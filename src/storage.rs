@@ -867,7 +867,7 @@ impl DbStore {
     }
 
     pub async fn stats(&self) -> Result<Value> {
-        self.run(|c|{
+        self.read(|c|{
             let active:i64=c.query_row("SELECT count(*) FROM memories WHERE status='active'",[],|r|r.get(0))?;
             let pending:i64=c.query_row("SELECT count(*) FROM candidates WHERE status='pending' AND expires_at>?1",[Utc::now().timestamp()],|r|r.get(0))?;
             let sources:i64=c.query_row("SELECT count(*) FROM sources",[],|r|r.get(0))?;
@@ -877,7 +877,7 @@ impl DbStore {
         }).await
     }
     pub async fn readiness(&self) -> Result<Value> {
-        self.run(|c| {
+        self.read(|c| {
             let schema_version:i64=c.query_row("PRAGMA user_version",[],|r|r.get(0))?;
             let quick_check:String=c.query_row("PRAGMA quick_check(1)",[],|r|r.get(0))?;
             let pending_jobs:i64=c.query_row("SELECT count(*) FROM jobs WHERE status='pending'",[],|r|r.get(0))?;
@@ -891,7 +891,7 @@ impl DbStore {
         }).await
     }
     pub async fn jobs(&self) -> Result<Value> {
-        self.run(|c|{let mut stmt=c.prepare("SELECT id,scope,source_id,status,attempts,last_error FROM jobs ORDER BY created_at DESC LIMIT 100")?;
+        self.read(|c|{let mut stmt=c.prepare("SELECT id,scope,source_id,status,attempts,last_error FROM jobs ORDER BY created_at DESC LIMIT 100")?;
             let rows=stmt.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"scope":r.get::<_,String>(1)?,"source_id":r.get::<_,String>(2)?,"status":r.get::<_,String>(3)?,"attempts":r.get::<_,i64>(4)?,"error":r.get::<_,Option<String>>(5)?})))?;
             Ok(json!({"jobs":rows.collect::<rusqlite::Result<Vec<_>>>()?}))
         }).await
@@ -910,7 +910,7 @@ impl DbStore {
     /// P1-T15: every configured scope, newest config included, for the UI's scope picker. A scope
     /// with `root_path: null` is listed too: it exists, it just cannot run tools yet.
     pub async fn scopes(&self) -> Result<Vec<ScopeConfig>> {
-        self.run(move |c| {
+        self.read(move |c| {
             let mut stmt = c.prepare(crate::agentic_sql::SCOPES_LIST)?;
             let rows = stmt
                 .query_map([], scope_row)?
@@ -980,7 +980,7 @@ impl DbStore {
     }
     /// The stored plan, for the `plan_updated` event and the UI's plan panel.
     pub async fn plan(&self, session_id: String) -> Result<Value> {
-        self.run(move |c| plan_rows(c, &session_id)).await
+        self.read(move |c| plan_rows(c, &session_id)).await
     }
 
     // ---- P1-T12 read side: what the UI polls between turns ----------------------------
@@ -1143,7 +1143,7 @@ impl DbStore {
     }
 
     pub async fn activity_since(&self, session_id: String, after_seq: i64) -> Result<Value> {
-        self.run(move|c|{
+        self.read(move|c|{
             let mut stmt=c.prepare(crate::agentic_sql::EVENTS_AFTER)?;
             let rows=stmt.query_map(params![session_id,after_seq],|r|Ok(json!({
                 "seq":r.get::<_,i64>(0)?,"request_id":r.get::<_,String>(1)?,"step_id":r.get::<_,Option<String>>(2)?,
