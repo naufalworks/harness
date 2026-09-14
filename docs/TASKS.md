@@ -793,7 +793,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - verify: git diff --check
 
 ### P12-T07b · Prevent documentation and deployment claim drift
-- status: todo
+- status: done
 - priority: high
 - lane: docs-automation
 - parallel: yes
@@ -802,6 +802,10 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - files: README.md, AGENTS.md, docs/*, scripts/check_docs.py
 - done-when: routes, phases, test counts, deployment identity and limitations cannot drift silently; volatile counts are derived or removed.
 - verify: python3 scripts/check_docs.py && git diff --check
+- note (2026-09-14, done): `scripts/check_docs.py` did not exist, so this task's own verify command could not run; the checker now exists and runs in `scripts/verify_release.sh` as the `documentation-claims` suite. Five checks, all mechanical: the router and a new `## HTTP surface` inventory in `docs/ARCHITECTURE.md` must agree exactly in both directions; every `verify:` command must name scripts that exist (FAIL when the task is `done`, WARN while it is `todo`); statuses must be known, dependencies must exist, and no task may be `done` while a dependency is not; the living docs must carry no hand-written test counts; and `/health` `commit` must equal HEAD or differ only by commits that touch documentation. Prose is deliberately not checked — a gate that flags style becomes noise, and a noisy gate gets disabled.
+- note (2026-09-14, scope correction): the done-when asks for volatile counts to be "derived or removed", which presumed counts live in the living docs. They do not. Every hand-written test count sits in `docs/PROGRESS.md`, `docs/TASKS.md` notes and a handoff doc — dated evidence about one run, which should stay frozen. The checker therefore guards README, AGENTS.md and ARCHITECTURE.md and exempts the journals rather than rewriting history to satisfy the wording.
+- note (2026-09-14, first findings): the checker's first run failed 24 checks. Four were its own bug (`depends: —` parsed as a task name) and twenty were a design mistake of mine — treating README as an API spec, which is why the inventory replaced the heuristic. Two real findings survive as warnings: P17-T04 and P17-T05 verify with `scripts/experiment.py` and `scripts/remote_runner.py`, neither of which exists. Both are `todo`, so a warning is honest; if either is ever marked `done` with those scripts still missing, the same check turns into a failure.
+- note (2026-09-14, baseline honesty): the initial 39-route inventory was generated from `router()` rather than hand-audited, so the first comparison was circular by construction. Every comparison after this commit is independent. The gate was then proven to fail on purpose: removing `/archives/{id}` from the inventory and adding an invented route each produced exit 1 with the drift named.
 
 ## P13 · Security, privacy, and auditability
 

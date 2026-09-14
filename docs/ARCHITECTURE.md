@@ -16,6 +16,59 @@ Failed bearer authentication waits a uniform 150 ms before returning 401. Authen
 
 The loopback listener is HTTP, so it does not emit HSTS by default. A TLS-terminating deployment may set `HARNESS_HTTPS_HSTS=1` only when the public origin is HTTPS and all HTTP traffic is permanently redirected; this adds `Strict-Transport-Security: max-age=31536000; includeSubDomains`. Misusing HSTS on a partially migrated domain can make sibling services unreachable.
 
+## HTTP surface
+
+Every route the process serves. `scripts/check_docs.py` compares this list
+against `router()` in `src/api/routes.rs` in both directions, so a route cannot
+be added, renamed or removed without this section changing in the same commit.
+Authenticated routes sit behind bearer authentication, which is checked before
+existence: an unauthenticated request never learns whether a path exists.
+
+### Authenticated
+
+- `POST /chat`
+- `POST /chat/submit`
+- `GET /chat/requests/{id}`
+- `POST /chat/requests/{id}/cancel`
+- `POST /chat/requests/{id}/retry`
+- `GET /chat/requests/{id}/context`
+- `GET /sessions`
+- `GET /models`
+- `GET|POST /config`
+- `GET /memory/status`
+- `GET /health`
+- `GET /memory/candidates`
+- `POST /memory/candidates/{id}/edit`
+- `POST /memory/confirm`
+- `POST /memory/ingest`
+- `GET /sessions/{id}/messages`
+- `GET /jobs`
+- `POST /jobs/{id}/retry`
+- `GET /scopes`
+- `GET|POST /scopes/{scope}`
+- `GET /permissions`
+- `POST /permissions/{id}`
+- `GET /chat/requests/{id}/steps`
+- `GET /chat/requests/{id}/incident`
+- `GET /sessions/{id}/plan`
+- `GET /activity`
+- `GET /activity/stream`
+- `GET /generation`
+- `GET /generation/stream`
+- `GET /changes`
+- `POST /changes/{id}/revert`
+- `GET /chat/requests/{id}/provenance`
+- `POST /sources/{id}/archive`
+- `POST /sources/{id}/privacy`
+- `GET|DELETE /archives/{id}`
+
+### Unauthenticated
+
+- `GET /`
+- `GET /app.js`
+- `GET /style.css`
+- `POST /auth/session`
+
 ## Capture and privacy
 
 The old service captured trimmed text and import summaries. This version captures sanitized user/assistant messages, full sanitized source text, warnings, and normalized extraction payloads. Sensitive-looking content is excluded before normal storage/provider use. This deliberately prioritizes reducing accidental secret retention over claiming a lossless raw archive.

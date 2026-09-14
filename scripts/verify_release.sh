@@ -23,6 +23,7 @@ command -v node >/dev/null || { echo '[BLOCKED] release: node is required' >&2; 
 
 run_suite local-contract env HARNESS_REQUIRE_BROWSER=1 scripts/verify_local.sh
 run_suite real-browser-to-server scripts/verify_e2e.sh
+run_suite documentation-claims python3 scripts/check_docs.py
 
 echo '[PASS] strict release gate: native, contracts, HTTP, mocked-browser, and real browser-to-server suites all passed.'
 echo '[INFO] no service was restarted; production promotion is a separate scripts/deploy.sh action.'

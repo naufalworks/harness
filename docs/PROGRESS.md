@@ -1,5 +1,43 @@
 # PROGRESS — journal
 
+## 2026-09-14T15:30:00Z · P12-T07b — a gate for the failure mode this session kept demonstrating
+
+Chosen because the drift was mine, twice in one session: I wrote that archiving was
+"deliberately left unconfigured in production" and made it false an hour later, and I said
+P13-T03 was next when the ledger said `done`. Both were caught by a human reading, not by a
+gate. The clincher was that this task's own `verify:` command named `scripts/check_docs.py`,
+which did not exist — the check that would have caught my stale claim had never been built.
+
+`scripts/check_docs.py` now runs five mechanical checks and is wired into
+`scripts/verify_release.sh` as `documentation-claims`, so it cannot be forgotten. The
+deployment check encodes a distinction worth keeping: a live binary behind HEAD is only a
+failure when *code* differs. Trailing by documentation commits is normal and reported as a
+pass, which is exactly today's state (live 7480753, HEAD ahead by docs only).
+
+**The first run failed 24 checks, and most of them were my fault, not the docs'.** Four were a
+parser bug: `depends: —` treated an em dash as a task name. Twenty were a design mistake —
+failing on every route README does not mention, which treats a quickstart as an API spec.
+That is precisely the noise that gets a gate switched off, so the heuristic was replaced with
+an explicit `## HTTP surface` inventory in `docs/ARCHITECTURE.md` compared exactly against
+`router()` in both directions. The inventory also closed a real gap: the archive, privacy and
+provenance routes shipped without appearing in any architecture doc.
+
+**Two disclosures.** First, the initial 39-route inventory was generated from the router, not
+hand-audited, so the first green comparison was circular; independence starts with the next
+change. Second, a gate that has never failed is unproven, so it was made to fail on purpose:
+deleting `/archives/{id}` from the inventory and inserting an invented route each produced
+exit 1 naming the drift, and the file was restored byte-identical afterwards.
+
+Two real findings remain as warnings rather than being silently fixed: P17-T04 and P17-T05
+verify with scripts that do not exist. They are `todo`, so a warning is the honest level; the
+check escalates to a failure if either is ever marked `done` while the script is still
+missing. The volatile-count clause was also narrowed on purpose — counts live only in the
+dated journals, and freezing evidence is correct, so the checker guards the living docs and
+leaves history alone.
+
+No Rust changed, so no compile or test gate was re-run; the task's own verify passed with 0
+failing checks and a clean `git diff --check`.
+
 ## 2026-09-14T15:15:00Z · P13-T02b — key backup, and a rotation drill run for real
 
 Two loose ends from the previous entry, in the order that risk demanded: back up the key
