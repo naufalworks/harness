@@ -55,6 +55,10 @@ pub struct Job {
     pub attempts: i64,
 }
 
+// Exercised by this module's tests. Production edge inserts go through
+// agent_loop::steps raw SQL, where migration 006 CHECK constraints enforce the same
+// kinds, relations, id lengths and self-edge ban at the database layer.
+#[allow(dead_code)]
 pub const PROVENANCE_NODE_KINDS: [&str; 6] = [
     "evidence",
     "step",
@@ -63,6 +67,7 @@ pub const PROVENANCE_NODE_KINDS: [&str; 6] = [
     "memory",
     "recovery",
 ];
+#[allow(dead_code)]
 pub const PROVENANCE_RELATIONS: [&str; 7] = [
     "supports",
     "contradicts",
@@ -73,6 +78,7 @@ pub const PROVENANCE_RELATIONS: [&str; 7] = [
     "triggers",
 ];
 
+#[allow(dead_code)]
 fn validate_provenance_edge(
     source_kind: &str,
     source_id: &str,
@@ -733,6 +739,8 @@ impl DbStore {
     pub async fn retry_job(&self, id: String) -> Result<bool> {
         self.run(move|c|Ok(c.execute("UPDATE jobs SET status='pending',attempts=0,available_at=?1,last_error=NULL WHERE id=?2 AND status='failed'",params![Utc::now().timestamp(),id])?==1)).await
     }
+    /// Unfiltered candidate feed. Kept as the narrow entry point beside `candidate_feed`.
+    #[allow(dead_code)]
     pub async fn candidates(&self, scope: String) -> Result<Value> {
         self.candidate_feed(scope, None, false, false).await
     }
@@ -902,8 +910,13 @@ impl DbStore {
     /// Retention only ever targets derived, replayable rows. Receipts, provenance edges,
     /// memories and privacy/archive rows are never deletable by maintenance, and a turn is
     /// eligible only once its receipt reached a terminal state.
+    // P13 retention/maintenance surface. Implemented and covered by this module's tests,
+    // but no HTTP route calls it yet, so the binary build sees it as unreachable. Retained
+    // deliberately rather than deleted; exposing it is a routing change, not a cleanup.
+    #[allow(dead_code)]
     pub const RETENTION_TARGETS: [&'static str; 2] = ["generation_chunks", "activity_events"];
 
+    #[allow(dead_code)]
     pub async fn retention_policies(&self) -> Result<Value> {
         self.read(|c| {
             let mut stmt = c.prepare(
@@ -922,6 +935,7 @@ impl DbStore {
 
     /// Configure one retention window. Unknown targets are refused so a typo can never be
     /// interpreted as permission to delete receipts.
+    #[allow(dead_code)]
     pub async fn set_retention_policy(
         &self,
         name: String,
@@ -948,6 +962,7 @@ impl DbStore {
 
     /// Collapse the chunk rows of finished turns into a single row that still replays the same
     /// text. Terminal rows and receipts are untouched, and live turns are skipped entirely.
+    #[allow(dead_code)]
     pub async fn compact_generation_chunks(&self, older_than_days: i64) -> Result<Value> {
         let cutoff = (Utc::now() - chrono::Duration::days(older_than_days.max(0))).to_rfc3339();
         self.run(move |c| {
@@ -1003,6 +1018,7 @@ impl DbStore {
 
     /// Apply every enabled retention policy. Disabled policies delete nothing, and each applied
     /// policy leaves an evidence row in `maintenance_runs`.
+    #[allow(dead_code)]
     pub async fn apply_retention(&self) -> Result<Value> {
         self.run(move |c| {
             let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -1054,6 +1070,7 @@ impl DbStore {
 
     /// WAL checkpoint monitoring plus optimize/analyze and incremental vacuum. Incremental
     /// vacuum is reported as unavailable rather than silently skipped when auto_vacuum is off.
+    #[allow(dead_code)]
     pub async fn maintenance(&self) -> Result<Value> {
         self.run(|c| {
             let started = now();
@@ -1221,10 +1238,6 @@ impl DbStore {
         }).await
     }
 
-    /// The session's activity feed after `after_seq`, capped at 200 rows by `EVENTS_AFTER`.
-    /// `next_after_seq` is the cursor to send back; it only moves when rows were returned, so a
-    /// poll that finds nothing cannot skip an event that commits a moment later.
-
     /// Atomically reserve one provider dispatch after checking persisted per-turn and UTC-day
     /// request, token, and cost totals. Refusals are durable and are never sent to the provider.
     pub async fn reserve_provider_call(
@@ -1342,6 +1355,9 @@ impl DbStore {
         }).await
     }
 
+    /// The session's activity feed after `after_seq`, capped at 200 rows by `EVENTS_AFTER`.
+    /// `next_after_seq` is the cursor to send back; it only moves when rows were returned, so a
+    /// poll that finds nothing cannot skip an event that commits a moment later.
     pub async fn activity_since(&self, session_id: String, after_seq: i64) -> Result<Value> {
         self.read(move|c|{
             let mut stmt=c.prepare(crate::agentic_sql::EVENTS_AFTER)?;
@@ -1374,6 +1390,7 @@ impl DbStore {
 
     /// Persist one inspectable dependency between durable rows. There is deliberately no freeform
     /// reasoning payload: provenance says which rows relate and how, not what the model thought.
+    #[allow(dead_code)]
     pub async fn record_provenance_edge(
         &self,
         request_id: String,
@@ -1410,6 +1427,7 @@ impl DbStore {
         .await
     }
 
+    #[allow(dead_code)]
     pub async fn provenance_edges(&self, request_id: String) -> Result<Value> {
         self.run(move |c| {
             let mut stmt = c.prepare(crate::agentic_sql::PROVENANCE_EDGES_LIST)?;
@@ -1503,7 +1521,6 @@ impl DbStore {
                 add(&target_kind, &target_id, format!("{target_kind} {target_id}"), "known".into(), true);
                 edges.push(json!({"id":id,"source":source,"target":target,"relation":relation}));
             }
-            drop(add);
             breaks.sort_by_key(|item| item.0);
             let earliest_id = breaks.first().map(|(_, kind, id, _)| node_id(kind, id));
             let mut neighborhood = HashMap::<String, Vec<String>>::new();

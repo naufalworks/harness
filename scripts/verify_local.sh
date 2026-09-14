@@ -22,7 +22,10 @@ command -v python3 >/dev/null || { echo '[BLOCKED] python: python3 is required' 
 command -v node >/dev/null || { echo '[BLOCKED] javascript: node is required' >&2; exit 2; }
 
 run_suite rust-tests cargo test --locked
-run_suite rust-clippy cargo clippy --locked --all-targets
+# P12-T04: --all-features widens coverage and -D warnings makes the zero-warning state
+# self-defending. Without -D this suite passed with 42 accumulated warnings, and without
+# --all-targets it cannot see unused imports consumed only by #[cfg(test)] code.
+run_suite rust-clippy cargo clippy --locked --all-targets --all-features -- -D warnings
 run_suite rust-build cargo build --locked
 run_suite python-contracts python3 -m unittest discover -s tests -p 'test_*.py' -v
 run_suite integration-smoke python3 tests/integration_smoke.py

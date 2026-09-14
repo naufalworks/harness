@@ -528,13 +528,15 @@ mod tests {
         ];
         let user = event("current", "user", "do it 🦀");
         let first_memory_bytes = serde_json::to_vec(&memories[0]).unwrap().len();
-        let mut budgets = Budgets::default();
-        budgets.skills_index = sources.skills_index[0].text.len();
-        budgets.repo_map = sources.repo_map[0].text.len();
-        budgets.recalled_memories = first_memory_bytes;
-        budgets.plan = "- [in_progress] Implement".len();
-        budgets.compacted_history = sources.compacted_history[0].text.len();
-        budgets.recent_steps = "new question".len() + "new answer".len();
+        let budgets = Budgets {
+            skills_index: sources.skills_index[0].text.len(),
+            repo_map: sources.repo_map[0].text.len(),
+            recalled_memories: first_memory_bytes,
+            plan: "- [in_progress] Implement".len(),
+            compacted_history: sources.compacted_history[0].text.len(),
+            recent_steps: "new question".len() + "new answer".len(),
+            ..Default::default()
+        };
         let window = build(BuildInput {
             scope: &scope,
             tools: &tools,
@@ -638,9 +640,11 @@ mod tests {
             event("a2", "assistant", "done"),
         ];
         let user = event("current", "user", "continue");
-        let mut budgets = Budgets::default();
-        budgets.skills_index = 1;
-        budgets.recent_steps = "new 🦀".len() + "done".len();
+        let budgets = Budgets {
+            skills_index: 1,
+            recent_steps: "new 🦀".len() + "done".len(),
+            ..Default::default()
+        };
         let window = build(BuildInput {
             scope: &scope,
             tools: &[],
@@ -688,8 +692,10 @@ mod tests {
     fn context_required_categories_fail_closed() {
         let scope = ScopeConfig::blank("global");
         let user = event("current", "user", "hello");
-        let mut system_budget = Budgets::default();
-        system_budget.system_rules = 1;
+        let system_budget = Budgets {
+            system_rules: 1,
+            ..Default::default()
+        };
         assert!(build(BuildInput {
             scope: &scope,
             tools: &[],
@@ -704,8 +710,10 @@ mod tests {
         .to_string()
         .contains("system_rules"));
 
-        let mut user_budget = Budgets::default();
-        user_budget.user_message = 4;
+        let user_budget = Budgets {
+            user_message: 4,
+            ..Default::default()
+        };
         assert!(build(BuildInput {
             scope: &scope,
             tools: &[],
@@ -726,8 +734,10 @@ mod tests {
         };
         let tools =
             vec![json!({"type":"function","function":{"name":"read","description":"read"}})];
-        let mut tool_budget = Budgets::default();
-        tool_budget.tool_definitions = 1;
+        let tool_budget = Budgets {
+            tool_definitions: 1,
+            ..Default::default()
+        };
         assert!(build(BuildInput {
             scope: &rooted,
             tools: &tools,

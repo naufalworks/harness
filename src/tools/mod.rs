@@ -245,6 +245,7 @@ pub trait Tool: Send + Sync {
     /// File-mutating tools may describe their change here without touching disk. The current
     /// loop gets its pre-write diff from `permission_payload`; this hook remains available to
     /// consumers that need a typed pending change. `None` for non-file tools.
+    #[allow(dead_code)]
     fn plan(
         &self,
         ctx: &ToolCtx,

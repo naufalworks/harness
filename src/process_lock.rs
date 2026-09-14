@@ -34,6 +34,10 @@ impl ProcessLock {
                 .read(true)
                 .write(true)
                 .create(true)
+                // Never truncate at open: a contending process must not destroy a live
+                // owner's metadata before flock decides who owns the database. The proven
+                // owner truncates below with set_len(0).
+                .truncate(false)
                 .mode(0o600)
                 .open(&lock_path)
                 .with_context(|| format!("open database process lock {}", lock_path.display()))?;

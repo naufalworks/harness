@@ -147,6 +147,7 @@ impl StreamRedactor {
     }
 
     /// Bytes still withheld because no line terminator has been observed.
+    #[allow(dead_code)]
     pub fn pending_len(&self) -> usize {
         self.pending.len()
     }

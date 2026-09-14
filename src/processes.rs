@@ -177,6 +177,9 @@ mod tests {
     /// run to completion and produce its delayed side effect.
     #[cfg(unix)]
     #[test]
+    // The child is deliberately reaped by try_wait below, or killed and waited on the
+    // timeout path; the lint cannot see through the polling loop.
+    #[allow(clippy::zombie_processes)]
     fn a_group_spawned_after_cancel_is_killed_when_it_registers() {
         use std::os::unix::process::CommandExt;
         use std::process::{Command, Stdio};

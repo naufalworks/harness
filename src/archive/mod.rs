@@ -2,6 +2,14 @@
 //!
 //! The ordinary database remains sanitized. This subsystem is invoked explicitly and
 //! stores only authenticated ciphertext plus non-secret metadata in SQLite.
+//!
+//! Delivered by P13-T02 and covered by this module's own tests, but not yet reachable
+//! from any HTTP route: nothing in the running server constructs an `ArchiveStore`. The
+//! on-disk format is mirrored by `scripts/backup.py`, and migration 007 already ships the
+//! `exact_archives` / `privacy_events` tables, so the code is kept intact rather than
+//! deleted. Wiring it to a route is tracked separately; until then `dead_code` is allowed
+//! module-wide so the release gate stays at zero warnings without hiding warnings elsewhere.
+#![allow(dead_code)]
 use anyhow::{anyhow, bail, Context, Result};
 use ring::{aead, digest, rand::{SecureRandom, SystemRandom}};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -190,7 +198,7 @@ fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
 fn decode_fixed<const N: usize>(text: &str) -> Result<[u8; N]> {
     if text.len() != N * 2 || !text.bytes().all(|byte| byte.is_ascii_hexdigit()) { bail!("invalid archive nonce"); }
     let bytes = (0..N).map(|index| u8::from_str_radix(&text[index * 2..index * 2 + 2], 16)).collect::<std::result::Result<Vec<_>, _>>()?;
-    Ok(bytes.try_into().map_err(|_| anyhow!("invalid archive nonce"))?)
+    bytes.try_into().map_err(|_| anyhow!("invalid archive nonce"))
 }
 
 fn hex(bytes: &[u8]) -> String { bytes.iter().map(|byte| format!("{byte:02x}")).collect() }

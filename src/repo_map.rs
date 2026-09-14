@@ -31,6 +31,9 @@ const GENERATED_DIRS: &[&str] = &[
 pub struct RepoMap {
     pub id: String,
     pub text: String,
+    /// True when this map was rebuilt rather than served from cache. Part of the struct's
+    /// public shape for callers and tests; the current callers only read `id` and `text`.
+    #[allow(dead_code)]
     pub refreshed: bool,
 }
 

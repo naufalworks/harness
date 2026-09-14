@@ -1197,6 +1197,9 @@ fn launch_browser(root: &Path, deadline: Instant) -> BrowserResult<(Cdp, OwnedBr
 
 struct Session {
     cdp: Cdp,
+    /// Held, never read: dropping the session must also drop any browser this session
+    /// launched, so ownership lives here even though no code inspects it.
+    #[allow(dead_code)]
     owned: Option<OwnedBrowser>,
     last: Option<Snapshot>,
 }
