@@ -416,14 +416,47 @@ async fn headers(State(state): State<Harness>, request: Request, next: Next) -> 
 // otherwise a cached page would keep pointing at a retired build and trip "Stale UI detected".
 const ASSET_IMMUTABLE: &str = "public, max-age=31536000, immutable";
 const ASSET_REVALIDATE: &str = "no-cache";
+// P11-T06: gzip bytes produced by build.rs. Empty means the build had no gzip available, in
+// which case negotiation is skipped and identity bytes are served.
+const INDEX_GZ: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/index.html.gz"));
+const APP_JS_GZ: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/app.js.gz"));
+const STYLE_CSS_GZ: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/style.css.gz"));
+// Accept only an explicit, non-rejected gzip token. `gzip;q=0` means "do not send gzip", and a
+// client that says nothing must keep receiving identity bytes.
+fn accepts_gzip(request_headers: &HeaderMap) -> bool {
+    request_headers
+        .get(header::ACCEPT_ENCODING)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value.split(',').any(|candidate| {
+                let mut parts = candidate.split(';');
+                let token = parts.next().unwrap_or("").trim();
+                if !token.eq_ignore_ascii_case("gzip") && token != "*" {
+                    return false;
+                }
+                !parts.any(|parameter| {
+                    let parameter = parameter.trim().replace(' ', "");
+                    parameter == "q=0" || parameter.starts_with("q=0.0")
+                })
+            })
+        })
+}
 fn asset(
     request_headers: &HeaderMap,
     content_type: &'static str,
     cache_control: &'static str,
     name: &str,
     body: String,
+    gzipped: &'static [u8],
 ) -> Response {
-    let etag = format!("\"{BUILD_COMMIT}-{name}\"");
+    // Encodings are different representations, so they need different validators and a `Vary`,
+    // otherwise a shared cache could hand gzip bytes to a client that cannot decode them.
+    let gzip = !gzipped.is_empty() && accepts_gzip(request_headers);
+    let etag = if gzip {
+        format!("\"{BUILD_COMMIT}-{name}-gzip\"")
+    } else {
+        format!("\"{BUILD_COMMIT}-{name}\"")
+    };
     // A conditional request may send several validators, and a proxy may weaken them.
     let unchanged = request_headers
         .get(header::IF_NONE_MATCH)
@@ -436,9 +469,21 @@ fn asset(
     let validators = [
         (header::CACHE_CONTROL, cache_control.to_string()),
         (header::ETAG, etag),
+        (header::VARY, header::ACCEPT_ENCODING.to_string()),
     ];
     if unchanged {
         return (StatusCode::NOT_MODIFIED, validators).into_response();
+    }
+    if gzip {
+        return (
+            validators,
+            [
+                (header::CONTENT_TYPE, content_type),
+                (header::CONTENT_ENCODING, "gzip"),
+            ],
+            Bytes::from_static(gzipped),
+        )
+            .into_response();
     }
     (
         validators,
@@ -454,6 +499,7 @@ async fn index(request_headers: HeaderMap) -> Response {
         ASSET_REVALIDATE,
         "index.html",
         include_str!("../static/index.html").replace("__HARNESS_BUILD_COMMIT__", BUILD_COMMIT),
+        INDEX_GZ,
     )
 }
 async fn js(request_headers: HeaderMap) -> Response {
@@ -463,6 +509,7 @@ async fn js(request_headers: HeaderMap) -> Response {
         ASSET_IMMUTABLE,
         "app.js",
         include_str!("../static/app.js").replace("__HARNESS_BUILD_COMMIT__", BUILD_COMMIT),
+        APP_JS_GZ,
     )
 }
 async fn css(request_headers: HeaderMap) -> Response {
@@ -472,6 +519,7 @@ async fn css(request_headers: HeaderMap) -> Response {
         ASSET_IMMUTABLE,
         "style.css",
         include_str!("../static/style.css").to_string(),
+        STYLE_CSS_GZ,
     )
 }
 
@@ -2043,9 +2091,137 @@ mod tests {
         assert!(source.contains("if (document.hidden) { stopIdleClock(); return; }"));
         assert!(source.contains("if (idleClock.timer || document.hidden) return;"));
     }
+    // P11-T06: gzip is verified without a decompression crate. A gzip member ends with the
+    // CRC32 and the byte length of the original input, so recomputing both over the identity
+    // body proves the precompressed asset decodes to exactly what the server would send
+    // otherwise. That is the property that actually matters: a stale or mismatched .gz would
+    // serve a different build's script than the ETag claims.
+    fn crc32(data: &[u8]) -> u32 {
+        let mut crc = 0xFFFF_FFFFu32;
+        for byte in data {
+            crc ^= *byte as u32;
+            for _ in 0..8 {
+                crc = if crc & 1 != 0 {
+                    (crc >> 1) ^ 0xEDB8_8320
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        !crc
+    }
+    async fn fetch_asset(
+        uri: &str,
+        accept_encoding: Option<&str>,
+        if_none_match: Option<&str>,
+    ) -> Response {
+        let mut request = axum::http::Request::builder().uri(uri);
+        if let Some(encoding) = accept_encoding {
+            request = request.header(header::ACCEPT_ENCODING, encoding);
+        }
+        if let Some(validator) = if_none_match {
+            request = request.header(header::IF_NONE_MATCH, validator);
+        }
+        app()
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+    }
+    fn validator(response: &Response) -> String {
+        response
+            .headers()
+            .get(header::ETAG)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string()
+    }
+    async fn asset_bytes(response: Response) -> Vec<u8> {
+        axum::body::to_bytes(response.into_body(), 4 * 1024 * 1024)
+            .await
+            .unwrap()
+            .to_vec()
+    }
+    #[tokio::test]
+    async fn precompressed_assets_are_negotiated_and_decode_to_the_identity_bytes() {
+        for uri in [
+            format!("/app.js?v={BUILD_COMMIT}"),
+            format!("/style.css?v={BUILD_COMMIT}"),
+            "/".to_string(),
+        ] {
+            let identity = fetch_asset(&uri, None, None).await;
+            assert_eq!(identity.status(), StatusCode::OK, "{uri}");
+            // A client that asks for nothing must never receive encoded bytes, and every
+            // representation must advertise that the body varies by encoding so a shared cache
+            // cannot hand gzip to a client that did not ask for it.
+            assert!(identity.headers().get(header::CONTENT_ENCODING).is_none(), "{uri}");
+            assert_eq!(identity.headers().get(header::VARY).unwrap(), "accept-encoding");
+            let identity_etag = validator(&identity);
+            assert!(!identity_etag.contains("-gzip"), "{uri}");
+            let identity_bytes = asset_bytes(identity).await;
+
+            let compressed = fetch_asset(&uri, Some("gzip, deflate, br"), None).await;
+            assert_eq!(compressed.status(), StatusCode::OK, "{uri}");
+            assert_eq!(compressed.headers().get(header::CONTENT_ENCODING).unwrap(), "gzip");
+            assert_eq!(compressed.headers().get(header::VARY).unwrap(), "accept-encoding");
+            let gzip_etag = validator(&compressed);
+            assert!(gzip_etag.ends_with("-gzip\""), "{uri}: {gzip_etag}");
+            assert_ne!(gzip_etag, identity_etag, "{uri}");
+            let gzip_bytes = asset_bytes(compressed).await;
+            assert_eq!(&gzip_bytes[..3], &[0x1f, 0x8b, 0x08], "{uri} is not a gzip member");
+            assert!(
+                gzip_bytes.len() < identity_bytes.len(),
+                "{uri}: {} compressed vs {} identity",
+                gzip_bytes.len(),
+                identity_bytes.len()
+            );
+            let trailer = &gzip_bytes[gzip_bytes.len() - 8..];
+            assert_eq!(
+                u32::from_le_bytes(trailer[..4].try_into().unwrap()),
+                crc32(&identity_bytes),
+                "{uri}: gzip CRC32 does not match the identity body"
+            );
+            assert_eq!(
+                u32::from_le_bytes(trailer[4..].try_into().unwrap()) as usize,
+                identity_bytes.len(),
+                "{uri}: gzip length does not match the identity body"
+            );
+
+            // Revalidation is per representation: the gzip validator answers 304, and a
+            // validator from the other representation must not.
+            let cached = fetch_asset(&uri, Some("gzip"), Some(&gzip_etag)).await;
+            assert_eq!(cached.status(), StatusCode::NOT_MODIFIED, "{uri}");
+            assert!(asset_bytes(cached).await.is_empty(), "{uri}");
+            let mismatched = fetch_asset(&uri, Some("gzip"), Some(&identity_etag)).await;
+            assert_eq!(mismatched.status(), StatusCode::OK, "{uri}");
+        }
+    }
+    #[tokio::test]
+    async fn clients_that_do_not_accept_gzip_receive_identity_bytes() {
+        let uri = format!("/app.js?v={BUILD_COMMIT}");
+        for encoding in ["identity", "br", "gzip;q=0", "gzip; q=0.0", "deflate"] {
+            let response = fetch_asset(&uri, Some(encoding), None).await;
+            assert_eq!(response.status(), StatusCode::OK, "{encoding}");
+            assert!(
+                response.headers().get(header::CONTENT_ENCODING).is_none(),
+                "{encoding} must not be answered with encoded bytes"
+            );
+        }
+    }
+    #[test]
+    fn precompressed_assets_are_embedded_by_the_build() {
+        // A silently empty .gz would disable compression without failing any other test.
+        for (name, bytes) in [
+            ("index.html", INDEX_GZ),
+            ("app.js", APP_JS_GZ),
+            ("style.css", STYLE_CSS_GZ),
+        ] {
+            assert!(bytes.len() > 18, "{name}.gz is empty; gzip was unavailable at build time");
+        }
+    }
+    #[test]
     // P11-T05: long views must stay bounded so a tab left open for days cannot grow the DOM
     // without limit.
-    #[test]
     fn frontend_bounds_long_lists() {
         let source = include_str!("../static/app.js");
         assert!(source.contains("const MAX_RENDERED_MESSAGES = 300, MAX_RENDERED_SESSIONS = 200;"));

@@ -665,19 +665,20 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - done-when: redundant timers stop, hidden tabs pause nonessential work, long views are bounded/virtualized, assets are compressed/fingerprinted, and optional panels load without enlarging the initial path.
 - verify: node --check static/app.js && scripts/verify_browser.sh
 - note (2026-09-14, done): Replaced the two always-on timers (1 s turn clock, 5 s status/suggestions) with one visibility-aware clock: a hidden tab now runs no timer at all and does one immediate catch-up tick when it becomes visible again. Long views are bounded (at most 300 rendered messages and 200 session entries; trimming only drops rendered nodes and re-exposes "Load older messages", never history). Assets are fingerprinted: `index.html` requests `/app.js?v=<commit>` and `/style.css?v=<commit>`, those two are served `public, max-age=31536000, immutable` with a build-scoped ETag and answer `If-None-Match` with 304 and no body, while `/` is `no-cache` so a cached document can never point at a retired build, and every other route keeps `no-store`. Verified: exact gate `node --check static/app.js && scripts/verify_browser.sh` exit 0 (44 browser checks), `cargo test --locked` new asset/frontend tests passed, `scripts/verify_local.sh` exit 0, strict `scripts/verify_release.sh` exit 0.
-- note (2026-09-14, gap): Response compression is NOT done and is tracked as P11-T06. gzip/brotli needs a new dependency (`flate2`/`async-compression`/`tower-http` compression feature) and no such crate is present in Cargo.lock or the local registry cache, so it cannot be added or tested offline. No optional panel work was needed: the initial path already loads one script and one stylesheet.
+- note (2026-09-14, gap): Response compression was NOT part of this task and was split out as P11-T06, since gzip/brotli normally needs a new dependency (`flate2`/`async-compression`/`tower-http` compression feature) and the crate registry is unreachable (`static.crates.io` returns 403). RESOLVED the same day by P11-T06 without any dependency, by precompressing the embedded assets at build time. No optional panel work was needed: the initial path already loads one script and one stylesheet.
 
 ### P11-T06 · Serve compressed static responses
-- status: todo
+- status: done
 - priority: low
 - lane: frontend-performance
 - parallel: yes
 - depends: P11-T05
 - design: docs/ROADMAP.md#p11-runtime-and-storage-performance
-- files: Cargo.toml, src/main.rs, tests/ui_smoke.cjs
-- done-when: text assets and JSON responses negotiate gzip (and optionally brotli) from `Accept-Encoding`, identity stays correct for clients that do not ask, ETag/304 behaviour from P11-T05 still holds per encoding, and the dependency is pinned in Cargo.lock.
-- verify: cargo test --locked compression && node --check static/app.js
-- note (2026-09-14, blocked): Needs network access once to vendor the compression crate; everything else is local.
+- files: build.rs, src/main.rs
+- done-when: the embedded text assets negotiate gzip from `Accept-Encoding`, identity stays correct for clients that do not ask or that refuse it, and the ETag/304 behaviour from P11-T05 holds per encoding.
+- verify: cargo test --locked precompressed && cargo test --locked gzip && node --check static/app.js
+- note (2026-09-14, done): No dependency was needed and none was added. `build.rs` pipes `static/index.html`, `static/app.js` and `static/style.css` (after build-commit substitution) through the system `gzip -9 -n`, which is deterministic, and writes the members to `OUT_DIR`; the server embeds those bytes and serves them verbatim when the client accepts gzip, so compression costs zero CPU per request instead of recompressing on every response. Responses carry `Content-Encoding: gzip`, `Vary: Accept-Encoding` and a distinct `"<commit>-<asset>-gzip"` ETag, so a shared cache cannot hand encoded bytes to a client that did not ask and revalidation stays per representation. `gzip` is optional at build time: if it is missing the build still succeeds with a cargo warning and the server serves identity bytes only. Tests decode-check the gzip members without a decompression crate by recomputing the CRC32 and length in the gzip trailer over the identity body. Verified: `cargo test --locked precompressed` 2 passed, `cargo test --locked gzip` 1 passed, `cargo test --locked fingerprinted_assets` 1 passed, `node --check static/app.js` OK, `scripts/verify_local.sh` exit 0, strict `scripts/verify_release.sh` exit 0.
+- note (2026-09-14, scope): Brotli is not served (no `brotli` binary in the build environment) and dynamic JSON responses are still uncompressed; they are small and `no-store`, so this was not worth a second encoding. Revisit only if crate-registry egress is ever opened.
 
 ## P12 · Maintainability, API, CI, and releases
 

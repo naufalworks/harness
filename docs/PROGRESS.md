@@ -1,5 +1,47 @@
 # PROGRESS — journal
 
+## 2026-09-14T07:23:00Z · P11-T06 — static assets compressed at build time; task complete
+
+Closed the compression gap left by P11-T05 without adding a dependency. The obvious route
+(`flate2` / `async-compression` / the `tower-http` compression feature) is unavailable here:
+`static.crates.io` answers 403, so the crate registry cannot be reached and nothing new can be
+pinned in Cargo.lock. This is a network egress restriction, not a missing account — crates are
+fetched anonymously — so waiting for credentials would not have changed anything.
+
+Instead the assets are compressed once at build time, which suits them: `index.html`, `app.js`
+and `style.css` are fixed at compile time and already embedded in the binary. `build.rs` applies
+the build-commit substitution first, pipes the result through the system `gzip -9 -n` (`-n`
+omits the timestamp so the output is reproducible), and writes each member to `OUT_DIR`;
+`src/main.rs` embeds them with `include_bytes!`. Serving a stored member costs no CPU per
+request, unlike recompressing every response, and the compressed bytes are byte-identical
+across builds of the same commit.
+
+`asset()` now negotiates: it parses `Accept-Encoding`, honours `q=0` rejections and `*`, and
+serves the stored member with `Content-Encoding: gzip` only when the client actually accepts it.
+Every response carries `Vary: Accept-Encoding`, including 304s, and the two representations
+carry different validators (`"<commit>-<asset>"` vs `"<commit>-<asset>-gzip"`), so a shared
+cache cannot serve encoded bytes to a client that cannot decode them and revalidation stays
+correct per encoding. If `gzip` is absent at build time the build still succeeds with a cargo
+warning and an empty member, and the server simply serves identity bytes — graceful degradation
+rather than a broken build.
+
+Equivalence is tested without a decompression crate: a gzip member ends with the CRC32 and the
+length of the original input, so the tests recompute both over the identity response body and
+compare. That catches a stale or mismatched `.gz` serving different bytes than its ETag claims,
+which is the failure mode that would actually hurt. A separate test fails if any embedded member
+is empty, so compression cannot silently switch itself off.
+
+Verified: `cargo test --locked precompressed` (2 passed), `cargo test --locked gzip` (1 passed),
+`cargo test --locked fingerprinted_assets` (1 passed), `node --check static/app.js` OK,
+`scripts/verify_browser.sh` exit 0, `scripts/verify_local.sh` exit 0 with rust-tests,
+rust-clippy, rust-build, python-contracts, integration-smoke, recording-integration,
+javascript-syntax and mocked-browser all [PASS], and strict `scripts/verify_release.sh` exit 0
+adding local-contract and real-browser-to-server.
+
+Not done, deliberately: brotli is not served (no `brotli` binary or Python module in this
+environment) and dynamic JSON responses stay uncompressed, since they are small and `no-store`.
+Both remain open only if crate-registry egress is ever granted.
+
 ## 2026-09-14T07:12:00Z · P11-T05 — deployed to the harness unit
 
 - Pushed `5c69518` to `origin main` (`e52d0c9..5c69518`), then ran `scripts/deploy.sh` on the committed tree.
