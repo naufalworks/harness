@@ -1,5 +1,33 @@
 # PROGRESS — journal
 
+## 2026-09-14T15:05:00Z · P13-T02b — archiving turned on, and the round trip that proves it
+
+The previous entry said archiving was deliberately left off. The owner decided otherwise, so
+that sentence is now wrong and is corrected here rather than edited out of the record.
+
+A 32-byte key was generated at `/etc/harness/archive.key`, mode 0600, outside the repository.
+`.env` gained two paths and no secret: `open_from_env` reads `HARNESS_ARCHIVE_KEY` as a
+filesystem path, so putting key material in the environment would have been both wrong and
+unnecessary. `.env` is gitignored and untracked, which was checked before anything was written
+rather than assumed.
+
+**The round trip, on the wire, against the deployed binary.** 4 KB of random bytes POSTed to
+`/sources/src-roundtrip/archive`; read back byte-identical, sha256 `00940261…` in both
+directions. That is the assertion the feature exists for, and it was unreachable until the key
+existed. The stored `.har` is AES-256-GCM ciphertext behind a `HARNESS-EXACT` header naming
+key_id `7a28e8208dee9282`, so "encrypted at rest" is observed on disk, not inferred from the
+code. `forget` recorded 202 and an unknown action was refused 400 at the edge. After DELETE the
+read is 404 — and an id that never existed returns the same 404 with the same wording, so a
+deletion cannot be distinguished from an absence. Unauthenticated reads are still 401.
+
+This also retires the last caveat on the `by_id` fix: a single-key deployment is exactly the
+configuration that bug broke, and it is now the configuration running in production, reading
+back what it wrote.
+
+**Open, and owner-owned.** The key has no off-machine backup. There is no recovery path
+without it, so until it is backed up, every archive written is one disk failure from being
+permanently unreadable.
+
 ## 2026-09-14T15:00:00Z · P13-T02b and P12-T04 — the dead-code clause closes in two directions
 
 The archive group and the retention group were both unreachable, and P12-T04 had kept both
