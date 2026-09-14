@@ -1,5 +1,40 @@
 # PROGRESS — journal
 
+## 2026-09-14T15:15:00Z · P13-T02b — key backup, and a rotation drill run for real
+
+Two loose ends from the previous entry, in the order that risk demanded: back up the key
+first, then test rotation. Rotating before a backup exists would have put two irreplaceable
+keys on one disk instead of one.
+
+**Backup, with its limit stated.** A second copy sits at `/root/keybackup-harness/` alongside
+a `FINGERPRINT.txt` that holds key_ids and file digests — not secret, so it can be stored
+anywhere and used to verify a restored copy later. This is redundancy against deletion, not
+against losing the host. Copying a secret off this machine is not something this session can
+do, so it stays an owner action rather than being quietly marked done.
+
+**The rotation drill.** An archive was written under key_id `7a28e8208dee9282`. The key was
+then rotated: a fresh key became current (`2e21f1c53993f75c`) and the retired one was kept as
+`HARNESS_ARCHIVE_KEY_PREVIOUS`. After restart, the pre-rotation archive read back
+byte-identical, sha256 `7f228e81…`. That is the whole point of the drill: it exercises the
+`by_id` lookup resolving a header key_id to the *retired* key, which is precisely the code
+path the P13-T02b bug destroyed, now proven in the deployed configuration rather than in a
+unit test. A post-rotation write is stamped with the new key_id and round-trips as well, and a
+header census showed both generations coexisting in one archive root. Both drill archives were
+then deleted; the root is empty.
+
+**One check failed and was redone rather than reported.** The first census loop printed
+nothing — a `jq` parse against a `strings`-extracted line, with the error swallowed by
+`2>/dev/null`. An empty result is not a passing result, so it was rerun with a parser that
+reads the header directly. A verification step that cannot fail loudly is not a verification
+step.
+
+**Operational consequence, now documented.** The previous key is not decoration: while any
+pre-rotation archive exists, losing `archive.key.prev` loses those archives. Both files must
+be backed up, and a retired key may only be dropped once nothing references its key_id.
+
+No code changed, so no gate was re-run and nothing was rebuilt beyond the restart needed to
+load the new keyring.
+
 ## 2026-09-14T15:05:00Z · P13-T02b — archiving turned on, and the round trip that proves it
 
 The previous entry said archiving was deliberately left off. The owner decided otherwise, so
