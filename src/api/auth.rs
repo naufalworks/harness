@@ -5,7 +5,7 @@
 use crate::Harness;
 use axum::{
     extract::{Request, State},
-    http::{header, HeaderMap, StatusCode},
+    http::{header, HeaderMap, HeaderValue, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
     Json,
@@ -245,15 +245,15 @@ pub(crate) async fn headers(
     // stays uncacheable. Only the fingerprinted static assets opt out of `no-store`, so no API
     // payload or receipt can be stored by a proxy because of this change.
     if !h.contains_key(header::CACHE_CONTROL) {
-        h.insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+        h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     }
-    h.insert("x-content-type-options", "nosniff".parse().unwrap());
-    h.insert("referrer-policy", "no-referrer".parse().unwrap());
-    h.insert("content-security-policy","default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'".parse().unwrap());
+    h.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
+    h.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
+    h.insert("content-security-policy",HeaderValue::from_static("default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"));
     if state.hsts {
         h.insert(
             "strict-transport-security",
-            "max-age=31536000; includeSubDomains".parse().unwrap(),
+            HeaderValue::from_static("max-age=31536000; includeSubDomains"),
         );
     }
     response

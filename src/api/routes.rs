@@ -96,7 +96,11 @@ async fn chat(
     JsonBody(req): JsonBody<ChatRequest>,
 ) -> ApiResult<(StatusCode, Json<Value>)> {
     let mut receipt = admit_chat(&h, req).await?;
-    let request = receipt["request_id"].as_str().unwrap().to_string();
+    // A receipt without a request_id cannot be polled, so return it as-is rather than
+    // panicking the handler; the durable 202 receipt is still a correct answer here.
+    let Some(request) = receipt["request_id"].as_str().map(str::to_string) else {
+        return Ok((StatusCode::ACCEPTED, Json(receipt)));
+    };
     for _ in 0..20 {
         match receipt["state"].as_str() {
             Some("complete") => return Ok((StatusCode::OK, Json(receipt))),

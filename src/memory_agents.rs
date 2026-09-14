@@ -94,9 +94,9 @@ impl SpendLimits {
     pub fn from_env() -> Result<Self> {
         Ok(Self {
             requests_per_turn: Self::env_u64("HARNESS_MAX_PROVIDER_REQUESTS_PER_TURN", Some(32))?
-                .unwrap(),
+                .unwrap_or(32),
             requests_per_day: Self::env_u64("HARNESS_MAX_PROVIDER_REQUESTS_PER_DAY", Some(500))?
-                .unwrap(),
+                .unwrap_or(500),
             tokens_per_turn: Self::env_u64("HARNESS_MAX_PROVIDER_TOKENS_PER_TURN", None)?,
             tokens_per_day: Self::env_u64("HARNESS_MAX_PROVIDER_TOKENS_PER_DAY", None)?,
             cost_microusd_per_turn: Self::env_u64(

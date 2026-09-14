@@ -839,7 +839,7 @@ impl DbStore {
                 let content_hash=safety::fingerprint(&content);
                 let decoded=blob.as_deref().and_then(|bytes|crate::embeddings::decode(bytes,dimensions.unwrap_or_default() as usize));
                 let cache_hit=stored_hash.as_deref()==Some(&content_hash) && dimensions==Some(crate::embeddings::DIMENSIONS as i64) && decoded.is_some();
-                let vector=if cache_hit{decoded.unwrap()}else{crate::embeddings::embed(&content)};
+                let vector=match decoded{Some(cached) if cache_hit=>cached,_=>crate::embeddings::embed(&content)};
                 if !cache_hit {
                     tx.execute("INSERT INTO memory_embeddings(memory_id,model,dimensions,vector,content_hash,recall_count,useful_count,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(memory_id) DO UPDATE SET model=excluded.model,dimensions=excluded.dimensions,vector=excluded.vector,content_hash=excluded.content_hash,updated_at=excluded.updated_at",
                         params![id,crate::embeddings::MODEL,crate::embeddings::DIMENSIONS as i64,crate::embeddings::encode(&vector),content_hash,recall_count,useful_count,now()])?;

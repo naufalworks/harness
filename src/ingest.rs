@@ -128,8 +128,11 @@ pub fn parse(text: &str, requested: Option<&str>) -> Result<(String, Vec<Event>,
         let mut fence: Option<char> = None;
         for line in text.lines() {
             let trimmed = line.trim_start();
-            if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-                let kind = trimmed.chars().next().unwrap();
+            if let Some(kind) = trimmed
+                .chars()
+                .next()
+                .filter(|_| trimmed.starts_with("```") || trimmed.starts_with("~~~"))
+            {
                 if fence == Some(kind) {
                     fence = None;
                 } else if fence.is_none() {

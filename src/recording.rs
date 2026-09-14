@@ -241,7 +241,7 @@ impl DbStore {
             let tx=c.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let prior: Option<String> = tx.query_row("SELECT signature FROM chat_receipts WHERE request_id=?1", [&input.request], |r|r.get(0)).optional()?;
             if let Some(signature)=prior {
-                return if signature==input.signature {Ok(Admission::Saved(receipt(&tx,&input.request)?.unwrap()))} else {Ok(Admission::Conflict)};
+                return if signature==input.signature {Ok(Admission::Saved(receipt(&tx,&input.request)?.ok_or_else(||anyhow::anyhow!("chat receipt {} has a signature row but no receipt row",input.request))?))} else {Ok(Admission::Conflict)};
             }
             // Old message identifiers cannot be reused either; no invented legacy receipt.
             if tx.query_row("SELECT EXISTS(SELECT 1 FROM messages WHERE id=?1)",[&input.request],|r|r.get::<_,bool>(0))? {return Ok(Admission::Conflict);}
@@ -256,7 +256,7 @@ impl DbStore {
             tx.execute(sql::INSERT_RECEIPT,params![input.request,input.session,input.scope,input.model,input.signature,input.redacted,stamp])?;
             tx.execute(sql::INSERT_OUTBOX,params![input.request,stamp])?;
             tx.execute(sql::EVENT,params![input.request,"captured",stamp])?;
-            let result=receipt(&tx,&input.request)?.unwrap();
+            let result=receipt(&tx,&input.request)?.ok_or_else(||anyhow::anyhow!("chat receipt {} vanished inside its own insert transaction",input.request))?;
             tx.commit()?;
             Ok(Admission::Saved(result))
         }).await
