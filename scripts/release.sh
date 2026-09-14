@@ -19,6 +19,7 @@ stage="$out/.stage-$name"
 rm -rf "$stage"
 mkdir -p "$stage/$name"
 
+target_dir=${CARGO_TARGET_DIR:-target}
 if [ "${HARNESS_RELEASE_SKIP_BUILD:-0}" != 1 ]; then
   build_args=(--locked --release)
   if [ -n "${HARNESS_RELEASE_TARGET:-}" ]; then
@@ -27,9 +28,9 @@ if [ "${HARNESS_RELEASE_SKIP_BUILD:-0}" != 1 ]; then
   cargo build "${build_args[@]}"
 fi
 if [ -n "${HARNESS_RELEASE_TARGET:-}" ]; then
-  binary="target/$target/release/harness"
+  binary="$target_dir/$target/release/harness"
 else
-  binary="target/release/harness"
+  binary="$target_dir/release/harness"
 fi
 [ -x "$binary" ] || { echo "BLOCKED: release binary missing at $binary" >&2; exit 2; }
 install -m 0755 "$binary" "$stage/$name/harness"

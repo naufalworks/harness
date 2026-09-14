@@ -1,5 +1,25 @@
 # PROGRESS — journal
 
+## 2026-09-14T16:15:00Z · P12-T06 — the deploy gate caught the new release lane clobbering the live binary
+
+P12-T06 is integrated, pushed and deployed (`ae97327`, pid 342042, schema 10), and the strict
+gate re-run after promotion is green including `deployment: live binary matches HEAD`.
+
+One real defect surfaced during promotion, and it was mine. The new `release-quality` lane built
+an optimized binary into the default `target/release/harness`, which is the exact path the
+systemd unit runs. That overwrote the on-disk predecessor while the old process kept serving, so
+`scripts/deploy.sh` refused to promote with `BLOCKED: current on-disk executable differs from
+served health identity`. The refusal was correct: without a matching predecessor on disk there is
+no attestable rollback target. I recovered by copying the still-running executable from
+`/proc/<pid>/exe`, checking its SHA-256 against the served `binary_sha256`, and restoring it
+before retrying; deployment then succeeded.
+
+The cause is now removed rather than worked around. `scripts/release.sh` honours
+`CARGO_TARGET_DIR`, and `check_release_quality.py` builds evidence artifacts into
+`target-release-evidence/`, so running the verification gate can no longer disturb the deployable
+binary or the rollback attestation. The coverage, aarch64, Sigstore and public-smoke lanes remain
+CI-only and still have not run on this offline host.
+
 ## 2026-09-14T16:05:00Z · P12-T06 — runnable evidence passed; networked evidence stays CI-only
 
 The exact task command, `bash scripts/verify_release.sh && scripts/verify_e2e.sh`, exited 0

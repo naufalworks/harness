@@ -36,7 +36,10 @@ def main():
  run('rollback','python3','tests/deploy_rollback.py')
  with tempfile.TemporaryDirectory(prefix='harness-release-evidence-') as td:
   first=Path(td)/'first'; second=Path(td)/'second'
-  env={**os.environ,'HARNESS_RELEASE_DIR':str(first)}
+  # Build into a dedicated target directory: overwriting target/release/harness would
+  # desynchronise the on-disk executable from the running service and block deploy.sh.
+  build_dir=str(ROOT/'target-release-evidence')
+  env={**os.environ,'HARNESS_RELEASE_DIR':str(first),'CARGO_TARGET_DIR':build_dir}
   run('release-artifact','bash','scripts/release.sh',env=env)
   archives=list(first.glob('*.tar.gz'))
   if len(archives)!=1 or not Path(str(archives[0])+'.sha256').is_file(): raise SystemExit('release artifact/checksum missing')
@@ -44,7 +47,7 @@ def main():
   names=subprocess.run(['tar','-tzf',str(archives[0])],text=True,capture_output=True,check=True).stdout
   for suffix in ('/harness','/sbom.cdx.json','/MANIFEST.sha256','/release.json'):
    if suffix not in names: raise SystemExit(f'artifact missing {suffix}')
-  env={**os.environ,'HARNESS_RELEASE_DIR':str(second),'HARNESS_RELEASE_SKIP_BUILD':'1'}
+  env={**os.environ,'HARNESS_RELEASE_DIR':str(second),'CARGO_TARGET_DIR':build_dir,'HARNESS_RELEASE_SKIP_BUILD':'1'}
   run('release-reproducibility','bash','scripts/release.sh',env=env)
   second_archive=list(second.glob('*.tar.gz'))
   if len(second_archive)!=1 or archives[0].read_bytes()!=second_archive[0].read_bytes():
