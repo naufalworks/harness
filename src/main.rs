@@ -87,6 +87,9 @@ struct Harness {
     identity: Arc<RuntimeIdentity>,
     workers: Arc<WorkerHealth>,
     hsts: bool,
+    /// `None` when no archive key is configured. The archive routes then refuse explicitly
+    /// instead of implying that exact bytes were stored.
+    archive: Option<Arc<archive::ArchiveStore>>,
 }
 
 
@@ -199,6 +202,13 @@ async fn main() -> Result<()> {
     }
     let identity = Arc::new(RuntimeIdentity::current()?);
     let workers = Arc::new(WorkerHealth::default());
+    // A configured-but-broken archive key must stop startup: booting without it would leave the
+    // operator believing exact originals are being retained when nothing is being stored.
+    let archive = archive::ArchiveStore::open_from_env()?.map(Arc::new);
+    eprintln!(
+        "{}",
+        json!({"event":"archive_configured","enabled":archive.is_some()})
+    );
     let state = Harness {
         store: store.clone(),
         agents: agents.clone(),
@@ -214,6 +224,7 @@ async fn main() -> Result<()> {
         identity,
         workers: workers.clone(),
         hsts,
+        archive,
     };
     let listener = tokio::net::TcpListener::bind(addr).await?;
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -295,6 +306,7 @@ mod tests {
             identity: test_identity(),
             workers,
             hsts: false,
+            archive: None,
         })
     }
     fn app_with(store: DbStore) -> Router {
@@ -344,6 +356,165 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         assert!(started.elapsed() >= Duration::from_millis(140));
+    }
+    /// P13-T02b: exact archiving is opt-in. Unconfigured it must refuse by naming the missing
+    /// configuration; a 500 would claim a fault and a 2xx would claim bytes were kept.
+    #[tokio::test]
+    async fn archive_routes_refuse_when_archiving_is_not_configured() {
+        let app = app();
+        for (method, uri) in [
+            ("POST", "/sources/source-1/archive"),
+            ("GET", "/archives/archive-1"),
+            ("DELETE", "/archives/archive-1"),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method(method)
+                        .uri(uri)
+                        .header("Authorization", format!("Bearer {}", "x".repeat(32)))
+                        .body(Body::from("exact bytes"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED, "{uri}");
+        }
+    }
+    fn archive_fixture() -> (std::path::PathBuf, Arc<archive::ArchiveStore>) {
+        let dir = std::env::temp_dir().join(format!(
+            "harness-routes-archive-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let key = dir.join("current.key");
+        std::fs::write(
+            &key,
+            b"3333333333333333333333333333333333333333333333333333333333333333\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let store = archive::ArchiveStore::open(&dir.join("archive"), &key, None).unwrap();
+        (dir, Arc::new(store))
+    }
+    fn app_with_archive(store: DbStore, archive: Arc<archive::ArchiveStore>) -> Router {
+        router(Harness {
+            store,
+            agents: MemoryAgents::new("http://127.0.0.1:9", "synthetic", "test").unwrap(),
+            auth: Arc::new(AuthState::new(
+                "x".repeat(32),
+                None,
+                Duration::from_secs(900),
+                None,
+            )),
+            port: 8080,
+            origins: Arc::new(vec!["http://127.0.0.1:8080".into()]),
+            api_limit: Arc::new(Semaphore::new(8)),
+            identity: test_identity(),
+            workers: test_workers(),
+            hsts: false,
+            archive: Some(archive),
+        })
+    }
+    /// P13-T02b: the archive and privacy surfaces are reachable over HTTP, the bytes come back
+    /// exactly, an unknown privacy action is refused at the edge, and a deleted archive reads as
+    /// absent rather than empty.
+    #[tokio::test]
+    async fn archive_and_privacy_routes_round_trip_over_http() {
+        let (_dir, archive) = archive_fixture();
+        let app = app_with_archive(DbStore::init(":memory:").unwrap(), archive);
+        let token = format!("Bearer {}", "x".repeat(32));
+        let created = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/sources/source-1/archive")
+                    .header("Authorization", &token)
+                    .body(Body::from("exact secret bytes"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(created.status(), StatusCode::CREATED);
+        let body = axum::body::to_bytes(created.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        let id = body["archive_id"].as_str().unwrap().to_string();
+        let read = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(format!("/archives/{id}"))
+                    .header("Authorization", &token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(read.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(read.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(bytes.as_ref(), b"exact secret bytes");
+        let recorded = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/sources/source-1/privacy")
+                    .header("Authorization", &token)
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(r#"{"action":"forget"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(recorded.status(), StatusCode::ACCEPTED);
+        let refused = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/sources/source-1/privacy")
+                    .header("Authorization", &token)
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(r#"{"action":"erase_everything"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+        let deleted = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/archives/{id}"))
+                    .header("Authorization", &token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(deleted.status(), StatusCode::OK);
+        let gone = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(format!("/archives/{id}"))
+                    .header("Authorization", &token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(gone.status(), StatusCode::NOT_FOUND);
     }
     #[test]
     fn auth_accepts_previous_token_during_rotation() {
@@ -447,6 +618,7 @@ mod tests {
             identity: test_identity(),
             workers: test_workers(),
             hsts: true,
+            archive: None,
         };
         let app = router(state);
         let missing = app
@@ -830,6 +1002,7 @@ mod tests {
             identity: test_identity(),
             workers: test_workers(),
             hsts: false,
+            archive: None,
         };
         let response = router(state)
             .oneshot(

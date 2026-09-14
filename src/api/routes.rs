@@ -5,11 +5,13 @@ use crate::api::assets::{css, index, js};
 use crate::api::auth::{authenticate, create_browser_session, headers};
 use crate::api::error::{db_error, invalid, ApiError, ApiResult, JsonBody};
 use crate::api::stream::{activity, activity_stream, generation, generation_stream};
+use crate::archive::{ArchiveStore, PrivacyAction};
 use crate::{agent_loop, ingest, recording, safety, storage, tools, Harness};
 use anyhow::Result;
 use axum::{
+    body::Bytes,
     extract::{DefaultBodyLimit, Path, Query, State},
-    http::StatusCode,
+    http::{header, StatusCode},
     middleware,
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -17,7 +19,10 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::{collections::BTreeMap, sync::atomic::Ordering};
+use std::{
+    collections::BTreeMap,
+    sync::{atomic::Ordering, Arc},
+};
 use uuid::Uuid;
 
 fn default_scope() -> String {
@@ -768,6 +773,123 @@ async fn ingest_memory(
     Ok((StatusCode::ACCEPTED, Json(response)))
 }
 
+/// Exact archiving is opt-in. With no key configured the honest answer names the missing
+/// configuration: a 500 would imply a fault, and a 2xx would imply bytes were kept.
+fn archive_store(h: &Harness) -> ApiResult<Arc<ArchiveStore>> {
+    h.archive.clone().ok_or(ApiError(
+        StatusCode::NOT_IMPLEMENTED,
+        "Exact archiving is not configured on this server; no bytes were stored",
+    ))
+}
+/// Archive and source identifiers are opaque to this layer, so it bounds them rather than
+/// asserting a shape the archive tables do not enforce.
+fn archive_identifier(value: &str) -> ApiResult<String> {
+    if value.is_empty() || value.len() > 200 || value.chars().any(char::is_control) {
+        return Err(invalid(
+            "Identifier must be 1-200 characters with no control characters",
+        ));
+    }
+    Ok(value.to_string())
+}
+/// A missing or deleted archive is a 404. A payload that fails authentication is not: that is a
+/// tamper or key-rotation fault the operator must see, so it never reads as "no such archive".
+fn archive_read_error(error: anyhow::Error) -> ApiError {
+    let detail = error.to_string();
+    if detail.contains("exact archive not found") || detail.contains("exact archive was deleted") {
+        return ApiError(
+            StatusCode::NOT_FOUND,
+            "No readable exact archive has that identifier",
+        );
+    }
+    // The client gets a fixed sentence; the operator needs the reason, and an archive fault the
+    // logs cannot explain is not auditable.
+    eprintln!(
+        "{}",
+        json!({"event":"archive_read_failed","error":detail})
+    );
+    ApiError(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "Stored bytes could not be returned; they did not authenticate or are unavailable",
+    )
+}
+/// Stores the body verbatim. The request is deliberately raw bytes rather than JSON: an exact
+/// archive that had to survive a JSON string encoding would no longer be exact.
+async fn archive_source(
+    State(h): State<Harness>,
+    Path(source): Path<String>,
+    body: Bytes,
+) -> ApiResult<(StatusCode, Json<Value>)> {
+    let store = archive_store(&h)?;
+    let source = archive_identifier(&source)?;
+    if body.is_empty() {
+        return Err(invalid("Archive body must contain at least one byte"));
+    }
+    let archive_id = store
+        .archive_exact_via(&h.store, source, body.to_vec())
+        .await
+        .map_err(db_error)?;
+    Ok((StatusCode::CREATED, Json(json!({ "archive_id": archive_id }))))
+}
+async fn read_archive(State(h): State<Harness>, Path(id): Path<String>) -> ApiResult<Response> {
+    let store = archive_store(&h)?;
+    let id = archive_identifier(&id)?;
+    let bytes = store
+        .read_exact_via(&h.store, id)
+        .await
+        .map_err(archive_read_error)?;
+    Ok((
+        [(header::CONTENT_TYPE, "application/octet-stream")],
+        bytes,
+    )
+        .into_response())
+}
+/// Deleting an archive is not the same act as forgetting a source: this removes stored bytes and
+/// records that removal, and leaves every other privacy state untouched.
+async fn delete_archive(
+    State(h): State<Harness>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    let store = archive_store(&h)?;
+    let id = archive_identifier(&id)?;
+    store
+        .delete_archive_via(&h.store, id)
+        .await
+        .map_err(archive_read_error)?;
+    Ok(Json(json!({"deleted":true})))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PrivacyRequest {
+    action: String,
+}
+async fn record_privacy_action(
+    State(h): State<Harness>,
+    Path(source): Path<String>,
+    JsonBody(req): JsonBody<PrivacyRequest>,
+) -> ApiResult<(StatusCode, Json<Value>)> {
+    let store = archive_store(&h)?;
+    let source = archive_identifier(&source)?;
+    let action = PrivacyAction::parse(&req.action).ok_or(invalid(
+        "Action must be one of forget, delete_source or purge_index",
+    ))?;
+    store
+        .record_action_via(&h.store, source, action)
+        .await
+        .map_err(db_error)?;
+    Ok((StatusCode::ACCEPTED, Json(json!({"recorded":req.action}))))
+}
+/// The recorded causal edges behind one turn. `/chat/requests/{id}/incident` projects a graph and
+/// marks unlinked rows as unknown; this returns the underlying edges without interpretation.
+async fn request_provenance(
+    State(h): State<Harness>,
+    Path(request): Path<String>,
+) -> ApiResult<Json<Value>> {
+    Uuid::parse_str(&request).map_err(|_| invalid("Invalid request identifier"))?;
+    Ok(Json(
+        h.store.provenance_edges(request).await.map_err(db_error)?,
+    ))
+}
+
 pub(crate) fn router(state: Harness) -> Router {
     let api = Router::new()
         .route("/chat", post(chat))
@@ -804,6 +926,13 @@ pub(crate) fn router(state: Harness) -> Router {
         .route("/generation/stream", get(generation_stream))
         .route("/changes", get(request_changes))
         .route("/changes/{id}/revert", post(revert_change))
+        .route("/chat/requests/{id}/provenance", get(request_provenance))
+        .route(
+            "/sources/{id}/archive",
+            post(archive_source).layer(DefaultBodyLimit::max(2 * 1024 * 1024)),
+        )
+        .route("/sources/{id}/privacy", post(record_privacy_action))
+        .route("/archives/{id}", get(read_archive).delete(delete_archive))
         .route_layer(middleware::from_fn_with_state(state.clone(), authenticate));
     Router::new()
         .route("/", get(index))

@@ -1420,7 +1420,6 @@ impl DbStore {
         .await
     }
 
-    #[allow(dead_code)]
     pub async fn provenance_edges(&self, request_id: String) -> Result<Value> {
         self.run(move |c| {
             let mut stmt = c.prepare(crate::agentic_sql::PROVENANCE_EDGES_LIST)?;

@@ -3,18 +3,24 @@
 //! The ordinary database remains sanitized. This subsystem is invoked explicitly and
 //! stores only authenticated ciphertext plus non-secret metadata in SQLite.
 //!
-//! Delivered by P13-T02 and covered by this module's own tests, but not yet reachable
-//! from any HTTP route: nothing in the running server constructs an `ArchiveStore`. The
-//! on-disk format is mirrored by `scripts/backup.py`, and migration 007 already ships the
-//! `exact_archives` / `privacy_events` tables, so the code is kept intact rather than
-//! deleted. Wiring it to a route is tracked separately; until then `dead_code` is allowed
-//! module-wide so the release gate stays at zero warnings without hiding warnings elsewhere.
-#![allow(dead_code)]
+//! Delivered by P13-T02; reachable from authenticated HTTP routes since P13-T02b. The
+//! on-disk format is mirrored by `scripts/backup.py`, and migration 007 ships the
+//! `exact_archives` / `privacy_events` tables.
+//!
+//! The subsystem stays opt-in: `open_from_env` returns `None` unless both
+//! `HARNESS_ARCHIVE_ROOT` and `HARNESS_ARCHIVE_KEY` are set, so a deployment that never
+//! configures a key keeps an entirely sanitized database and its archive routes refuse
+//! explicitly instead of half-working.
+//!
+//! The `&Connection` methods are the primitives. The `*_via` wrappers are the only path the
+//! HTTP layer uses, so every archive write runs inside a `DbStore` closure on the serialized
+//! writer instead of opening a second connection to the same database file.
+use crate::storage::DbStore;
 use anyhow::{anyhow, bail, Context, Result};
 use ring::{aead, digest, rand::{SecureRandom, SystemRandom}};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use std::{fs::{self, OpenOptions}, io::Write, path::{Path, PathBuf}};
+use std::{fs::{self, OpenOptions}, io::Write, path::{Path, PathBuf}, sync::Arc};
 use uuid::Uuid;
 
 const MAGIC: &[u8] = b"HARNESS-EXACT\0";
@@ -38,8 +44,11 @@ impl KeyRing {
         Ok(Self { current, previous })
     }
 
+    /// P13-T02b: the `?` this once used on `previous` returned `None` for every lookup when no
+    /// rotation key was configured, so a single-key deployment could write archives it could
+    /// never read back. `flatten` makes the previous key optional instead of required.
     fn by_id(&self, id: &str) -> Option<&ArchiveKey> {
-        [&self.current, self.previous.as_ref()?].into_iter().find(|key| key.id == id)
+        [Some(&self.current), self.previous.as_ref()].into_iter().flatten().find(|key| key.id == id)
     }
 }
 
@@ -91,6 +100,16 @@ impl PrivacyAction {
     fn name(self) -> &'static str {
         match self { Self::Forget => "forget", Self::DeleteSource => "delete_source", Self::PurgeIndex => "purge_index" }
     }
+    /// Parse the wire name. Returning `Option` keeps an unknown action a 400 at the edge
+    /// rather than a silently mis-recorded privacy event.
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "forget" => Some(Self::Forget),
+            "delete_source" => Some(Self::DeleteSource),
+            "purge_index" => Some(Self::PurgeIndex),
+            _ => None,
+        }
+    }
     fn column(self) -> &'static str {
         match self { Self::Forget => "forgotten_at", Self::DeleteSource => "source_deleted_at", Self::PurgeIndex => "index_purged_at" }
     }
@@ -104,6 +123,68 @@ impl ArchiveStore {
             fs::set_permissions(root, fs::Permissions::from_mode(0o700))?;
         }
         Ok(Self { root: root.canonicalize()?, keys: KeyRing::from_files(current_key, previous_key)? })
+    }
+
+    /// Opt-in construction from the environment. `None` means no archive was configured, which
+    /// is deliberately distinct from a bad configuration: a key that is present but unreadable,
+    /// wrongly sized or world-readable fails at startup rather than at the first request.
+    pub fn open_from_env() -> Result<Option<Self>> {
+        let (Ok(root), Ok(current)) = (
+            std::env::var("HARNESS_ARCHIVE_ROOT"),
+            std::env::var("HARNESS_ARCHIVE_KEY"),
+        ) else {
+            return Ok(None);
+        };
+        let previous = std::env::var("HARNESS_ARCHIVE_KEY_PREVIOUS").ok();
+        Self::open(
+            Path::new(&root),
+            Path::new(&current),
+            previous.as_deref().map(Path::new),
+        )
+        .map(Some)
+    }
+
+    /// Archive bytes through the shared writer. The ciphertext file is published before the
+    /// metadata row and removed again if that insert fails, so a readable archive file without
+    /// a row is never left behind.
+    pub async fn archive_exact_via(
+        self: &Arc<Self>,
+        db: &DbStore,
+        source_id: String,
+        exact: Vec<u8>,
+    ) -> Result<String> {
+        let store = Arc::clone(self);
+        db.run(move |c| store.archive_exact(c, &source_id, &exact)).await
+    }
+
+    pub async fn read_exact_via(
+        self: &Arc<Self>,
+        db: &DbStore,
+        archive_id: String,
+    ) -> Result<Vec<u8>> {
+        let store = Arc::clone(self);
+        db.read(move |c| store.read_exact(c, &archive_id)).await
+    }
+
+    /// The state row and its `privacy_events` entry share one transaction, so the audit trail
+    /// can never disagree with the state it is supposed to explain.
+    pub async fn record_action_via(
+        self: &Arc<Self>,
+        db: &DbStore,
+        source_id: String,
+        action: PrivacyAction,
+    ) -> Result<()> {
+        let store = Arc::clone(self);
+        db.run(move |c| store.record_action(c, &source_id, action)).await
+    }
+
+    pub async fn delete_archive_via(
+        self: &Arc<Self>,
+        db: &DbStore,
+        archive_id: String,
+    ) -> Result<()> {
+        let store = Arc::clone(self);
+        db.run(move |c| store.delete_archive(c, &archive_id)).await
     }
 
     pub fn archive_exact(&self, conn: &Connection, source_id: &str, exact: &[u8]) -> Result<String> {
