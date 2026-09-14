@@ -1,5 +1,46 @@
 # PROGRESS — journal
 
+## 2026-09-14T14:30:00Z · P12-T04 — the last three implementation clauses; still `doing`
+
+Three clauses, taken in order, each gated before the next began.
+
+**Shared limits.** `src/limits.rs` now defines the verification bounds that `memory_agents.rs`
+and `storage.rs` must agree on. They were duplicated const groups plus two bare `500`s in
+`agent_loop/verification.rs`; nothing in the type system forced them to match, and a change to
+one side would have been a silent truncation on the other. No value moved — the change is that
+drift is now impossible. Caps used by exactly one module stayed local, because centralizing
+those buys indirection and no invariant.
+
+**Checked casts.** 68 production `as` casts, of which seven were converted. The filter was not
+"could this ever be wrong" but "is this safe only because of a line somewhere else": the
+archive header length (the on-disk format is a 4-byte field, so `MAX_HEADER` should not be the
+sole guard), the stored embedding dimension, two LSP position casts, the `Drop` kill of a
+browser process group (negating an out-of-range pid would signal the wrong group), the
+edit-tool anchor line and pid registration, and `arg_usize` in `fs_tools`. The rest are
+documented widenings — `len() as i64`, the intentional u64→usize fold in `embeddings.rs` — and
+were left alone. Clippy's cast lint family was considered and rejected: turning it on is a
+repo-wide diff, which is not what a cleanup task may smuggle in.
+
+**Patch-option semantics.** `Option<Option<T>>` compiles and is wrong to read: nothing in the
+type says which nesting level means "clear", so a dropped layer turns an explicit `null` into a
+no-op and a partial settings save quietly wipes fields the caller never named. `ScopePatch` now
+uses `crate::patch::Patch<T>` — `Unchanged`, `Clear`, `Set(T)` — with a `Deserialize` impl that
+maps absent→`Unchanged` (through `Default`, since serde never calls the impl for a missing
+field), `null`→`Clear`, value→`Set`. `apply` is the only merge path into `upsert_scope`, so an
+`Unchanged` field cannot write by accident. Three tests pin the contract at the wire level, and
+the empty-patch rule (`is_empty` → return the stored row, leave `updated_at` alone) is
+unchanged.
+
+**Evidence.** clippy `--all-targets --all-features -D warnings` exit 0 · 220 passed, 0 failed
+(217 + the three new contract tests) · `verify_local.sh` exit 0 · `verify_release.sh` exit 0
+with the real browser-to-server lane green. No behaviour changed, and nothing was deployed.
+
+**Still `doing`, deliberately.** Five of the six done-when clauses now hold in the code. The
+sixth — "dead code is connected or removed" — is answered by a documented decision, not by the
+code: the archive and retention/maintenance surface is implemented, test-covered and reachable
+from no route. Connecting it is routing work, tracked as P13-T02b. Flipping the status on the
+strength of a deviation note is exactly the kind of accounting this journal exists to prevent.
+
 ## 2026-09-14T09:45:00Z · P12-T01 — done; seven verified seams, deployed as `b50811f`
 
 P12-T01 is `done`. The decomposition was carried out as seven verbatim seams, each compiled,
