@@ -1,5 +1,23 @@
 # PROGRESS — journal
 
+## 2026-09-14T07:25:00Z · P11-T06 — deployed to the harness unit
+
+`scripts/deploy.sh` deployed a9de940 to the `harness` unit: pid 263233, release sha256
+9195b239cc72cd20de8016d6934e5a9e16ba082c0dd5bf74c7dac8a17b8cd8c7, schema 10, readiness
+verified, API answering, non-object body refused with 400. Authenticated `/health` reports
+commit a9de940c44517fdf7a58b58f319d9ef9265d7c27, ready true, and the same binary sha256.
+
+Live delivery checked against the running service rather than trusting the tests alone:
+`GET /app.js` with `Accept-Encoding: gzip` returns 200, `content-encoding: gzip`,
+`vary: accept-encoding`, `etag "a9de940…-app.js-gzip"` and 18136 bytes; the same request
+without `Accept-Encoding` returns 66176 identity bytes, no `content-encoding`, and the plain
+`"a9de940…-app.js"` validator. Piping the compressed response through `gzip -dc` and comparing
+with `cmp` against the identity response matched exactly, so the stored member really is the
+same script the server would otherwise serve. Re-requesting with the gzip validator returned
+304 with an empty body and `vary: accept-encoding` intact. `/` returned 4407 compressed bytes
+(15847 identity) and `/style.css` 6304 (26459 identity), so the initial page load drops from
+roughly 108 KB to 29 KB, a 73% reduction.
+
 ## 2026-09-14T07:23:00Z · P11-T06 — static assets compressed at build time; task complete
 
 Closed the compression gap left by P11-T05 without adding a dependency. The obvious route
