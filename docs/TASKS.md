@@ -727,7 +727,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
   without inventing test-only visibility — the same boundary P12-T01 recorded.
 
 ### P12-T03 · Introduce typed API and database contracts
-- status: todo
+- status: doing
 - priority: high
 - lane: api-contracts
 - parallel: no

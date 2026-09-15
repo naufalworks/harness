@@ -1,5 +1,33 @@
 # PROGRESS — journal
 
+## 2026-09-15T03:20:00Z · P12-T03 — doing; the task's own verify command names a test that does not exist
+
+P12-T03 is `doing` on branch `p12-t03-api-contracts` (worktree `/root/development/harness-p12-t03`,
+cut from `dd82434`). The P12-T02 lane was retired first: worktree removed, branch deleted after
+confirming it was merged.
+
+Reconnaissance changed the shape of this task. Three of the four declared artifacts do not exist
+yet — `docs/api.yaml`, `tests/test_api_schema.py` and `static/api.js` are all absent, so this is
+mostly greenfield contract work rather than a refactor of an existing contract. The task's
+`verify:` command is `cargo test --locked api && python3 tests/test_api_schema.py`, which cannot
+run today. That went unnoticed because `check_docs.py`'s verify-cmds check only resolves paths
+matching `scripts/`, so a missing `tests/` target never warned. Widening that checker belongs
+with this task, since this task is what makes the referenced test real.
+
+Current surface being typed: `src/api/` is 1652 lines across assets/auth/error/mod/routes/stream,
+with `routes.rs` the bulk at 956. Handlers return `ApiResult<Json<Value>>` and index untyped
+`Value` receipts by string key (`receipt["state"]`, `receipt["request_id"]`), which is exactly the
+external `Value` indexing the done-when clause targets. Errors are today a two-field
+`ApiError(StatusCode, &'static str)` serialised as `{"error": "..."}` — no stable machine code and
+no retryability signal.
+
+Planned seams, each committed and gated separately: (1) stable error contract with
+code/status/retryability, preserving the existing human sentences; (2) typed DTOs and state enums
+replacing `Value` indexing in handlers; (3) `docs/api.yaml` plus `tests/test_api_schema.py`
+checking it against the router inventory the routes check already counts; (4) a schema-validated
+`static/api.js` client used by `app.js`; (5) widen the verify-cmds checker, then docs, gate,
+integrate and promote. Nothing is claimed done until its gate runs.
+
 ## 2026-09-14T18:52:00Z · P12-T02 — integrated, pushed and promoted; the gate caught the live binary trailing HEAD
 
 The decomposition existed only on `p12-t02-decompose` until now: `main` was still at `99e3972`
