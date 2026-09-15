@@ -961,16 +961,31 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - note (2026-09-15, selection): picked by the documented rule, not by the previous session's suggestion. That session proposed P13-T04 next; P13-T04 is ineligible because its dependency P16-T03 is still `todo`. Among eligible `todo` tasks whose dependencies are all `done`, the `high` tier holds P14-T04b and P15-T01 with no `release-blocker` on either, so the earlier stable task ID wins.
 - note (2026-09-15, starting recon): all six done-when clauses are greenfield. At 2805d71 no `circuit`, `breaker`, `Retry-After`/`retry_after`, `jitter`, `capabilit*` or role-`fallback` symbol exists anywhere in `src/` (the only `fallback` hits are unrelated: `grep_fallback`, `fallback_symbols`, an API error-status fallback). `src/storage/provider.rs` is 143 lines and exports no `pub` item. The P14-T04a surface this must preserve is `SpendLimits` + `reserve_spend`/`finish_spend` wrapping every provider call in `src/memory_agents.rs`, so resilience work has to route through that reservation path rather than around it.
 
-### P14-T05 · Expand language/browser tools and modular accessible UI
-- status: doing
+### P14-T05a · Expand language/browser tools and modular accessible UI
+- status: done
 - priority: medium
 - lane: experience
 - parallel: yes
 - depends: P12-T02, P11-T05
 - design: docs/ROADMAP.md#p14-workflow-tools-providers-and-ux
 - files: src/tools/*, static/*, tests/*ui*.cjs
-- done-when: configured languages gain AST/LSP discovery and bounded session reuse; browser evidence supports safe screenshots/transfers; UI has modules, keyboard/mobile/a11y, reconnect state, richer diffs, context/cost/project dashboards and optional voice input.
+- done-when: configured languages gain AST/LSP discovery and bounded session reuse; browser evidence supports safe screenshots and an explicit fail-closed transfer policy; UI has modules, keyboard/mobile/a11y, reconnect state, richer diffs, and context/cost/project dashboards.
 - verify: scripts/verify_browser.sh && scripts/verify_e2e.sh
+- result: LSP gained a read-only `discover` operation for Rust and C/C++ with root/server-keyed session reuse, a two-session cap, 30-second idle expiry, and pool discard on protocol/timeout/process failure; discovery refuses paths escaping the project root. Browser evidence supports fixed viewport-only PNG screenshots capped at 1.5 MiB, signature-checked and atomically published under `.harness/artifacts/browser/` with generated filenames, while upload and download operation names are absent from the schema and refused before CDP dispatch. The UI gained connection states (`Offline`, `Connection delayed`, `Reconnecting…`, `Ready`) with read-only status refresh and no automatic resend of an ambiguous chat request, a bounded project/usage/cost/context/permission overview rendered with `textContent`, and accessibility work covering keyboard focus management, a skip link to a focusable main landmark, `aria-controls`/`aria-expanded` on the mobile drawer, and Escape-to-close with focus restore. The optional voice clause was split out to P14-T05b rather than implemented speculatively.
+- result-verify: `cargo test --locked` (264 passed), `cargo clippy --locked --all-targets -- -D warnings` (clean), `cargo fmt --all -- --check` (clean), `python3 tests/test_api_schema.py` (passed), `python3 tests/test_migrations.py` (passed), `scripts/verify_browser.sh` (passed), `scripts/verify_e2e.sh` (passed). Worktree clean at `913f55d`.
+- note (2026-09-15, split): the original P14-T05 bundled optional voice input with the language, browser, and UI surfaces. Every other clause is implemented and verified, but voice cannot be built without a product decision naming the speech engine/endpoint and retention policy, so the delivered scope closes here and the unmet clause moves to P14-T05b instead of holding the `experience` lane open at `doing`.
+
+### P14-T05b · Add optional voice input behind a named speech provider
+- status: todo
+- priority: low
+- lane: experience
+- parallel: yes
+- depends: P14-T05a
+- design: docs/design/ui.md#voice-input-deferred
+- files: static/*, tests/*ui*.cjs, docs/design/ui.md
+- done-when: a product contract names the speech engine/endpoint and retention policy; voice is user-visible opt-in with a recording indicator; browser microphone permission is requested only after that opt-in; no raw audio or transcript is persisted in local or session storage; the transcript is bounded at 8 KiB with an explicit edit-before-send step; nothing is submitted automatically; an unavailable or unconfigured speech provider produces a clear refusal; and browser tests assert the refusal path and the absence of persisted audio or transcript.
+- verify: scripts/verify_browser.sh && scripts/verify_e2e.sh
+- note (2026-09-15, blocked on product decision): this is deliberately not started. The minimum safe contract is documented in `docs/design/ui.md` under "Voice input (deferred)"; until the speech engine/endpoint and retention policy are chosen, the composer stays text-only and no capture code should land.
 
 ## P15 · Memory and history
 

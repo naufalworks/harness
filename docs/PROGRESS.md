@@ -1,5 +1,33 @@
 # PROGRESS — journal
 
+## 2026-09-15T16:45:00Z · P14-T05 — split into P14-T05a (done) and P14-T05b (todo)
+
+P14-T05 bundled optional voice input with the language, browser, and modular-UI surfaces. Every
+other clause is implemented and verified at `913f55d` on branch `p14-t05` with a clean worktree:
+`cargo test --locked` (264 passed), strict clippy, `cargo fmt --all -- --check`, API schema,
+migrations, mocked browser suites, and real browser-to-service E2E all pass.
+
+Voice is the only unmet clause and it is a product decision, not missing code: it cannot be built
+without naming the speech engine/endpoint and the retention policy. Leaving the whole task at
+`doing` would hold the `experience` lane open for a decision that no amount of implementation can
+settle, so the delivered scope is closed as `P14-T05a` (`done`) and the unmet clause becomes
+`P14-T05b` (`todo`, `priority: low`, `depends: P14-T05a`). Its `done-when` clauses are the minimum
+safe contract already documented in `docs/design/ui.md` — named provider, visible opt-in and
+recording indicator, permission requested only after opt-in, no persisted audio or transcript, an
+8 KiB transcript with explicit edit-before-send, no automatic submission, a clear refusal when the
+provider is unavailable, plus browser tests over the refusal and non-persistence paths. No capture
+code lands until then; the composer stays text-only.
+
+This entry is docs-only: no source, schema, or test behavior changed, so the verification above
+still describes the tree.
+
+Next eligible work by the documented rule (highest-priority eligible `todo`, `release-blocker`
+first within a tier, then earlier stable ID): no `release-blocker` is open, and the `medium` tier
+holds P15-T04 and P16-T01 with all dependencies `done`, so the earlier stable ID selects
+**P15-T04 · Search and port sanitized history**. Recorded caveat for the next session: P16-T01 is
+the head of the P16 → P13-T04 → P17 chain, so choosing it instead would be a deliberate
+critical-path override and must be journaled as one rather than taken silently.
+
 ## 2026-09-15T16:20:00Z · P14-T05 — bounded language discovery and browser evidence slice
 
 The first implementation slice is complete but the task remains `doing`. LSP now exposes a
