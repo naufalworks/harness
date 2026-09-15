@@ -69,6 +69,14 @@ existence: an unauthenticated request never learns whether a path exists.
 - `GET /memory/entries/{id}/timeline`
 - `POST /memory/entries/{id}/governance`
 - `POST /memory/branches`
+- `GET /history/search`
+- `POST /history/index`
+- `GET /history/documents/{id}`
+- `POST /history/documents/{id}/privacy`
+- `POST /export/bundles`
+- `POST /export/bundles/{id}/review`
+- `POST /export/bundles/{id}/release`
+- `POST /export/import`
 - `POST /sources/{id}/archive`
 - `POST /sources/{id}/privacy`
 - `GET|DELETE /archives/{id}`

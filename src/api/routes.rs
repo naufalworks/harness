@@ -1213,6 +1213,293 @@ async fn checkout_memory_branch(
     ))
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HistorySearchQuery {
+    q: String,
+    #[serde(default = "default_scope")]
+    scope: String,
+    #[serde(default)]
+    session_id: Option<String>,
+    #[serde(default)]
+    kind: Option<String>,
+}
+/// P15-T04: scoped full-text search over sanitized history. Every hit carries a citation
+/// naming the source row, its revision, its kind and its timestamp, so a result can be traced.
+/// Forgotten and source-deleted documents are never returned, and a stored body that no longer
+/// passes the shared sanitizer is suppressed rather than served.
+async fn search_history(
+    State(h): State<Harness>,
+    Query(q): Query<HistorySearchQuery>,
+) -> ApiResult<Json<Value>> {
+    safety::scope(&q.scope).map_err(|_| invalid("Invalid scope"))?;
+    let query = q.q.trim().to_string();
+    if query.is_empty() || query.len() > 500 {
+        return Err(invalid("Search needs a query of 1 to 500 characters"));
+    }
+    if let Some(session) = q.session_id.as_deref() {
+        Uuid::parse_str(session).map_err(|_| invalid("Invalid session identifier"))?;
+    }
+    if let Some(kind) = q.kind.as_deref() {
+        if kind != "turn" && kind != "artifact" {
+            return Err(invalid("Kind must be turn or artifact"));
+        }
+    }
+    let scope = storage::SearchScope {
+        scope: q.scope,
+        session_id: q.session_id,
+        kind: q.kind,
+    };
+    Ok(Json(
+        h.store
+            .search_history(scope, query)
+            .await
+            .map_err(db_error)?,
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HistoryIndexRequest {
+    #[serde(default)]
+    limit: Option<i64>,
+}
+/// Refresh the sanitized search projection. Only content the shared sanitizer accepts is
+/// indexed; refused rows are reported back rather than indexed in a partly cleaned state.
+async fn index_history(
+    State(h): State<Harness>,
+    JsonBody(req): JsonBody<HistoryIndexRequest>,
+) -> ApiResult<Json<Value>> {
+    let limit = req.limit.unwrap_or(2_000);
+    if !(1..=20_000).contains(&limit) {
+        return Err(invalid("Limit must be between 1 and 20000"));
+    }
+    Ok(Json(h.store.index_history(limit).await.map_err(db_error)?))
+}
+
+/// The stored audit for one indexed document, which is how the forget / source-delete
+/// difference is read back: after a forget this still shows the entry and its content; after a
+/// source delete it shows the deletion with the content gone.
+async fn history_document(
+    State(h): State<Harness>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    Uuid::parse_str(&id).map_err(|_| invalid("Invalid document identifier"))?;
+    Ok(Json(
+        h.store
+            .history_document_audit(id)
+            .await
+            .map_err(db_error)?
+            .ok_or(ApiError(
+                StatusCode::NOT_FOUND,
+                "No indexed history document with that identifier",
+            ))?,
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HistoryPrivacyRequest {
+    action: String,
+}
+/// The two operations that must not be confused. `forget` stops a document being recalled or
+/// returned while its content and revision trail are retained; `restore` lifts that suppression;
+/// `delete_source` removes the underlying content and keeps only the audited fact that the entry
+/// existed and was deleted. No operation implies another.
+async fn history_privacy(
+    State(h): State<Harness>,
+    Path(id): Path<String>,
+    JsonBody(req): JsonBody<HistoryPrivacyRequest>,
+) -> ApiResult<(StatusCode, Json<Value>)> {
+    Uuid::parse_str(&id).map_err(|_| invalid("Invalid document identifier"))?;
+    let outcome = match req.action.as_str() {
+        "forget" => h.store.forget_history_document(id, false).await,
+        "restore" => h.store.forget_history_document(id, true).await,
+        "delete_source" => h.store.delete_history_source(id).await,
+        _ => {
+            return Err(invalid(
+                "Action must be one of forget, restore or delete_source",
+            ))
+        }
+    }
+    .map_err(db_error)?;
+    let note = match outcome.as_str() {
+        "forgotten" => "The entry will not be recalled or returned. Its content and revision trail are retained.",
+        "restored" => "Suppression was lifted; the content was never destroyed.",
+        "source_deleted" => "The source content was removed. The audited fact that this entry existed and was deleted remains.",
+        "content_removed_source_retained" => "The source content was emptied. The source row is retained because durable evidence still references it, and the deletion is audited.",
+        "already_forgotten" => "This entry was already forgotten; nothing was written twice.",
+        "already_deleted" => "This entry's source was already deleted; nothing was written twice.",
+        "not_forgotten" => "This entry was not forgotten, so there was nothing to restore.",
+        _ => "No change was recorded.",
+    };
+    let status = match outcome.as_str() {
+        "not_found" => {
+            return Err(ApiError(
+                StatusCode::NOT_FOUND,
+                "No indexed history document with that identifier",
+            ))
+        }
+        "source_deleted" | "forgotten" | "restored" | "content_removed_source_retained" => {
+            StatusCode::ACCEPTED
+        }
+        _ => StatusCode::OK,
+    };
+    Ok((status, Json(json!({"outcome":outcome,"note":note}))))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExportBundleRequest {
+    kind: String,
+    #[serde(default = "default_scope")]
+    scope: String,
+    audience: String,
+    #[serde(default)]
+    memory_ids: Vec<String>,
+    #[serde(default)]
+    document_ids: Vec<String>,
+    #[serde(default)]
+    note: Option<String>,
+}
+/// Assemble a draft export bundle. Nothing leaves here: the response is what *would* leave, so
+/// an operator can review it before releasing it.
+async fn create_export_bundle(
+    State(h): State<Harness>,
+    JsonBody(req): JsonBody<ExportBundleRequest>,
+) -> ApiResult<Json<Value>> {
+    safety::scope(&req.scope).map_err(|_| invalid("Invalid scope"))?;
+    for id in req.memory_ids.iter().chain(req.document_ids.iter()) {
+        Uuid::parse_str(id).map_err(|_| invalid("Invalid selected identifier"))?;
+    }
+    if req
+        .note
+        .as_ref()
+        .is_some_and(|note| note.chars().count() > 500 || safety::sensitive(note))
+    {
+        return Err(invalid("Note must be under 500 safe characters"));
+    }
+    h.store
+        .create_export_bundle(
+            req.kind,
+            req.scope,
+            req.audience,
+            req.memory_ids,
+            req.document_ids,
+            req.note,
+        )
+        .await
+        .map(Json)
+        // The store rejects an unknown kind or audience, an empty selection, an over-large
+        // selection, or an identifier outside the scope. All of them are caller mistakes.
+        .map_err(|_| {
+            invalid("The selection, kind or audience was rejected: check the scope, at least one item, and at most 500 items")
+        })
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExportReviewRequest {
+    #[serde(default)]
+    approve: bool,
+    #[serde(default)]
+    content_sha256: Option<String>,
+}
+/// The audience-review step. With `approve: false` this is a preview: the exact contents plus the
+/// digest to approve them against. With `approve: true` and that digest it records the review;
+/// a stale digest is a conflict rather than a silent re-approval.
+async fn review_export_bundle(
+    State(h): State<Harness>,
+    Path(id): Path<String>,
+    JsonBody(req): JsonBody<ExportReviewRequest>,
+) -> ApiResult<Json<Value>> {
+    Uuid::parse_str(&id).map_err(|_| invalid("Invalid bundle identifier"))?;
+    if let Some(digest) = req.content_sha256.as_deref() {
+        if digest.len() != 64 || !digest.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(invalid("content_sha256 must be a 64-character hex digest"));
+        }
+    }
+    let result = h
+        .store
+        .review_export_bundle(id, req.approve, req.content_sha256)
+        .await
+        .map_err(db_error)?;
+    match result["outcome"].as_str().unwrap_or_default() {
+        "not_found" => Err(ApiError(
+            StatusCode::NOT_FOUND,
+            "No export bundle with that identifier",
+        )),
+        "stale_review" | "already_released" | "unsanitized_items" | "missing_digest" => {
+            Err(ApiError(
+                StatusCode::CONFLICT,
+                "The export could not be reviewed as requested",
+            ))
+        }
+        _ => Ok(Json(result)),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExportReleaseRequest {
+    #[serde(default)]
+    anchor: Option<String>,
+}
+/// Serialize a reviewed bundle into a sealed continuation packet. Refuses an unreviewed bundle,
+/// an unsanitized item, or contents whose digest no longer matches the reviewed one.
+async fn release_export_bundle(
+    State(h): State<Harness>,
+    Path(id): Path<String>,
+    JsonBody(req): JsonBody<ExportReleaseRequest>,
+) -> ApiResult<Json<Value>> {
+    Uuid::parse_str(&id).map_err(|_| invalid("Invalid bundle identifier"))?;
+    if req.anchor.as_ref().is_some_and(|anchor| anchor.len() > 500) {
+        return Err(invalid("Anchor must be under 500 characters"));
+    }
+    let result = h
+        .store
+        .release_export_bundle(id, req.anchor)
+        .await
+        .map_err(db_error)?;
+    match result["outcome"].as_str().unwrap_or_default() {
+        "not_found" => Err(ApiError(StatusCode::NOT_FOUND, "No export bundle with that identifier")),
+        "released" => Ok(Json(result)),
+        _ => Err(ApiError(
+            StatusCode::CONFLICT,
+            "The export was refused because it is not reviewed, carries unsanitized content, or changed after review",
+        )),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ImportPacketRequest {
+    #[serde(default)]
+    origin: Option<String>,
+    packet: Value,
+}
+/// Import a continuation packet. Verified against the local sanitizer and checksums first, then
+/// merged by stable id plus revision, so re-importing the same packet is `unchanged` rather than
+/// a duplicate and never overwrites newer local content.
+async fn import_continuation_packet(
+    State(h): State<Harness>,
+    JsonBody(req): JsonBody<ImportPacketRequest>,
+) -> ApiResult<Json<Value>> {
+    let origin = req.origin.unwrap_or_else(|| "unspecified".to_string());
+    if origin.len() > 200 || safety::sensitive(&origin) {
+        return Err(invalid("Origin must be under 200 safe characters"));
+    }
+    h.store
+        .import_continuation_packet(origin, req.packet)
+        .await
+        .map(Json)
+        // A packet that fails its format check, its checksum or the local sanitizer is a bad
+        // request, not a storage failure: nothing was written.
+        .map_err(|_| {
+            invalid("The packet was refused: unsupported format version, checksum mismatch, or content the local sanitizer rejects")
+        })
+}
+
 async fn active_processes() -> ApiResult<Json<Value>> {
     Ok(Json(json!({
         "processes": crate::processes::active(),
@@ -1327,6 +1614,14 @@ pub(crate) fn router(state: Harness) -> Router {
         .route("/memory/entries/{id}/timeline", get(memory_timeline))
         .route("/memory/entries/{id}/governance", post(govern_memory))
         .route("/memory/branches", post(checkout_memory_branch))
+        .route("/history/search", get(search_history))
+        .route("/history/index", post(index_history))
+        .route("/history/documents/{id}", get(history_document))
+        .route("/history/documents/{id}/privacy", post(history_privacy))
+        .route("/export/bundles", post(create_export_bundle))
+        .route("/export/bundles/{id}/review", post(review_export_bundle))
+        .route("/export/bundles/{id}/release", post(release_export_bundle))
+        .route("/export/import", post(import_continuation_packet))
         .route(
             "/sources/{id}/archive",
             post(archive_source).layer(DefaultBodyLimit::max(2 * 1024 * 1024)),

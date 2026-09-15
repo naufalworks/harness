@@ -595,6 +595,218 @@ paths:
           $ref: '#/components/responses/Error'
         '5XX':
           $ref: '#/components/responses/Error'
+  /history/search:
+    get:
+      operationId: searchHistory
+      summary: Search sanitized conversation turns and artifacts within a scope.
+      description: >-
+        Scoped full-text search over the sanitized history projection. Every hit carries a
+        citation naming the source row, its revision, its kind and its timestamp, so a result can
+        be traced back to what it quotes. Forgotten and source-deleted documents are never
+        returned, and a stored body that no longer passes the shared sanitizer is suppressed
+        rather than served. Only sanitized content is ever indexed.
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: scope
+          in: query
+          schema:
+            type: string
+        - name: session_id
+          in: query
+          schema:
+            type: string
+        - name: kind
+          in: query
+          schema:
+            type: string
+            enum: [turn, artifact]
+      responses:
+        '200':
+          description: Bounded hits with citations, plus how many rows the read-time gate suppressed.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /history/index:
+    post:
+      operationId: indexHistory
+      summary: Refresh the sanitized history search projection.
+      description: >-
+        Projects completed turns and stored artifacts into the search index after the shared
+        sanitizer accepts them. Refused rows are reported with a reason and never indexed.
+        Unchanged content is left untouched, and a source-deleted document is never resurrected.
+      requestBody:
+        required: false
+        content:
+          application/json: {}
+      responses:
+        '200':
+          description: Counts of indexed, revision-advanced and unchanged documents, plus refusals.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /history/documents/{id}:
+    get:
+      operationId: historyDocument
+      summary: The citation and audit trail of one indexed history document.
+      description: >-
+        How the forget / source-delete difference is read back. After a forget this still shows
+        the entry, its citation and that its content is retained. After a source delete it shows
+        the audited deletion with the content gone.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Citation, suppression and deletion state, and the append-only event list.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /history/documents/{id}/privacy:
+    post:
+      operationId: historyDocumentPrivacy
+      summary: Forget, restore, or source-delete one indexed history document.
+      description: >-
+        Two distinct operations with different semantics, neither implying the other. `forget`
+        stops the entry being recalled or returned while its content and revision trail are
+        retained, and `restore` lifts that suppression. `delete_source` removes the underlying
+        content and keeps only the audited fact that the entry existed and was deleted.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json: {}
+      responses:
+        '200':
+          description: The request was already satisfied; nothing was written twice.
+          content:
+            application/json: {}
+        '202':
+          description: The operation was recorded together with its audit event.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /export/bundles:
+    post:
+      operationId: createExportBundle
+      summary: Assemble a draft export bundle of selected memories and history documents.
+      description: >-
+        Nothing leaves here. The response is what would leave, so an operator can review it
+        first. Items the shared sanitizer refuses, and documents that were forgotten or
+        source-deleted, are recorded as refused rather than carried.
+      requestBody:
+        required: true
+        content:
+          application/json: {}
+      responses:
+        '200':
+          description: The draft bundle, its items, and how many were refused.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /export/bundles/{id}/review:
+    post:
+      operationId: reviewExportBundle
+      summary: Review, or approve, exactly what a bundle would export.
+      description: >-
+        The audience-review step. Without `approve` this previews the exact contents and returns
+        the digest to approve them against; with `approve` and that digest it records the review.
+        A stale digest is a conflict rather than a silent re-approval, so contents that changed
+        after review cannot be blessed by an older look.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json: {}
+      responses:
+        '200':
+          description: The preview, or the recorded review with its pinned digest.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /export/bundles/{id}/release:
+    post:
+      operationId: releaseExportBundle
+      summary: Serialize a reviewed bundle into a sealed continuation packet.
+      description: >-
+        Refuses an unreviewed bundle, an unsanitized or unreviewed item, and contents whose
+        digest no longer matches the reviewed one. The packet carries stable ids, revisions,
+        per-item and bundle checksums, and reproduces no past answer.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json: {}
+      responses:
+        '200':
+          description: The sealed continuation packet.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /export/import:
+    post:
+      operationId: importContinuationPacket
+      summary: Import a continuation packet.
+      description: >-
+        Verified against the local sanitizer and its checksums first, then merged by stable id
+        plus revision. Re-importing the same packet is recorded as unchanged rather than
+        duplicated, a lower revision never overwrites newer local content, and a ported memory
+        is recorded for local approval rather than activated.
+      requestBody:
+        required: true
+        content:
+          application/json: {}
+      responses:
+        '200':
+          description: The import receipt and a per-item decision list.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
   /sessions:
     get:
       operationId: sessions
