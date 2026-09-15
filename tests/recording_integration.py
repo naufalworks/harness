@@ -632,13 +632,60 @@ def main() -> None:
             incident_code, incident = call("/chat/requests/" + denied["request_id"] + "/incident")
             assert incident_code == 200
             assert incident["request"]["request_id"] == denied["request_id"]
-            assert incident["bounds"] == {"max_nodes": 400, "max_edges": 2000}
+            # P16-T01 added the timeline bound alongside the node and edge bounds.
+            assert incident["bounds"] == {"max_nodes": 400, "max_edges": 2000, "max_timeline": 400}
             assert incident["earliest_known_break"]["known"] is True
             assert incident["earliest_known_break"]["reason"] in ("denied", "permission denied")
             assert incident["counts"]["nodes"]["returned"] == len(incident["nodes"])
             assert incident["counts"]["edges"]["returned"] == len(incident["edges"])
             assert incident["expansion_cursors"] == {"nodes": None, "edges": None}
             assert any(item["reason"] == "no recorded provenance edge" for item in incident["unknown_provenance"])
+            # P16-T01: confidence must distinguish a recorded dependency from mere co-occurrence,
+            # and a row with neither may only be unknown. Checked against the real server, not
+            # only in unit tests.
+            labels = {node["confidence"] for node in incident["nodes"]}
+            assert labels <= {"recorded_dependency", "temporal_proximity", "unknown"}, labels
+            for node in incident["nodes"]:
+                if node["confidence"] == "recorded_dependency":
+                    assert node["kind"] == "request" or node["upstream"] or node["downstream"], node
+                if node["confidence"] == "temporal_proximity":
+                    assert not node["upstream"] and not node["downstream"], node
+                    assert node["at"], node
+                if node["confidence"] == "unknown":
+                    assert not node["at"], node
+            assert "not causation" in incident["confidence_labels"]["temporal_proximity"]
+            assert sum(incident["counts"]["confidence"].values()) == len(incident["nodes"])
+            # No response field may carry model reasoning.
+            def _keys(value):
+                if isinstance(value, dict):
+                    for key, child in value.items():
+                        yield key
+                        yield from _keys(child)
+                elif isinstance(value, list):
+                    for item in value:
+                        yield from _keys(item)
+            for key in _keys(incident):
+                assert not any(word in key for word in ("thought", "reasoning", "rationale")), key
+            # Filters narrow the same projection, and the request frame always survives.
+            code, filtered = call("/chat/requests/" + denied["request_id"] + "/incident?kind=permission")
+            assert code == 200, filtered
+            assert filtered["query"]["filtered"] is True
+            assert {node["kind"] for node in filtered["nodes"]} <= {"request", "permission"}, filtered["nodes"]
+            assert filtered["counts"]["unfiltered"]["nodes"] == incident["counts"]["nodes"]["total"]
+            code, missed = call("/chat/requests/" + denied["request_id"] + "/incident?tool=no-such-tool")
+            assert code == 200 and [node["kind"] for node in missed["nodes"]] == ["request"], missed
+            # The chronological view is a real second ordering over the same selected nodes, and
+            # undated rows are listed after the dated ones rather than placed by guesswork.
+            code, chrono = call("/chat/requests/" + denied["request_id"] + "/incident?view=chronological")
+            assert code == 200 and chrono["query"]["view"] == "chronological"
+            dated = [entry["at"] for entry in chrono["timeline"] if entry["at"]]
+            assert dated == sorted(dated), chrono["timeline"]
+            assert all(entry["at"] is None for entry in chrono["timeline"][len(dated):]), chrono["timeline"]
+            node_ids = {node["id"] for node in chrono["nodes"]}
+            assert all(entry["node_id"] in node_ids for entry in chrono["timeline"])
+            # A bad view and a hand-built anchor are both refused rather than reinterpreted.
+            assert call("/chat/requests/" + denied["request_id"] + "/incident?view=guessed")[0] == 400
+            assert call("/chat/requests/" + denied["request_id"] + "/incident?anchor=%7B%22after_node_id%22%3A%22x%22%7D")[0] == 400
 
             # Budget exhaustion: one model call is allowed, then the loop answers honestly without
             # making another paid provider call.
