@@ -433,6 +433,39 @@ mod tests {
     }
 
     #[test]
+    fn session_pool_reuses_root_keyed_processes_and_expires_idle_entries() {
+        let (root, ctx) = project();
+        let spec = ServerSpec {
+            program: "sh",
+            args: &["-c", "sleep 60"],
+            language_id: "rust",
+            rust: true,
+        };
+        let lsp = Lsp::default();
+        let first = Session::start(&ctx, spec, Duration::from_secs(1)).unwrap();
+        let first_pid = first.child.id();
+        lsp.return_session(&root, spec.program, first);
+
+        let reused = lsp
+            .take_session(&ctx, spec, Duration::from_secs(1))
+            .unwrap();
+        assert_eq!(reused.child.id(), first_pid);
+        lsp.return_session(&root, spec.program, reused);
+
+        {
+            let mut pool = lsp.sessions.lock().unwrap();
+            pool[0].last_used = Instant::now() - SESSION_IDLE - Duration::from_secs(1);
+        }
+        let replacement = lsp
+            .take_session(&ctx, spec, Duration::from_secs(1))
+            .unwrap();
+        assert_ne!(replacement.child.id(), first_pid);
+        let mut replacement = replacement;
+        replacement.stop();
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
     fn discovery_reports_configured_language_and_unsupported_extensions() {
         let (root, ctx) = project();
         let lsp = Lsp::default();

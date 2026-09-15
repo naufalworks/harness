@@ -27,6 +27,8 @@ Transfer policy is explicit and fail-closed: browser upload/download operations 
 
 LSP discovery coverage now also pins the configured C/C++ mapping (`.cpp` → `clangd`/`cpp`) and refuses a discovery path that escapes the project root before any server session is started.
 
+The LSP pool tests now exercise same-root process reuse and idle expiry, including replacement of an expired process rather than returning it to the registry.
+
 ## 2026-09-15T15:50:00Z · P14-T05 — doing; language, browser, and accessible UI expansion
 
 P14-T03 is complete on commit `43c1b9c`. The documented eligibility rule selects P14-T05 as the
