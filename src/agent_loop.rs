@@ -721,7 +721,7 @@ impl Ctx<'_> {
             }
         };
         // A turn whose tools were withheld or dropped has nothing read-only to delegate.
-        let definitions = subagent::definitions(tools);
+        let mut definitions = subagent::definitions(tools);
         if definitions.is_empty() {
             return self.refuse_delegation(step, call, ToolResult::err("tools_disabled",
                 "no read-only tools are available to delegate; explore with read, grep and glob directly")).await;
@@ -798,15 +798,30 @@ impl Ctx<'_> {
             let reply = match replied {
                 Ok(reply) => reply,
                 Err(error) => {
+                    // P14-T04b: the parent loop degrades to text when a provider rejects `tools`,
+                    // so a delegation must not fail outright on the same provider and the same
+                    // error. Drop the definitions once and answer from text alone. A repeat
+                    // failure then has empty definitions and stops, so this cannot spin.
+                    let unsupported =
+                        !definitions.is_empty() && memory_agents::is_tools_unsupported(&error);
+                    let code = if unsupported {
+                        "tools_unsupported"
+                    } else {
+                        "provider_failed"
+                    };
                     let mut outcome = self.outcome(
                         model_step,
                         "failed",
                         json!({"error":safety::redact(&error.to_string())}),
                         "model_call_finished",
-                        json!({"error_code":"provider_failed","subagent":true}),
+                        json!({"error_code":code,"subagent":true}),
                     );
-                    outcome.error_code = Some("provider_failed".into());
+                    outcome.error_code = Some(code.to_string());
                     self.store.finish_step(outcome).await?;
+                    if unsupported {
+                        definitions.clear();
+                        continue;
+                    }
                     stopped = Some(subagent::Stop::ProviderFailed);
                     break;
                 }
@@ -2658,5 +2673,65 @@ mod tests {
             2,
             "a cancelled sub-agent made no further provider call"
         );
+    }
+
+    /// P14-T04b: the parent loop already degrades to text when a provider rejects `tools`, but the
+    /// delegation path used to fail the whole sub-agent on the identical error from the identical
+    /// provider. A capability the turn already discovered must apply to every role, so the
+    /// delegated call drops its definitions and answers from text instead of reporting a provider
+    /// failure.
+    #[tokio::test]
+    /// The name deliberately contains `provider` so the task's own verify command,
+    /// `cargo test --locked provider`, actually runs this test instead of filtering it out.
+    async fn a_delegated_provider_call_falls_back_to_text_like_the_parent_loop() {
+        let db = DbStore::init(":memory:").unwrap();
+        let root = project(&db, "auto_all", ScopePatch::default()).await;
+        let script = Script::new(vec![
+            calls(vec![(
+                "call-1",
+                "task",
+                r#"{"description":"find beta","prompt":"say which line of notes.md holds beta"}"#,
+            )]),
+            (
+                400,
+                json!({"error":{"message":"tools are not supported by this model"}}),
+            ),
+            text("notes.md line 2 holds beta."),
+            text("beta is on line 2 of notes.md."),
+        ]);
+        let agents = provider(script.clone()).await;
+        let turn = claim(&db, "which line holds beta").await;
+        let request = turn.request.clone();
+        recording::generate(&db, &agents, turn).await.unwrap();
+
+        let saved = receipt(&db, &request).await;
+        assert_eq!(
+            (saved["state"].as_str(), saved["response"].as_str()),
+            (Some("complete"), Some("beta is on line 2 of notes.md.")),
+            "a tools-rejecting provider must not fail the turn through a delegation: {saved:#?}"
+        );
+
+        let rows = steps(&db, &request).await;
+        let errors: Vec<&str> = rows
+            .iter()
+            .map(|r| r["error"].as_str().unwrap())
+            .filter(|error| !error.is_empty())
+            .collect();
+        assert_eq!(
+            errors,
+            vec!["tools_unsupported"],
+            "the delegated call records the capability, not a provider failure: {rows:#?}"
+        );
+        assert!(
+            rows.iter().any(|r| r["kind"] == "subagent" && r["status"] == "complete"),
+            "the delegation itself still completes: {rows:#?}"
+        );
+
+        let requests = script.requests();
+        assert!(
+            requests[1]["tools"].is_array() && requests[2]["tools"].is_null(),
+            "the delegated retry must drop the tools it was rejected for: {requests:#?}"
+        );
+        std::fs::remove_dir_all(root).ok();
     }
 }

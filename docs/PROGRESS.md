@@ -1,5 +1,45 @@
 # PROGRESS — journal
 
+## 2026-09-15T05:10:00Z · P14-T04b step 1 — one discovered capability, applied to every role
+
+Recon for the role-fallback clause found the asymmetry worth fixing first, and it was not a
+missing feature so much as an inconsistent one. The parent loop already degrades when a provider
+rejects `tools`: it marks the step `tools_unsupported`, drops the definitions and answers from
+text. The delegation path, given the *identical* error from the *identical* provider, had no such
+handling — it recorded `provider_failed` and stopped the sub-agent. So the same capability of the
+same provider produced two different behaviors depending on which role made the call.
+
+The fix reuses the existing `memory_agents::is_tools_unsupported` rather than adding a second
+notion of the same capability, and mirrors the parent's semantics in the delegated loop. It is
+bounded by construction: the retry has empty definitions, so the guard is false on a repeat and
+the sub-agent stops instead of spinning.
+
+Two things worth recording because neither was obvious:
+
+1. The new test was initially named without the word `provider`, and the task's own verify command
+   is `cargo test --locked provider`. The run reported `23 passed; 215 filtered out` — the test
+   compiled and was silently skipped by the gate meant to prove it. Renamed so the declared verify
+   actually exercises it; the run then reported `24 passed; 214 filtered out`. A done-when proved
+   by a filter that excludes its own test is not proved at all.
+2. The test was confirmed load-bearing by temporarily disabling the fallback, at which point it
+   failed. The failure mode was worse than expected: the turn still recorded `state: complete`,
+   but answered with the sub-agent's text, because the failed delegation shifted the scripted
+   replies by one. The old behavior was not a visible provider error but a plausible wrong answer.
+   The file was restored to the exact pre-experiment hash before committing.
+
+Spend safety is untouched: no new provider call is introduced. The degraded retry is an ordinary
+`complete_with_tools` call that still brackets itself in `reserve_spend`/`finish_spend`, exactly
+as the parent's existing retry does, so the P14-T04a fail-closed ceilings still see every call.
+
+Verified: `cargo test --locked provider` → `24 passed; 0 failed`, `python3
+tests/recording_integration.py` → `PASS` (it reports `NOT RUN` until `cargo build --locked` has
+produced a binary, which is easy to mistake for a pass), and `cargo clippy --locked --all-targets
+--all-features -- -D warnings` clean.
+
+Remaining clauses: capability detection before dispatch, circuit breakers, `Retry-After`/jitter,
+foreground/background fairness, and role-specific budgets. Pre-dispatch detection needs a cache on
+`MemoryAgents`, which today has no interior-mutable state; that is the next commit.
+
 ## 2026-09-15T04:50:00Z · P14-T04b — doing; and a correction to the suggested next step
 
 Task: P14-T04b, improve provider scheduling and resilience; status: `todo` → `doing`; priority:
