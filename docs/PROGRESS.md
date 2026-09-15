@@ -11,9 +11,11 @@ generated filename; no upload/download endpoint or model-selected path was intro
 
 Focused discovery and screenshot tests pass. Full Rust tests (262), strict clippy, formatting,
 API-schema and migration checks pass. Mocked browser suites and real browser-to-service E2E also
-pass. Remaining P14-T05 work is bounded LSP session reuse, safe transfer policy if justified by
-the existing contract, and the modular UI/reconnect/dashboard/accessibility pass; optional voice is
-deferred until a safe product contract exists.
+pass. Remaining P14-T05 work is safe transfer policy if justified by the existing contract, and the
+modular UI/dashboard/accessibility pass; optional voice is deferred until a safe product contract
+exists.
+
+The bounded LSP session slice is now also implemented: sessions are root/server keyed, capped at two per registry, expire after 30 seconds of idleness, close/reopen document state between calls, and are discarded on protocol, timeout, process, or pool failure.
 
 The reconnect slice is now also implemented: API transport failures distinguish offline from timeouts, the connection badge exposes `Offline`, `Connection delayed`, `Reconnecting…`, and `Ready` states, and recovery performs only a read-only status refresh. No ambiguous chat request is resent automatically. The existing keyboard/mobile/dark-mode and no-JavaScript-exception browser checks remain green.
 

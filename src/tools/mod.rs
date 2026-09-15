@@ -272,7 +272,7 @@ impl Registry {
                 Box::new(edit_tools::Edit),
                 Box::new(edit_tools::Write),
                 Box::new(ast_edit_tool::AstEdit),
-                Box::new(lsp_tool::Lsp),
+                Box::new(lsp_tool::Lsp::default()),
                 Box::new(browser_tool::Browser::default()),
                 Box::new(bash_tool::Bash),
                 Box::new(git_tool::Git),

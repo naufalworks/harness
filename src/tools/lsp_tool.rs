@@ -1,15 +1,18 @@
 //! LSP diagnostics, references and approval-safe workspace rename.
 //! Contract: docs/design/tools.md#lsp.
 //!
-//! A fresh stdio server per call gives each recorded step one bounded lifetime and no hidden
-//! daemon state. Read-only calls never ask for approval. Rename plans a workspace edit for the
-//! permission card, then queries again after approval and rechecks every supplied file hash.
+//! A small, root-keyed stdio session pool keeps language-server startup bounded without creating
+//! a daemon: at most two sessions live per registry, idle sessions expire after 30 seconds, and
+//! protocol, timeout, process-exit, or pool failures tear the session down. Read-only calls never
+//! ask for approval. Rename plans a workspace edit for the permission card, then queries again
+//! after approval and rechecks every supplied file hash.
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashSet};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use url::Url;
 
@@ -23,10 +26,12 @@ use protocol::*;
 mod session;
 use session::*;
 
-fn query_server(ctx: &ToolCtx, prepared: &Prepared) -> Result<Value, ToolResult> {
-    let mut session = Session::start(ctx, prepared.server, prepared.timeout)?;
+fn query_server(session: &mut Session, prepared: &Prepared) -> Result<Value, ToolResult> {
+    session.reset_deadline(prepared.timeout);
     let result = (|| {
-        session.initialize(prepared.server)?;
+        if !session.is_initialized() {
+            session.initialize(prepared.server)?;
+        }
         session.open(prepared)?;
         match prepared.operation {
             Operation::Discover => unreachable!("discover is handled before query_server"),
@@ -57,7 +62,6 @@ fn query_server(ctx: &ToolCtx, prepared: &Prepared) -> Result<Value, ToolResult>
             }
         }
     })();
-    session.stop();
     result
 }
 
@@ -67,7 +71,89 @@ use format::*;
 mod rename;
 use rename::*;
 
-pub struct Lsp;
+const SESSION_POOL_MAX: usize = 2;
+const SESSION_IDLE: Duration = Duration::from_secs(30);
+
+struct PooledSession {
+    root: PathBuf,
+    program: &'static str,
+    session: Session,
+    last_used: Instant,
+}
+
+pub struct Lsp {
+    sessions: Mutex<Vec<PooledSession>>,
+}
+
+impl Default for Lsp {
+    fn default() -> Self {
+        Self {
+            sessions: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl Lsp {
+    fn take_session(
+        &self,
+        ctx: &ToolCtx,
+        server: ServerSpec,
+        timeout: Duration,
+    ) -> Result<Session, ToolResult> {
+        let mut pool = self.sessions.lock().map_err(|_| {
+            ToolResult::err(
+                "lsp_unavailable",
+                "language-server session pool was poisoned",
+            )
+        })?;
+        pool.retain_mut(|item| {
+            if item.last_used.elapsed() > SESSION_IDLE {
+                item.session.stop();
+                false
+            } else {
+                true
+            }
+        });
+        if let Some(index) = pool
+            .iter()
+            .position(|item| item.root == ctx.root && item.program == server.program)
+        {
+            let mut pooled = pool.swap_remove(index);
+            if pooled.session.reusable() {
+                return Ok(pooled.session);
+            }
+            let mut session = pooled.session;
+            session.stop();
+        }
+        Session::start(ctx, server, timeout)
+    }
+
+    fn return_session(&self, root: &Path, program: &'static str, session: Session) {
+        let Ok(mut pool) = self.sessions.lock() else {
+            let mut session = session;
+            session.stop();
+            return;
+        };
+        pool.retain_mut(|item| {
+            if item.root == root && item.program == program {
+                item.session.stop();
+                false
+            } else {
+                true
+            }
+        });
+        pool.push(PooledSession {
+            root: root.to_path_buf(),
+            program,
+            session,
+            last_used: Instant::now(),
+        });
+        while pool.len() > SESSION_POOL_MAX {
+            let mut evicted = pool.remove(0).session;
+            evicted.stop();
+        }
+    }
+}
 
 fn executable_available(program: &str) -> bool {
     let Some(path) = std::env::var_os("PATH") else {
@@ -104,7 +190,7 @@ fn discover(ctx: &ToolCtx, args: &Value) -> ToolResult {
             "language": server.language_id,
             "server": server.program,
             "available": executable_available(server.program),
-            "session_policy": "bounded per-call stdio session; no daemon state is reused"
+            "session_policy": "bounded root-keyed stdio pool: 2 sessions maximum, 30s idle expiry"
         })
         .to_string(),
     )
@@ -141,11 +227,18 @@ impl Tool for Lsp {
             Ok(prepared) => prepared,
             Err(refusal) => return refusal,
         };
-        let response = match query_server(ctx, &prepared) {
-            Ok(response) => response,
+        let mut session = match self.take_session(ctx, prepared.server, prepared.timeout) {
+            Ok(session) => session,
             Err(refusal) => return refusal,
         };
-        match prepared.operation {
+        let response = match query_server(&mut session, &prepared) {
+            Ok(response) => response,
+            Err(refusal) => {
+                session.stop();
+                return refusal;
+            }
+        };
+        let result = match prepared.operation {
             Operation::Discover => unreachable!("discover is handled before query_server"),
             Operation::Diagnostics => {
                 format_diagnostics(&prepared, &response).unwrap_or_else(|refusal| refusal)
@@ -159,7 +252,9 @@ impl Tool for Lsp {
                 }
                 Err(refusal) => refusal,
             },
-        }
+        };
+        self.return_session(&ctx.root, prepared.server.program, session);
+        result
     }
 }
 
@@ -340,7 +435,8 @@ mod tests {
     #[test]
     fn discovery_reports_configured_language_and_unsupported_extensions() {
         let (root, ctx) = project();
-        let rust = Lsp.run(
+        let lsp = Lsp::default();
+        let rust = lsp.run(
             &ctx,
             json!({ "operation": "discover", "path": "src/lib.rs" }),
         );
@@ -351,11 +447,11 @@ mod tests {
         assert_eq!(rust["server"], "rust-analyzer");
         assert_eq!(
             rust["session_policy"],
-            "bounded per-call stdio session; no daemon state is reused"
+            "bounded root-keyed stdio pool: 2 sessions maximum, 30s idle expiry"
         );
 
         std::fs::write(root.join("README.txt"), "plain text\n").unwrap();
-        let text = Lsp.run(
+        let text = lsp.run(
             &ctx,
             json!({ "operation": "discover", "path": "README.txt" }),
         );
@@ -375,11 +471,12 @@ mod tests {
         let read =
             json!({ "operation": "references", "path": "src/lib.rs", "line": 1, "column": 8 });
         let rename = json!({ "operation": "rename", "path": "src/lib.rs", "line": 1, "column": 8 });
-        assert!(Lsp.side_effecting());
-        assert!(!Lsp.side_effecting_for(&read));
-        assert!(Lsp.side_effecting_for(&rename));
-        assert!(!registry.requires_permission(&Lsp, &read, PermissionMode::Ask));
-        assert!(registry.requires_permission(&Lsp, &rename, PermissionMode::Ask));
-        assert!(!registry.requires_permission(&Lsp, &rename, PermissionMode::AutoEdit));
+        let lsp = Lsp::default();
+        assert!(lsp.side_effecting());
+        assert!(!lsp.side_effecting_for(&read));
+        assert!(lsp.side_effecting_for(&rename));
+        assert!(!registry.requires_permission(&lsp, &read, PermissionMode::Ask));
+        assert!(registry.requires_permission(&lsp, &rename, PermissionMode::Ask));
+        assert!(!registry.requires_permission(&lsp, &rename, PermissionMode::AutoEdit));
     }
 }

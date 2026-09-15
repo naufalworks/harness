@@ -352,6 +352,8 @@ pub(super) fn plan_rename(ctx: &ToolCtx, args: &Value) -> Result<Vec<PendingChan
             "only rename has a workspace edit to plan",
         ));
     }
-    let response = query_server(ctx, &prepared)?;
-    plan_workspace(ctx, &response, &prepared.expected)
+    let mut session = Session::start(ctx, prepared.server, prepared.timeout)?;
+    let response = query_server(&mut session, &prepared);
+    session.stop();
+    plan_workspace(ctx, &response?, &prepared.expected)
 }

@@ -1,9 +1,9 @@
-//! One bounded stdio LSP server process per call.
+//! One bounded stdio LSP server session.
 //!
 //! This is the transport half of the `lsp` tool: spawning the language server,
 //! framing JSON-RPC over stdio, enforcing the frame and stderr caps, and
-//! tearing the process group down when the call ends or times out. Argument
-//! handling and result formatting stay in the parent module.
+//! tearing the process group down when the session expires, fails, or is evicted.
+//! Argument handling and result formatting stay in the parent module.
 use super::*;
 
 pub(super) type Frame = Result<Value, String>;
@@ -17,6 +17,8 @@ pub(super) struct Session {
     pub(super) root_uri: String,
     pub(super) program: &'static str,
     pub(super) stopped: bool,
+    pub(super) initialized: bool,
+    pub(super) open_uri: Option<String>,
 }
 
 impl Session {
@@ -104,7 +106,21 @@ impl Session {
             root_uri,
             program: spec.program,
             stopped: false,
+            initialized: false,
+            open_uri: None,
         })
+    }
+
+    pub(super) fn reusable(&mut self) -> bool {
+        !self.stopped && self.child.try_wait().ok().flatten().is_none()
+    }
+
+    pub(super) fn reset_deadline(&mut self, timeout: Duration) {
+        self.deadline = Instant::now() + timeout;
+    }
+
+    pub(super) fn is_initialized(&self) -> bool {
+        self.initialized
     }
 
     pub(super) fn send(&mut self, value: &Value) -> Result<(), ToolResult> {
@@ -294,10 +310,18 @@ impl Session {
             }),
         )?;
         let _ = self.wait_response(1)?;
-        self.notify("initialized", json!({}))
+        self.notify("initialized", json!({}))?;
+        self.initialized = true;
+        Ok(())
     }
 
     pub(super) fn open(&mut self, prepared: &Prepared) -> Result<(), ToolResult> {
+        if let Some(uri) = self.open_uri.take() {
+            self.notify(
+                "textDocument/didClose",
+                json!({ "textDocument": { "uri": uri } }),
+            )?;
+        }
         self.notify(
             "textDocument/didOpen",
             json!({ "textDocument": {
@@ -306,7 +330,9 @@ impl Session {
                 "version": 1,
                 "text": prepared.text
             }}),
-        )
+        )?;
+        self.open_uri = Some(prepared.uri.clone());
+        Ok(())
     }
 
     pub(super) fn stop(&mut self) {
