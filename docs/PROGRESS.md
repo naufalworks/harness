@@ -1,5 +1,16 @@
 # PROGRESS — journal
 
+## 2026-09-15T18:24:03Z · P17-T02 — isolated treatment freezing started
+
+P17-T01 was fast-forwarded into `main` and pushed at `4112888`; production was not deployed and
+still serves the previously recorded release. P17-T02 is isolated on
+`task/p17-t02-isolated-treatments`. This slice will freeze a capsule's clean project into a
+temporary worktree, copy only its already-declared approved memory revisions into an isolated
+treatment store, and derive immutable baseline, remove-one, and no-memory children. Tests must
+prove the source database and source worktree remain byte-for-byte unchanged. No provider call,
+approved-memory mutation, live project write, service restart, deployment, or infrastructure/access
+change is part of this task.
+
 ## 2026-09-15T18:20:06Z · P17-T01 — immutable run-capsule contract completed
 
 Landed the M0 experiment contract on `task/p17-t01-run-capsules`. Capsules are canonical JSON

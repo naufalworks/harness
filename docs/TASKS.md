@@ -1112,7 +1112,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - result-verify: exact migration chain 001->016 passed and all 3 capsule tests passed. The full 298-test Rust suite, strict Clippy, formatting, SQL migration contracts and API schema checks also passed. `scripts/check_docs.py` has only the pre-existing intentional deployment-truth failure because production remains at `6423d5a`; this task was not deployed.
 
 ### P17-T02 · Freeze and fork isolated treatments
-- status: todo
+- status: doing
 - priority: research
 - lane: experiment-isolation
 - parallel: no
