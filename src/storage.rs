@@ -126,7 +126,7 @@ impl DbStore {
                     "legacy or unknown database: use scripts/migrate_legacy.py into a NEW database"
                 );
             }
-        } else if !(1..=12).contains(&version) {
+        } else if !(1..=13).contains(&version) {
             bail!("unsupported schema version {version}");
         }
         conn.execute_batch(
@@ -167,6 +167,9 @@ impl DbStore {
         }
         if version < 12 {
             conn.execute_batch(include_str!("../migrations/012_memory_governance.sql"))?;
+        }
+        if version < 13 {
+            conn.execute_batch(include_str!("../migrations/013_session_workflows.sql"))?;
         }
         conn.execute(
             "UPDATE provider_calls SET state='failed',usage_status='unavailable',reason='process_restarted_with_call_reserved',finished_at=?1 WHERE state='reserved'",
@@ -282,7 +285,7 @@ impl DbStore {
             let last_checkpoint:Option<String>=c.query_row("SELECT finished_at FROM maintenance_runs WHERE action='wal_checkpoint' ORDER BY id DESC LIMIT 1",[],|r|r.get(0)).optional()?;
             let last_retention:Option<String>=c.query_row("SELECT finished_at FROM maintenance_runs WHERE action='retention' ORDER BY id DESC LIMIT 1",[],|r|r.get(0)).optional()?;
             let last_compaction:Option<String>=c.query_row("SELECT finished_at FROM maintenance_runs WHERE action='compaction' ORDER BY id DESC LIMIT 1",[],|r|r.get(0)).optional()?;
-            Ok(json!({"ready":schema_version==12&&quick_check=="ok","schema_version":schema_version,
+            Ok(json!({"ready":schema_version==13&&quick_check=="ok","schema_version":schema_version,
                 "quick_check":quick_check,"queue":{"jobs_pending":pending_jobs,"jobs_running":running_jobs,
                 "jobs_failed":failed_jobs,"turns_waiting":waiting_turns,"turns_running":running_turns},
                 "maintenance":{"journal_mode":journal_mode,"last_wal_checkpoint_at":last_checkpoint,
@@ -362,7 +365,7 @@ mod tests {
         let db = DbStore::init(":memory:").unwrap();
         seed_retention_fixture(&db).await;
         let readiness = db.readiness().await.unwrap();
-        assert_eq!(readiness["schema_version"], 12);
+        assert_eq!(readiness["schema_version"], 13);
         assert_eq!(readiness["ready"], true);
         assert!(
             readiness["maintenance"]["last_retention_at"].is_null(),
@@ -1317,7 +1320,10 @@ mod tests {
     async fn plans_are_replaced_whole_or_not_at_all() {
         let db = DbStore::init(":memory:").unwrap();
         db.run(|c| {
-            c.execute("INSERT INTO sessions VALUES('s','global','now')", [])?;
+            c.execute(
+                "INSERT INTO sessions(id,scope,created_at) VALUES('s','global','now')",
+                [],
+            )?;
             Ok(())
         })
         .await

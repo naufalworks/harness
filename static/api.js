@@ -100,12 +100,12 @@ async function apiReadBody(response) {
 // One request path for every authenticated JSON route: GET when there is no body, POST when there
 // is, bearer auth in the header so no token reaches a URL or a log, and a hard timeout so a hung
 // connection cannot leave the composer disabled forever.
-async function apiRequest(path, { token, body, timeoutMs = 20000 } = {}) {
+async function apiRequest(path, { token, body, method, timeoutMs = 20000 } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(path, {
-      method: body === undefined ? 'GET' : 'POST',
+      method: method || (body === undefined ? 'GET' : 'POST'),
       signal: controller.signal,
       headers: {
         'Authorization': `Bearer ${token}`,

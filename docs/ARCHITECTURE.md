@@ -33,6 +33,8 @@ existence: an unauthenticated request never learns whether a path exists.
 - `POST /chat/requests/{id}/retry`
 - `GET /chat/requests/{id}/context`
 - `GET /sessions`
+- `PATCH /sessions/{id}`
+- `POST /sessions/{id}/fork`
 - `GET /models`
 - `GET|POST /config`
 - `GET /memory/status`

@@ -15,7 +15,7 @@ use axum::{
     http::{header, StatusCode},
     middleware,
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{get, patch, post},
     Json, Router,
 };
 use serde::Deserialize;
@@ -219,6 +219,10 @@ async fn get_context(State(h): State<Harness>, Path(id): Path<String>) -> ApiRes
 #[serde(deny_unknown_fields)]
 struct HistoryQuery {
     before_seq: Option<i64>,
+    #[serde(default)]
+    search: Option<String>,
+    #[serde(default)]
+    include_archived: bool,
 }
 fn cursor(query: HistoryQuery) -> ApiResult<Option<i64>> {
     if query.before_seq.is_some_and(|n| n <= 0) {
@@ -230,11 +234,89 @@ async fn sessions(
     State(h): State<Harness>,
     Query(q): Query<HistoryQuery>,
 ) -> ApiResult<Json<Value>> {
+    if q.search
+        .as_ref()
+        .is_some_and(|value| value.chars().count() > 120)
+    {
+        return Err(invalid("Session search must be 120 characters or fewer"));
+    }
     Ok(Json(
         h.store
-            .recorded_sessions(cursor(q)?)
+            .recorded_sessions_filtered(
+                q.before_seq,
+                q.search
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty()),
+                q.include_archived,
+            )
             .await
             .map_err(db_error)?,
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SessionPatch {
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    archived: Option<bool>,
+}
+
+async fn update_session(
+    State(h): State<Harness>,
+    Path(id): Path<String>,
+    JsonBody(req): JsonBody<SessionPatch>,
+) -> ApiResult<Json<Value>> {
+    Uuid::parse_str(&id).map_err(|_| invalid("Invalid session identifier"))?;
+    if req.title.is_none() && req.archived.is_none() {
+        return Err(invalid("A session update needs a title or archived flag"));
+    }
+    let title = req.title.map(|value| value.trim().to_string());
+    if title
+        .as_ref()
+        .is_some_and(|value| value.is_empty() || value.chars().count() > 120)
+    {
+        return Err(invalid("Session titles must be 1–120 characters"));
+    }
+    Ok(Json(
+        h.store
+            .update_session(id, title, req.archived)
+            .await
+            .map_err(db_error)?
+            .ok_or(ApiError(StatusCode::NOT_FOUND, "Session not found"))?,
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ForkRequest {
+    #[serde(default)]
+    title: Option<String>,
+}
+
+async fn fork_session(
+    State(h): State<Harness>,
+    Path(id): Path<String>,
+    JsonBody(req): JsonBody<ForkRequest>,
+) -> ApiResult<(StatusCode, Json<Value>)> {
+    Uuid::parse_str(&id).map_err(|_| invalid("Invalid session identifier"))?;
+    let title = req.title.map(|value| value.trim().to_string());
+    if title
+        .as_ref()
+        .is_some_and(|value| value.is_empty() || value.chars().count() > 120)
+    {
+        return Err(invalid("Session titles must be 1–120 characters"));
+    }
+    Ok((
+        StatusCode::CREATED,
+        Json(
+            h.store
+                .fork_session(id, title)
+                .await
+                .map_err(db_error)?
+                .ok_or(ApiError(StatusCode::NOT_FOUND, "Session not found"))?,
+        ),
     ))
 }
 #[derive(Deserialize)]
@@ -1140,6 +1222,8 @@ pub(crate) fn router(state: Harness) -> Router {
         .route("/chat/requests/{id}/retry", post(retry_request))
         .route("/chat/requests/{id}/context", get(get_context))
         .route("/sessions", get(sessions))
+        .route("/sessions/{id}", patch(update_session))
+        .route("/sessions/{id}/fork", post(fork_session))
         .route("/models", get(models))
         .route("/config", get(get_config).post(set_config))
         .route("/memory/status", get(status))

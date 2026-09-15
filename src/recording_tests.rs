@@ -272,7 +272,7 @@ async fn history_replays_complete_pairs_not_failed_prompts() {
 #[tokio::test]
 async fn actual_history_and_sessions_queries_page_older_rows() {
     let db = DbStore::init(":memory:").unwrap();
-    db.run(|c| {let tx=c.transaction()?;tx.execute("INSERT INTO sessions VALUES('s','global','now')",[])?;for i in 0..257 {tx.execute("INSERT INTO messages(id,session_id,role,content,status,created_at) VALUES(?1,'s','user','fixture','complete','now')",[i.to_string()])?;}tx.commit()?;Ok(())}).await.unwrap();
+    db.run(|c| {let tx=c.transaction()?;tx.execute("INSERT INTO sessions(id,scope,created_at) VALUES('s','global','now')",[])?;for i in 0..257 {tx.execute("INSERT INTO messages(id,session_id,role,content,status,created_at) VALUES(?1,'s','user','fixture','complete','now')",[i.to_string()])?;}tx.commit()?;Ok(())}).await.unwrap();
     let mut cursor = None;
     let mut seen = std::collections::HashSet::new();
     loop {

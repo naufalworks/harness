@@ -34,6 +34,7 @@ function rememberPending(value) {
 // branch below checks the type before reading a code, and an unrecognised failure keeps the
 // cautious path it had before.
 async function api(path, body) { return apiRequest(path, { token, body }); }
+async function apiPatch(path, body) { return apiRequest(path, { token, body, method: 'PATCH' }); }
 async function exchangeBrowserSession(masterToken) { return apiExchangeSession(masterToken); }
 function node(tag, text, cls) { const element = document.createElement(tag); if (text !== undefined) element.textContent = text; if (cls) element.className = cls; return element; }
 function persistSession() { sessionStorage.setItem('harness_scope', scope); sessionStorage.setItem('harness_session', session); }
@@ -154,20 +155,49 @@ async function loadHistory(older = false) {
 }
 async function loadSessions(older = false) {
   const myEpoch = epoch;
-  const data = await api('/sessions' + (older && sessionsCursor ? `?before_seq=${sessionsCursor}` : ''));
+  const params = new URLSearchParams();
+  const search = $('sessionsearch')?.value.trim();
+  if (search) params.set('search', search);
+  if ($('showarchived')?.checked) params.set('include_archived', 'true');
+  if (older && sessionsCursor) params.set('before_seq', sessionsCursor);
+  const data = await api(`/sessions${params.toString() ? `?${params}` : ''}`);
   if (!token || myEpoch !== epoch) return;
   if (!older) $('sessionlist').replaceChildren();
   for (const item of data.sessions) {
     if ($('sessionlist').childNodes.length >= MAX_RENDERED_SESSIONS) break;
-    const button = node('button', undefined, 'session-entry secondary'); button.type = 'button';
-    button.append(node('strong', item.title), node('span', `${item.scope} · ${item.message_count} messages`, 'muted'));
+    const entry = node('div', undefined, 'session-entry');
+    const button = node('button', undefined, 'secondary session-open'); button.type = 'button';
+    button.append(node('strong', item.title || item.preview || 'Conversation'), node('span', `${item.scope} · ${item.message_count} messages${item.archived_at ? ' · archived' : ''}`, 'muted'));
     button.addEventListener('click', async () => {
       if (busy || pending) return notice('Let the current message finish before switching conversations.', true);
       session = item.id; scope = item.scope; epoch++; $('scope').value = scope; persistSession();
       // P2-T02: in the wide three-pane layout the sidebar stays put; only the mobile drawer closes.
       if (window.matchMedia('(max-width: 920px)').matches) { $('sessionhistory').open = false; $('sidebar').classList.remove('open'); $('drawerbg').classList.remove('show'); }
       await loadHistory().catch(e => notice(e.message, true)); refreshScopeSetup().catch(() => {}); if (pending) await resumeRecording();
-    }); $('sessionlist').append(button);
+    });
+    const actions = node('div', undefined, 'session-actions');
+    const rename = node('button', 'Rename', 'secondary'); rename.type = 'button';
+    rename.addEventListener('click', async () => {
+      const next = window.prompt('Conversation name', item.title || 'Conversation');
+      if (next === null) return;
+      try { await apiPatch(`/sessions/${encodeURIComponent(item.id)}`, { title: next }); notice('Conversation renamed.'); await loadSessions(); }
+      catch (error) { notice(error.message, true); }
+    });
+    const archive = node('button', item.archived_at ? 'Restore' : 'Archive', 'secondary'); archive.type = 'button';
+    archive.addEventListener('click', async () => {
+      try { await apiPatch(`/sessions/${encodeURIComponent(item.id)}`, { archived: !item.archived_at }); notice(item.archived_at ? 'Conversation restored.' : 'Conversation archived.'); await loadSessions(); }
+      catch (error) { notice(error.message, true); }
+    });
+    const fork = node('button', 'Fork', 'secondary'); fork.type = 'button';
+    fork.addEventListener('click', async () => {
+      if (busy || pending) return notice('Let the current message finish before forking.', true);
+      try {
+        const copy = await api(`/sessions/${encodeURIComponent(item.id)}/fork`, {});
+        session = copy.id; scope = copy.scope; epoch++; $('scope').value = scope; persistSession(); historyCursor = null;
+        await loadHistory(); await loadSessions(); notice('Fork created. The original conversation was not changed.');
+      } catch (error) { notice(error.message, true); }
+    });
+    actions.append(rename, archive, fork); entry.append(button, actions); $('sessionlist').append(entry);
   }
   if (!$('sessionlist').childNodes.length) $('sessionlist').append(node('p', 'Your saved conversations will appear here.', 'muted'));
   sessionsCursor = data.next_before_seq; $('oldersessions').hidden = !data.has_more;
@@ -412,6 +442,8 @@ $('leavepending').addEventListener('click', () => {
 $('oldermessages').addEventListener('click', async () => { $('oldermessages').disabled = true; try { await loadHistory(true); } catch(e) { notice(e.message,true); } finally { $('oldermessages').disabled = false; } });
 $('oldersessions').addEventListener('click', () => loadSessions(true).catch(e=>notice(e.message,true)));
 $('sessionhistory').addEventListener('toggle', () => { if ($('sessionhistory').open) loadSessions().catch(e=>notice(e.message,true)); });
+$('sessionsearch').addEventListener('input', () => { sessionsCursor = null; loadSessions().catch(e=>notice(e.message,true)); });
+$('showarchived').addEventListener('change', () => { sessionsCursor = null; loadSessions().catch(e=>notice(e.message,true)); });
 async function refreshCandidateViews() {
   await Promise.all([loadCandidates(), refreshInlineSuggestions(), refreshStatus()]);
 }
@@ -708,7 +740,11 @@ function renderAgentPermission(permission) {
   }
   card.hidden = false;
   agentState.permission = permission;
-  $('permission-summary').textContent = `${permission.tool}: ${permission.summary}`;
+  const bundle = Number(permission.bundle_count || 1);
+  $('permission-summary').textContent = `Approval requested for ${permission.tool}: ${permission.summary}. Nothing will run until you approve.`;
+  const expiry = Date.parse(permission.expires_at || '');
+  const remaining = Number.isFinite(expiry) ? Math.max(0, Math.ceil((expiry - Date.now()) / 1000)) : null;
+  $('permission-expiry').textContent = `${bundle > 1 ? `${bundle} approvals are grouped for this turn. ` : ''}${remaining === null ? 'Approval deadline unavailable.' : remaining ? `Expires in ${remaining}s.` : 'Approval expired; refresh to confirm the recorded state.'}`;
   $('permission-detail').textContent = permissionText(permission);
   $('permission-approve').disabled = agentState.busyDecision;
   $('permission-deny').disabled = agentState.busyDecision;

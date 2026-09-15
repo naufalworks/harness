@@ -46,6 +46,11 @@
 
       <details id="sessionhistory">
         <summary>Conversations</summary>
+        <div class="session-tools">
+          <label for="sessionsearch" class="sr-only">Search conversations</label>
+          <input id="sessionsearch" type="search" maxlength="120" placeholder="Search conversations…">
+          <label class="check small"><input id="showarchived" type="checkbox"> Show archived</label>
+        </div>
         <div id="sessionlist"></div>
         <button id="oldersessions" class="secondary wide" type="button" hidden>Older conversations</button>
       </details>
@@ -85,6 +90,7 @@
             <section id="agent-permission" class="permission-card" hidden>
               <div class="permission-title">Awaiting your approval</div>
               <p id="permission-summary"></p>
+              <p id="permission-expiry" class="muted small"></p>
               <pre id="permission-detail"></pre>
               <div class="row actions">
                 <button id="permission-approve" type="button">Approve</button>

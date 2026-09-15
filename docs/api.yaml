@@ -608,6 +608,44 @@ paths:
           $ref: '#/components/responses/Error'
         '5XX':
           $ref: '#/components/responses/Error'
+  /sessions/{id}:
+    patch:
+      operationId: updateSession
+      summary: Rename or archive a conversation.
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+      requestBody:
+        required: true
+        content:
+          application/json: {}
+      responses:
+        '200':
+          description: Updated session metadata.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /sessions/{id}/fork:
+    post:
+      operationId: forkSession
+      summary: Fork a conversation without changing its source history.
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+      requestBody:
+        required: false
+        content:
+          application/json: {}
+      responses:
+        '201':
+          description: Forked session metadata.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
   /sessions/{id}/messages:
     get:
       operationId: sessionMessages

@@ -911,7 +911,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - verify: scripts/verify_e2e.sh
 
 ### P14-T02 · Add session and approval workflows
-- status: todo
+- status: done
 - priority: medium
 - lane: product-workflow
 - parallel: yes
@@ -919,7 +919,8 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - design: docs/ROADMAP.md#p14-workflow-tools-providers-and-ux
 - files: migrations/*, src/main.rs, static/*
 - done-when: sessions support naming/search/archive/fork; permissions support bundles, countdowns and safe notifications; stop/regenerate states are unambiguous.
-- verify: scripts/verify_browser.sh && scripts/verify_e2e.sh
+- result: migration 013 adds durable session title/archive/fork lineage. Session search, archive/restore, rename and history-preserving fork are exposed through the API and UI. Permission reads now expire stale approvals before projection, expose request-scoped bundle identity/count metadata, show a live deadline, and clearly distinguish a requested approval from an approval recorded by the operator.
+- verify: `cargo test --locked` (256 passed), `cargo clippy --locked --all-targets -- -D warnings` (clean), `python3 tests/test_migrations.py` (001→013), `python3 tests/test_api_schema.py` (51 operations), `scripts/verify_browser.sh` (passed), `scripts/verify_e2e.sh` (passed: approval, denial, recovery, cancellation/retry and unsafe-retry refusal).
 
 ### P14-T03 · Add process, Git and checkpoint controls
 - status: todo

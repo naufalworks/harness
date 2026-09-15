@@ -1,5 +1,20 @@
 # PROGRESS — journal
 
+## 2026-09-15T07:59:00Z · P14-T02 — done; session and approval workflow
+
+The autonomous continuation completed the earliest eligible medium-priority task after P15-T03.
+Migration 013 adds session title, archive timestamp and fork lineage without changing existing
+message/receipt history. The API and UI now support bounded search, archive/restore, rename and
+history-preserving forks. Permission projections sweep expired rows before listing, expose a
+request-scoped bundle identity/count, and the UI shows the remaining deadline with wording that
+never claims approval was recorded before the operator acts. Existing generating, complete, failed,
+interrupted, stop and safe-retry states remain evidence-bound.
+
+Final evidence: `cargo test --locked` passed 256 tests; strict clippy passed; migration and API
+schema contracts passed (001→013 and 51 operations); mocked browser verification passed; and real
+browser-to-service E2E passed approval, denial, crash recovery, cancellation/retry and unsafe-retry
+refusal coverage.
+
 ## 2026-09-15T07:40:50Z · P15-T03 — done; governance history stays reviewable
 
 The autonomous continuation found two release-gate mismatches before calling the task complete. The

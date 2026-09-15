@@ -230,13 +230,33 @@ impl DbStore {
     /// it is about to allow without asking the model to describe it.
     pub async fn pending_permissions(&self, scope: String) -> Result<Value> {
         self.run(move |c| {
+            // The read path also performs the expiry sweep. A stale browser must never see an
+            // approval as actionable after its durable deadline has passed.
+            c.execute(
+                "UPDATE permission_requests SET status='expired',resolved_at=?1 WHERE status='pending' AND expires_at<=?1",
+                [now()],
+            )?;
             let mut stmt = c.prepare(sql::PERMISSIONS_PENDING)?;
-            let rows = stmt.query_map([scope], |r| Ok(json!({
+            let mut rows = stmt.query_map([scope], |r| Ok(json!({
                 "id": r.get::<_, String>(0)?, "request_id": r.get::<_, String>(1)?, "step_id": r.get::<_, String>(2)?,
                 "tool": r.get::<_, String>(3)?, "summary": r.get::<_, String>(4)?,
                 "args": serde_json::from_str::<Value>(&r.get::<_, String>(5)?).unwrap_or(Value::Null),
                 "created_at": r.get::<_, String>(6)?, "expires_at": r.get::<_, String>(7)?,
             })))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            let bundle_counts = rows
+                .iter()
+                .filter_map(|row| row["request_id"].as_str().map(str::to_owned))
+                .fold(std::collections::BTreeMap::<String, usize>::new(), |mut counts, request_id| {
+                    *counts.entry(request_id).or_default() += 1;
+                    counts
+                });
+            for row in &mut rows {
+                let request_id = row["request_id"].as_str().unwrap_or_default().to_string();
+                let bundle_count = bundle_counts.get(request_id.as_str()).copied().unwrap_or(1);
+                row["bundle_id"] = json!(request_id);
+                row["bundle_count"] = json!(bundle_count);
+                row["approval_required"] = json!(true);
+            }
             Ok(json!({"permissions": rows}))
         }).await
     }

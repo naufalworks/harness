@@ -652,13 +652,67 @@ impl DbStore {
             Ok(json!({"scope":scope,"messages":rows,"has_more":more,"next_before_seq":cursor}))
         }).await
     }
+    #[allow(dead_code)]
     pub async fn recorded_sessions(&self, before: Option<i64>) -> Result<Value> {
+        self.recorded_sessions_filtered(before, None, false).await
+    }
+    pub async fn recorded_sessions_filtered(
+        &self,
+        before: Option<i64>,
+        search: Option<String>,
+        include_archived: bool,
+    ) -> Result<Value> {
         self.run(move|c| {
-            let mut stmt=c.prepare("SELECT s.id,s.scope,s.created_at,MAX(m.seq),COUNT(m.id),COALESCE((SELECT substr(content,1,100) FROM messages WHERE session_id=s.id AND role='user' ORDER BY seq LIMIT 1),'Conversation') FROM sessions s JOIN messages m ON m.session_id=s.id GROUP BY s.id HAVING MAX(m.seq)<?1 ORDER BY MAX(m.seq) DESC LIMIT 51")?;
-            let mut rows=stmt.query_map([before.unwrap_or(i64::MAX)],|r|Ok(json!({"id":r.get::<_,String>(0)?,"scope":r.get::<_,String>(1)?,"created_at":r.get::<_,String>(2)?,"last_seq":r.get::<_,i64>(3)?,"message_count":r.get::<_,i64>(4)?,"title":r.get::<_,String>(5)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            let pattern = search.as_deref().map(|value| format!("%{}%", value.to_lowercase()));
+            let mut stmt=c.prepare("SELECT s.id,s.scope,s.created_at,s.title,s.archived_at,s.forked_from,MAX(m.seq),COUNT(m.id),COALESCE((SELECT substr(content,1,100) FROM messages WHERE session_id=s.id AND role='user' ORDER BY seq LIMIT 1),'Conversation') FROM sessions s JOIN messages m ON m.session_id=s.id WHERE (?1 IS NULL OR lower(s.title) LIKE ?1 OR EXISTS(SELECT 1 FROM messages sm WHERE sm.session_id=s.id AND lower(sm.content) LIKE ?1)) AND (?2=1 OR s.archived_at IS NULL) GROUP BY s.id HAVING MAX(m.seq)<?3 ORDER BY MAX(m.seq) DESC LIMIT 51")?;
+            let mut rows=stmt.query_map(params![pattern,include_archived,before.unwrap_or(i64::MAX)],|r|Ok(json!({"id":r.get::<_,String>(0)?,"scope":r.get::<_,String>(1)?,"created_at":r.get::<_,String>(2)?,"title":r.get::<_,String>(3)?,"archived_at":r.get::<_,Option<String>>(4)?,"forked_from":r.get::<_,Option<String>>(5)?,"last_seq":r.get::<_,i64>(6)?,"message_count":r.get::<_,i64>(7)?,"preview":r.get::<_,String>(8)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
             let more=rows.len()>50;rows.truncate(50);
             let cursor=if more {rows.last().and_then(|r|r["last_seq"].as_i64())} else {None};
             Ok(json!({"sessions":rows,"has_more":more,"next_before_seq":cursor}))
+        }).await
+    }
+
+    pub async fn update_session(
+        &self,
+        session: String,
+        title: Option<String>,
+        archived: Option<bool>,
+    ) -> Result<Option<Value>> {
+        self.run(move |c| {
+            let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let exists: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM sessions WHERE id=?1)", [&session], |r| r.get(0))?;
+            if !exists { return Ok(None); }
+            let stamp = now();
+            if let Some(title) = title { tx.execute("UPDATE sessions SET title=?2 WHERE id=?1", params![session, title])?; }
+            if let Some(archived) = archived { tx.execute("UPDATE sessions SET archived_at=?2 WHERE id=?1", params![session, if archived { Some(stamp.clone()) } else { None }])?; }
+            let row = tx.query_row("SELECT id,scope,title,archived_at,forked_from FROM sessions WHERE id=?1", [&session], |r| Ok(json!({"id":r.get::<_,String>(0)?,"scope":r.get::<_,String>(1)?,"title":r.get::<_,String>(2)?,"archived_at":r.get::<_,Option<String>>(3)?,"forked_from":r.get::<_,Option<String>>(4)?})))?;
+            tx.commit()?;
+            Ok(Some(row))
+        }).await
+    }
+
+    pub async fn fork_session(
+        &self,
+        source: String,
+        title: Option<String>,
+    ) -> Result<Option<Value>> {
+        self.run(move |c| {
+            let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let source_row: Option<(String,String,String)> = tx.query_row("SELECT scope,title,created_at FROM sessions WHERE id=?1", [&source], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
+            let Some((scope, source_title, _)) = source_row else { return Ok(None); };
+            let new_id = uid();
+            let new_title = title.unwrap_or_else(|| format!("{} copy", source_title));
+            let stamp = now();
+            tx.execute("INSERT INTO sessions(id,scope,created_at,title,forked_from) VALUES(?1,?2,?3,?4,?5)", params![new_id,scope,stamp,new_title,source])?;
+            let mut stmt = tx.prepare("SELECT role,content,status,created_at FROM messages WHERE session_id=?1 ORDER BY seq")?;
+            let rows = stmt.query_map([&source], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            drop(stmt);
+            for (role,content,status,created_at) in rows {
+                tx.execute("INSERT INTO messages(id,session_id,role,content,status,created_at) VALUES(?1,?2,?3,?4,CASE WHEN ?5='complete' THEN 'complete' ELSE 'failed' END,?6)", params![uid(),new_id,role,content,status,created_at])?;
+            }
+            let result = json!({"id":new_id,"scope":scope,"title":new_title,"archived_at":null,"forked_from":source});
+            tx.commit()?;
+            Ok(Some(result))
         }).await
     }
 }
