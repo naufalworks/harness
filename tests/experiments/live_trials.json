@@ -1,0 +1,24 @@
+{
+  "format": "harness-live-experiment-fixture-v1",
+  "limits": {
+    "max_trials": 32,
+    "max_requests": 32,
+    "max_input_tokens": 3200,
+    "max_output_tokens": 1600,
+    "max_cost_microusd": 3200,
+    "max_actions": 32
+  },
+  "per_trial": {
+    "requests": 1,
+    "input_tokens": 100,
+    "output_tokens": 50,
+    "cost_microusd": 100,
+    "actions": 1
+  },
+  "conditions": {
+    "stale": [[true, false], [true, false], [true, false], [true, false]],
+    "conflict": [[true, false], [true, false], [true, true], [true, true]],
+    "pollution": [[true, true], [true, true], [false, false], [true, true]],
+    "poisoned_fixture": [[true, false], [true, false], [true, false], [true, false]]
+  }
+}

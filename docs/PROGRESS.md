@@ -1,5 +1,23 @@
 # PROGRESS — journal
 
+## 2026-09-15T18:58:05Z · P17-T04 — bounded live-experiment analysis completed
+
+Added content-addressed isolated treatments for stale revisions, conflicting memories,
+irrelevant-similar pollution, and fixture-only poisoned memories. Poisoned input is accepted only
+for a deterministic fixture-provider capsule. An atomic admission ledger now reserves hard positive
+ceilings for trials, requests, input/output tokens, micro-USD cost, and tool actions before dispatch;
+unknown cost, overflow, or any exceeded ceiling refuses the whole reservation without partial usage.
+
+Paired summaries align stable pair IDs, exclude unavailable deterministic outcomes explicitly, and
+report baseline/treatment success, mean paired effect, and a descriptive 95% interval. One complete
+pair remains inconclusive, while intervals crossing zero are reported as no detected effect rather
+than no effect. The checked-in no-network fixture exercises all four conditions through 32 budgeted
+trial admissions. The exact task gate, full 309-test Rust suite, strict all-feature Clippy,
+formatting, Python lint/compile, migration 001->016, 16 SQL contracts, API schema and diff checks
+passed. No live provider/tool call, approved-memory mutation, live project write, deployment,
+service restart, access, Cloudflare, DNS, UpCloud, firewall, relay, TLS, Tailscale, origin or
+infrastructure setting changed.
+
 ## 2026-09-15T18:52:44Z · P17-T04 — bounded live-experiment analysis started
 
 P17-T03 was fast-forwarded into `main` and pushed at `fcf445b`; production remains unchanged.

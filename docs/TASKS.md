@@ -1138,7 +1138,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - result-verify: Exact task gate passed with 7 replay-matching tests and the full browser-to-Rust-to-SQLite-to-filesystem E2E/failure-path suite. The full 305-test Rust suite, strict Clippy, formatting, migration chain 001->016, all 16 SQL contracts, API schema and diff checks also passed. This task was not deployed.
 
 ### P17-T04 · Add live treatments, budgets and statistics
-- status: doing
+- status: done
 - priority: research
 - lane: experiment-live
 - parallel: yes
@@ -1147,6 +1147,8 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - files: src/experiments/*, scripts/experiment.py, static/*
 - done-when: stale/conflict/pollution/poison treatments run repeatedly under hard spend/token/action limits and report paired outcomes and uncertainty rather than single-run causality.
 - verify: cargo test --locked experiment && python3 scripts/experiment.py --fixture --check
+- result: Added content-addressed live-treatment manifests for older same-memory revisions, distinct conflicting memories, irrelevant-similar pollution, and fixture-only poisoned memories. Poisoned treatment creation is refused unless the capsule names the deterministic fixture provider. An atomic pre-dispatch ledger enforces positive hard trial/request/input-token/output-token/micro-USD/action ceilings, refuses unknown cost and overflow, and leaves usage unchanged on refusal. Paired analysis aligns stable pair IDs, excludes unavailable deterministic outcomes explicitly, reports success rates, paired mean effects and descriptive 95% intervals, and stays inconclusive for one pair. The executable fixture runner enables only explicit no-network fixture mode and exercises all four conditions through 32 budgeted trial admissions.
+- result-verify: Exact task gate passed with 14 experiment-focused tests and `scripts/experiment.py --fixture --check`. The full 309-test Rust suite, strict all-feature Clippy, formatting, Python lint/compile, migration chain 001->016, all 16 SQL contracts, API schema and diff checks also passed. No live provider call or deployment occurred.
 
 ### P17-T05 · Export sanitized research reports and optional remote runs
 - status: todo

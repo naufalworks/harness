@@ -229,6 +229,20 @@ Exit: release verification includes one real browser-to-Rust-to-SQLite-to-filesy
 - Add stale, conflict, pollution, and poisoned-memory treatments.
 - Export a sanitized report with raw evidence links and limitations.
 
+The bounded live controller uses content-addressed `harness-live-treatment-v1` manifests. Stale
+conditions replace one memory only with an older changed revision of the same scoped key; conflict
+conditions add a distinct memory that disagrees on that key; pollution conditions add a distinct
+memory labelled `irrelevant_similar`; poisoned conditions require a `fixture-poison-*` identity,
+`fixture_only=true`, and the deterministic fixture provider. Source memory objects remain unchanged.
+
+Every trial must reserve positive hard ceilings for trials, provider requests, input/output tokens,
+estimated micro-USD cost, and tool actions before dispatch. Unknown estimated cost and arithmetic
+overflow are refusals, and a failed reservation commits no partial usage. Paired summaries align one
+baseline and treatment by stable pair ID, exclude missing deterministic outcomes as `unavailable`,
+report success rates, the mean paired effect, and a descriptive normal 95% interval. Fewer than two
+complete pairs are `inconclusive`; an interval crossing zero is `no_detected_effect`, not proof of no
+effect. The checked-in no-network fixture exercises all four conditions through 32 admitted trials.
+
 Exit: the report can distinguish "memory changed the trace" from "memory improved the task" and "the observed effect is too noisy to conclude."
 
 ### M5: optional UpCloud isolation
