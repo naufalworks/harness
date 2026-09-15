@@ -1,0 +1,83 @@
+{
+  "comment": [
+    "Labeled recall fixtures for P15-T01. These drive the real DbStore::recall path from a Rust",
+    "test (storage::tests::recall_eval_fixtures_meet_labeled_budgets), which writes metrics.json.",
+    "tests/recall_eval/run.py --check then validates those metrics against the thresholds below.",
+    "Labels: 'relevant' should be recalled, 'irrelevant' should not, 'stale' must never be",
+    "recalled because the row is archived. age_days backdates updated_at so recency is exercised."
+  ],
+  "model": "harness-local-hash-v1",
+  "thresholds": {
+    "min_macro_precision": 0.60,
+    "min_relevant_coverage": 0.80,
+    "max_stale_use_rate": 0.0,
+    "max_context_bytes": 6000,
+    "max_case_latency_ms": 250
+  },
+  "cases": [
+    {
+      "id": "exact-lexical-hit",
+      "scope": "proj",
+      "prompt": "which database does this project use",
+      "memories": [
+        {"id": "m-db-proj", "scope": "proj", "key": "database", "value": "SQLite with WAL", "category": "project", "label": "relevant"},
+        {"id": "m-fruit", "scope": "global", "key": "fruit", "value": "Banana orchestra", "category": "fact", "label": "irrelevant"}
+      ]
+    },
+    {
+      "id": "morphology-bridge",
+      "scope": "proj",
+      "prompt": "rustacean tooling preferences",
+      "memories": [
+        {"id": "m-rust", "scope": "global", "key": "language", "value": "Rust systems programming", "category": "preference", "label": "relevant"},
+        {"id": "m-orchestra", "scope": "global", "key": "music", "value": "Banana orchestra", "category": "fact", "label": "irrelevant"}
+      ]
+    },
+    {
+      "id": "archived-must-not-leak",
+      "scope": "proj",
+      "prompt": "what is the deployment target",
+      "memories": [
+        {"id": "m-deploy-now", "scope": "proj", "key": "deployment", "value": "systemd unit on Amazon Linux", "category": "project", "label": "relevant"},
+        {"id": "m-deploy-old", "scope": "global", "key": "deployment", "value": "deployment by manual scp", "category": "project", "label": "stale", "status": "archived", "age_days": 400}
+      ]
+    },
+    {
+      "id": "scope-shadowing",
+      "scope": "proj",
+      "prompt": "preferred database engine",
+      "memories": [
+        {"id": "m-shadow-proj", "scope": "proj", "key": "database", "value": "SQLite", "category": "project", "label": "relevant"},
+        {"id": "m-shadow-global", "scope": "global", "key": "database", "value": "Postgres", "category": "fact", "label": "irrelevant"}
+      ]
+    },
+    {
+      "id": "recency-between-equals",
+      "scope": "proj",
+      "prompt": "code review conventions",
+      "memories": [
+        {"id": "m-review-fresh", "scope": "proj", "key": "review", "value": "review conventions: small commits, evidence in the message", "category": "rule", "label": "relevant", "age_days": 1},
+        {"id": "m-review-ancient", "scope": "global", "key": "review-legacy", "value": "review conventions: squash everything into one commit", "category": "rule", "label": "stale", "status": "archived", "age_days": 900}
+      ]
+    },
+    {
+      "id": "no-match-returns-nothing",
+      "scope": "proj",
+      "prompt": "xylophone quarterly submarine",
+      "memories": [
+        {"id": "m-unrelated-a", "scope": "proj", "key": "database", "value": "SQLite", "category": "project", "label": "irrelevant"},
+        {"id": "m-unrelated-b", "scope": "global", "key": "language", "value": "Rust", "category": "preference", "label": "irrelevant"}
+      ]
+    },
+    {
+      "id": "context-cost-ceiling",
+      "scope": "proj",
+      "prompt": "project logging rules and retention",
+      "memories": [
+        {"id": "m-log-1", "scope": "proj", "key": "logging-1", "value": "logging rules: structured JSON lines, one event per line, no secrets, retention ninety days for project logging", "category": "rule", "label": "relevant"},
+        {"id": "m-log-2", "scope": "proj", "key": "logging-2", "value": "logging retention: ninety days for project logs, then bounded deletion with a recorded maintenance run", "category": "rule", "label": "relevant"},
+        {"id": "m-log-3", "scope": "proj", "key": "logging-3", "value": "logging rules for retention of project audit events, bounded and evidence labeled", "category": "rule", "label": "relevant"}
+      ]
+    }
+  ]
+}

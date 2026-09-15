@@ -485,6 +485,296 @@ mod tests {
         );
     }
 
+    /// P15-T01: measure the real `DbStore::recall` path over labeled fixtures and write
+    /// `tests/recall_eval/metrics.json`, which `tests/recall_eval/run.py --check` then validates.
+    ///
+    /// The measurement lives here rather than in Python on purpose: ranking is Rust, and a Python
+    /// reimplementation would report on the copy instead of the shipped code. Each case gets its
+    /// own in-memory database so one case cannot pollute another's candidate pool.
+    #[tokio::test]
+    async fn recall_eval_fixtures_meet_labeled_budgets() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/recall_eval");
+        let raw = std::fs::read_to_string(dir.join("fixtures.json"))
+            .expect("tests/recall_eval/fixtures.json must exist");
+        let fixtures: Value = serde_json::from_str(&raw).expect("fixtures must be valid JSON");
+        let thresholds = fixtures["thresholds"].clone();
+        let mut measured = Vec::new();
+        let (mut relevant_total, mut relevant_hit) = (0i64, 0i64);
+        let (mut stale_total, mut stale_hit) = (0i64, 0i64);
+        let mut precision_sum = 0.0f64;
+        let (mut max_bytes, mut max_latency) = (0usize, 0u64);
+        // The lexical-only arm is measured alongside the default so the operator can see the
+        // precision/coverage trade before choosing a strategy, which is what "before enabling a
+        // model" has to mean in practice.
+        let (mut lex_precision_sum, mut lex_relevant_hit, mut lex_returned) =
+            (0.0f64, 0i64, 0usize);
+
+        for case in fixtures["cases"].as_array().expect("cases array") {
+            let case_id = case["id"].as_str().expect("case id").to_string();
+            let db = DbStore::init(":memory:").unwrap();
+            let rows = case["memories"].as_array().expect("memories").clone();
+            let seed = rows.clone();
+            db.run(move |c| {
+                for memory in &seed {
+                    let id = memory["id"].as_str().unwrap();
+                    let scope = memory["scope"].as_str().unwrap();
+                    let key = memory["key"].as_str().unwrap();
+                    let value = memory["value"].as_str().unwrap();
+                    let category = memory["category"].as_str().unwrap();
+                    let status = memory["status"].as_str().unwrap_or("active");
+                    let age_days = memory["age_days"].as_i64().unwrap_or(0);
+                    // Backdate `updated_at` so the recency term is genuinely exercised.
+                    let stamp = (Utc::now() - chrono::Duration::days(age_days)).to_rfc3339();
+                    let candidate = format!("c-{id}");
+                    c.execute(
+                        "INSERT INTO candidates(id,scope,key,value,category,source_id,evidence,expected_revision,status,created_at,expires_at,resolved_at) VALUES(?1,?2,?3,?4,?5,?6,'{}',0,'approved',?7,2000000000,?7)",
+                        params![candidate, scope, key, value, category, format!("source-{id}"), stamp],
+                    )?;
+                    c.execute(
+                        "INSERT INTO memories(id,scope,key,value,category,status,revision,candidate_id,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,1,?7,?8,?8)",
+                        params![id, scope, key, value, category, status, candidate, stamp],
+                    )?;
+                }
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+            let labels = rows
+                .iter()
+                .map(|memory| {
+                    (
+                        memory["id"].as_str().unwrap().to_string(),
+                        memory["label"].as_str().unwrap_or("irrelevant").to_string(),
+                    )
+                })
+                .collect::<std::collections::HashMap<_, _>>();
+            let relevant_available = labels.values().filter(|label| *label == "relevant").count();
+            let stale_available = labels.values().filter(|label| *label == "stale").count();
+
+            let started = std::time::Instant::now();
+            let recalled = db
+                .recall_with_strategy(
+                    case["scope"].as_str().unwrap().into(),
+                    case["prompt"].as_str().unwrap().into(),
+                    crate::embeddings::Strategy::Hybrid,
+                )
+                .await
+                .unwrap();
+            let latency_ms = started.elapsed().as_millis() as u64;
+
+            // Same fixtures, lexical arm only. Pinned explicitly rather than read from the
+            // environment so the recorded comparison cannot drift with ambient configuration.
+            let lexical = db
+                .recall_with_strategy(
+                    case["scope"].as_str().unwrap().into(),
+                    case["prompt"].as_str().unwrap().into(),
+                    crate::embeddings::Strategy::LexicalOnly,
+                )
+                .await
+                .unwrap();
+            let lexical_relevant = lexical
+                .iter()
+                .filter(|memory| labels.get(&memory.id).map(String::as_str) == Some("relevant"))
+                .count();
+            lex_precision_sum += if lexical.is_empty() {
+                if relevant_available == 0 {
+                    1.0
+                } else {
+                    0.0
+                }
+            } else {
+                lexical_relevant as f64 / lexical.len() as f64
+            };
+            lex_relevant_hit += lexical_relevant as i64;
+            lex_returned += lexical.len();
+
+            let relevant_recalled = recalled
+                .iter()
+                .filter(|memory| labels.get(&memory.id).map(String::as_str) == Some("relevant"))
+                .count();
+            let stale_recalled = recalled
+                .iter()
+                .filter(|memory| labels.get(&memory.id).map(String::as_str) == Some("stale"))
+                .count();
+            let context_bytes = recalled
+                .iter()
+                .map(|memory| serde_json::to_vec(memory).unwrap().len())
+                .sum::<usize>();
+            // An empty result is perfectly precise only when nothing relevant existed to find.
+            let precision = if recalled.is_empty() {
+                if relevant_available == 0 {
+                    1.0
+                } else {
+                    0.0
+                }
+            } else {
+                relevant_recalled as f64 / recalled.len() as f64
+            };
+
+            relevant_total += relevant_available as i64;
+            relevant_hit += relevant_recalled as i64;
+            stale_total += stale_available as i64;
+            stale_hit += stale_recalled as i64;
+            precision_sum += precision;
+            max_bytes = max_bytes.max(context_bytes);
+            max_latency = max_latency.max(latency_ms);
+
+            assert_eq!(
+                stale_recalled, 0,
+                "case {case_id}: archived/stale memories must never reach the context, got {recalled:#?}"
+            );
+            assert!(
+                context_bytes <= thresholds["max_context_bytes"].as_u64().unwrap() as usize,
+                "case {case_id}: context cost {context_bytes}B exceeds the declared ceiling"
+            );
+
+            measured.push(json!({
+                "id": case_id,
+                "precision": precision,
+                "relevant_recalled": relevant_recalled,
+                "relevant_available": relevant_available,
+                "stale_recalled": stale_recalled,
+                "stale_available": stale_available,
+                "returned": recalled.len(),
+                "context_bytes": context_bytes,
+                "latency_ms": latency_ms,
+            }));
+        }
+
+        let case_count = measured.len();
+        assert!(case_count > 0, "fixtures declared no cases");
+        let macro_precision = precision_sum / case_count as f64;
+        let relevant_coverage = if relevant_total == 0 {
+            1.0
+        } else {
+            relevant_hit as f64 / relevant_total as f64
+        };
+        let stale_use_rate = if stale_total == 0 {
+            0.0
+        } else {
+            stale_hit as f64 / stale_total as f64
+        };
+
+        let metrics = json!({
+            "model": crate::embeddings::MODEL,
+            "dimensions": crate::embeddings::DIMENSIONS,
+            "generated_by": "storage::tests::recall_eval_fixtures_meet_labeled_budgets",
+            "fixture_sha256": crate::safety::fingerprint(&raw),
+            "fixture_case_count": case_count,
+            "cases": measured,
+            "totals": {
+                "macro_precision": macro_precision,
+                "relevant_coverage": relevant_coverage,
+                "stale_use_rate": stale_use_rate,
+                "max_context_bytes": max_bytes,
+                "max_latency_ms": max_latency,
+            },
+            "strategy": "hybrid",
+            "comparison": {
+                "lexical_only": {
+                    "macro_precision": lex_precision_sum / case_count as f64,
+                    "relevant_coverage": if relevant_total == 0 {
+                        1.0
+                    } else {
+                        lex_relevant_hit as f64 / relevant_total as f64
+                    },
+                    "returned": lex_returned,
+                },
+                "opt_out_env": crate::embeddings::STRATEGY_ENV,
+            },
+        });
+        std::fs::write(
+            dir.join("metrics.json"),
+            format!("{}\n", serde_json::to_string_pretty(&metrics).unwrap()),
+        )
+        .expect("metrics.json must be writable");
+
+        // Assert here too, so `cargo test` alone already fails on a quality regression rather
+        // than relying on the Python gate that runs afterwards.
+        assert!(
+            macro_precision >= thresholds["min_macro_precision"].as_f64().unwrap(),
+            "macro precision {macro_precision:.3} is below the declared budget"
+        );
+        assert!(
+            relevant_coverage >= thresholds["min_relevant_coverage"].as_f64().unwrap(),
+            "relevant coverage {relevant_coverage:.3} is below the declared budget"
+        );
+        assert!(
+            stale_use_rate <= thresholds["max_stale_use_rate"].as_f64().unwrap(),
+            "stale use rate {stale_use_rate:.3} exceeds the declared budget"
+        );
+    }
+
+    /// P15-T01: the opt-out must change retrieval, not just configuration. A prompt that shares
+    /// no lexical token with any memory still clears the vector arm's cosine floor on noise
+    /// alone; with the vector arm off, it must return nothing.
+    #[tokio::test]
+    async fn recall_lexical_only_strategy_suppresses_vector_noise() {
+        let db = DbStore::init(":memory:").unwrap();
+        db.run(|c| {
+            let stamp = now();
+            for (id, key, value) in [
+                ("m-db", "database", "SQLite"),
+                ("m-lang", "language", "Rust"),
+            ] {
+                c.execute(
+                    "INSERT INTO candidates(id,scope,key,value,category,source_id,evidence,expected_revision,status,created_at,expires_at,resolved_at) VALUES(?1,'proj',?2,?3,'project',?4,'{}',0,'approved',?5,2000000000,?5)",
+                    params![format!("c-{id}"), key, value, format!("s-{id}"), stamp],
+                )?;
+                c.execute(
+                    "INSERT INTO memories(id,scope,key,value,category,status,revision,candidate_id,created_at,updated_at) VALUES(?1,'proj',?2,?3,'project','active',1,?4,?5,?5)",
+                    params![id, key, value, format!("c-{id}"), stamp],
+                )?;
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+        let nonsense = "xylophone quarterly submarine";
+        let hybrid = db
+            .recall_with_strategy(
+                "proj".into(),
+                nonsense.into(),
+                crate::embeddings::Strategy::Hybrid,
+            )
+            .await
+            .unwrap();
+        assert!(
+            !hybrid.is_empty(),
+            "baseline: the vector arm admits unrelated memories on hash noise, which is the \
+             measured behaviour this strategy exists to let operators avoid"
+        );
+
+        let lexical = db
+            .recall_with_strategy(
+                "proj".into(),
+                nonsense.into(),
+                crate::embeddings::Strategy::LexicalOnly,
+            )
+            .await
+            .unwrap();
+        assert!(
+            lexical.is_empty(),
+            "lexical-only must admit nothing without lexical support, got {lexical:#?}"
+        );
+
+        // The opt-out must not cost genuine lexical hits.
+        let supported = db
+            .recall_with_strategy(
+                "proj".into(),
+                "which database".into(),
+                crate::embeddings::Strategy::LexicalOnly,
+            )
+            .await
+            .unwrap();
+        assert!(
+            supported.iter().any(|memory| memory.id == "m-db"),
+            "lexical matches must still be recalled, got {supported:#?}"
+        );
+    }
+
     #[tokio::test]
     async fn extraction_corrections_are_high_priority_and_candidate_feeds_are_scoped() {
         let db = DbStore::init(":memory:").unwrap();

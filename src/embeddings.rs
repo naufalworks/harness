@@ -3,6 +3,37 @@
 pub const MODEL: &str = "harness-local-hash-v1";
 pub const DIMENSIONS: usize = 256;
 
+/// P15-T01: which retrieval arms are allowed to admit a candidate.
+///
+/// Measurement drove this: over `tests/recall_eval/fixtures.json` the feature hasher scores
+/// unrelated content (`"xylophone quarterly submarine"` against `"database\nSQLite"`, 0.069)
+/// *above* genuinely related spelling (`"rustacean tooling"` against `"Rust systems"`, 0.042).
+/// The noise and the signal overlap, so no cosine floor separates them; tuning the threshold
+/// would only trade false positives for the morphology bridge the vector arm exists to provide.
+/// The operator therefore gets a choice instead of a tuned constant, and the eval reports both.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Strategy {
+    /// Lexical FTS5 unioned with the local vector arm. Default; preserves prior behaviour.
+    Hybrid,
+    /// Lexical FTS5 only. Higher precision, no morphology bridging.
+    LexicalOnly,
+}
+
+pub const STRATEGY_ENV: &str = "HARNESS_MEMORY_SEMANTIC_RECALL";
+
+/// Parsed as a pure function so the behaviour is testable without mutating process environment,
+/// which would race other tests in the same binary.
+pub fn parse_strategy(raw: Option<&str>) -> Strategy {
+    match raw.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
+        Some("0") | Some("off") | Some("false") | Some("no") => Strategy::LexicalOnly,
+        _ => Strategy::Hybrid,
+    }
+}
+
+pub fn strategy_from_env() -> Strategy {
+    parse_strategy(std::env::var(STRATEGY_ENV).ok().as_deref())
+}
+
 fn hash(bytes: &[u8]) -> u64 {
     let mut value = 0xcbf29ce484222325u64;
     for byte in bytes {
@@ -104,6 +135,38 @@ mod tests {
         assert!(
             related > unrelated && related > 0.05,
             "related={related} unrelated={unrelated}"
+        );
+    }
+    #[test]
+    // Names must contain "recall": the task's verify command is `cargo test --locked recall`,
+    // and a name outside that filter compiles but is never run by the gate.
+    fn recall_vector_arm_is_opt_out_and_unset_keeps_prior_behaviour() {
+        assert_eq!(parse_strategy(None), Strategy::Hybrid);
+        assert_eq!(parse_strategy(Some("1")), Strategy::Hybrid);
+        assert_eq!(parse_strategy(Some("")), Strategy::Hybrid);
+        for disabled in ["0", "off", "false", "NO", " 0 "] {
+            assert_eq!(
+                parse_strategy(Some(disabled)),
+                Strategy::LexicalOnly,
+                "{disabled:?} should disable the vector arm"
+            );
+        }
+    }
+    #[test]
+    fn recall_hasher_noise_can_outscore_genuine_morphology() {
+        // The finding that justifies offering a strategy instead of tuning a cosine floor.
+        let noise = cosine(
+            &embed("xylophone quarterly submarine"),
+            &embed("database\nSQLite"),
+        );
+        let signal = cosine(
+            &embed("rustacean tooling preferences"),
+            &embed("language\nRust systems programming"),
+        );
+        assert!(
+            noise > signal,
+            "if this ever reverses, a cosine floor becomes viable and this design should be \
+             revisited: noise={noise} signal={signal}"
         );
     }
 }

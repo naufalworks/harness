@@ -1,5 +1,83 @@
 # PROGRESS — journal
 
+## 2026-09-15T05:50:00Z · P15-T01 — done; the measurement overruled the plan
+
+I planned to calibrate thresholds by observing the numbers and then writing honest ones. That
+part went as intended. What I did not expect was that the eval would immediately invalidate the
+obvious fix for the one bad case it found.
+
+Shape of the work, and why it is split this way. Ranking is Rust, so the measurement is a Rust
+test (`storage::tests::recall_eval_fixtures_meet_labeled_budgets`) that drives the real
+`DbStore::recall` over `tests/recall_eval/fixtures.json` and writes `metrics.json`. The Python
+side (`run.py --check`) validates those metrics and nothing else. Reimplementing the reranker in
+Python would have measured the copy rather than the shipped code, and would have drifted silently
+the first time the Rust changed. This is exactly the order the declared verify command implies:
+`cargo test` produces the evidence, `run.py --check` refuses to accept bad evidence.
+
+Because a gate that cannot fail is decoration, I tampered with it four ways: deleted
+`metrics.json`, set `fixture_sha256` to zeros, injected a stale leak, and changed the recorded
+model. All four exit 1 with a specific reason. The `fixture_sha256` check is the important one —
+it stops someone editing the fixtures to be easier while an old passing `metrics.json` sits on
+disk.
+
+The finding. Case `no-match-returns-nothing` uses the prompt "xylophone quarterly submarine",
+which shares no token with any memory, so FTS contributes nothing — yet recall returned two
+memories. They cleared the vector arm's `> 0.01` cosine floor on hash noise alone. My first
+instinct was to raise that floor, so I measured the scores before touching the constant:
+
+    noise  "xylophone quarterly submarine" vs "database\nSQLite"            0.069
+    noise  "xylophone quarterly submarine" vs "language\nRust"              0.066
+    signal "rustacean tooling preferences" vs "language\nRust systems ..."  0.042
+
+The noise outscores the signal. There is no threshold that removes the false positives and keeps
+the morphology bridge, which is the entire reason the vector arm exists; a floor above 0.069 would
+also break `character_features_recall_related_spelling`. Raising the constant would have looked
+like a fix, passed my own eval, and quietly deleted the feature. So I did not tune it.
+
+What I did instead is the task's own "optional" clause, now motivated by evidence rather than by
+symmetry: `embeddings::Strategy` with `HARNESS_MEMORY_SEMANTIC_RECALL=0` selecting lexical-only.
+The default is unchanged, so no deployment behaviour moves. Two deliberate choices there. The env
+string is parsed by a pure function (`parse_strategy`) and the strategy is an *argument* to
+`recall_with_strategy`, because mutating process environment inside a test races every other test
+in the same binary. And the eval measures both arms, so the choice is informed:
+
+    hybrid       macro_precision 0.786   relevant_coverage 1.000
+    lexical_only macro_precision 0.857   relevant_coverage 0.875
+
+That is the real trade: the vector arm buys recall coverage and pays in precision. Neither is
+strictly better, which is why this is an operator switch and not a silent default change. Stale
+use is 0.000 everywhere — archived rows never reached the context in any case, so the ranking's
+`status = 'active'` filter is doing its job. Note that the schema only allows `active` and
+`archived`, so "stale" had to be modelled as archived rows that still match the prompt strongly,
+plus aged active rows; there is no separate stale state to assert against.
+
+Thresholds are set from these measurements, not aspirationally: `min_macro_precision` 0.60 sits
+below the measured 0.786 with room for the known noise case, `max_stale_use_rate` is 0.0 because
+the measured value is 0.0 and any leak is a real defect, and `max_context_bytes` 6000 mirrors the
+existing hard ceiling in recall rather than inventing a second number. Latency is 250ms as a
+regression tripwire, not a benchmark — measured max was 1ms, and asserting anything near that
+would fail on a noisy machine for no reason.
+
+One self-inflicted defect worth recording. My first two `embeddings` tests were named
+`the_vector_arm_...` and `hasher_noise_...`, neither containing "recall" — so they compiled, passed
+under `cargo test`, and were silently skipped by this task's own verify command. The only visible
+symptom was `filtered out` moving from 246 to 248 while `passed` stayed at 3. Renamed both. This
+is the third time this trap has cost me something; the check that catches it is confirming that
+`passed` *increases*, never that the run is green.
+
+Also added `recall_lexical_only_strategy_suppresses_vector_noise`, which asserts the baseline
+(hybrid admits the noise) and then that lexical-only returns nothing, and that a genuine lexical
+match still comes back. Without the first assertion the test would pass even if the noise
+disappeared for some unrelated reason, and would stop proving the switch does anything.
+
+`src/storage/memories.rs` is touched, which is not literally in the declared `files` list
+(`src/embeddings.rs, src/storage.rs, tests/recall_eval/*`). It is the submodule of `src/storage.rs`
+that holds `recall`, and the switch cannot be honoured anywhere else. Flagging it rather than
+pretending the list covered it.
+
+Verification: `cargo test --locked recall` 6 passed (from 2), `cargo test --locked` 252 passed
+(from 248), `run.py --check` PASS, clippy `-D warnings` clean, `cargo fmt --all` clean.
+
 ## 2026-09-15T05:40:00Z · P15-T01 — doing; and what the task actually still needs
 
 Selected by the ROADMAP rule rather than by my own judgement. P15-T01 is the only eligible

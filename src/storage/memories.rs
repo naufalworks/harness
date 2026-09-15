@@ -115,9 +115,24 @@ impl DbStore {
     /// Hybrid local recall: union lexical and vector top-20s, then rerank deterministically.
     /// The final context payload retains the original 6,000-byte hard ceiling.
     pub async fn recall(&self, scope: String, prompt: String) -> Result<Vec<Recall>> {
+        self.recall_with_strategy(scope, prompt, crate::embeddings::strategy_from_env())
+            .await
+    }
+
+    /// P15-T01: the strategy is an explicit argument so tests and the recall evaluation can
+    /// compare arms without mutating process environment, which would race other tests.
+    pub async fn recall_with_strategy(
+        &self,
+        scope: String,
+        prompt: String,
+        strategy: crate::embeddings::Strategy,
+    ) -> Result<Vec<Recall>> {
+        let semantic_enabled = strategy == crate::embeddings::Strategy::Hybrid;
         let fts = safety::fts_query(&prompt);
         let query_vector = crate::embeddings::embed(&prompt);
-        if fts.is_empty() && query_vector.iter().all(|value| *value == 0.0) {
+        // With the vector arm disabled, lexical support is the only way in, so an empty FTS
+        // query must return nothing rather than fall through to a full scan.
+        if fts.is_empty() && (!semantic_enabled || query_vector.iter().all(|value| *value == 0.0)) {
             return Ok(Vec::new());
         }
         self.run(move|c|{
@@ -154,9 +169,13 @@ impl DbStore {
                 let mut stmt=tx.prepare("SELECT m.id FROM memory_fts JOIN memories m ON m.rowid=memory_fts.rowid WHERE memory_fts MATCH ?1 AND m.status='active' AND (m.scope=?2 OR m.scope='global') AND (m.scope=?2 OR NOT EXISTS(SELECT 1 FROM memories p WHERE p.scope=?2 AND p.key=m.key AND p.status='active')) ORDER BY bm25(memory_fts),m.updated_at DESC LIMIT 20")?;
                 for (rank,id) in stmt.query_map(params![fts,scope],|r|r.get::<_,String>(0))?.enumerate(){lexical.insert(id?,rank);}
             }
-            let mut semantic=rows.iter().map(|row|(row.memory.id.clone(),crate::embeddings::cosine(&query_vector,&row.vector))).filter(|(_,score)|*score>0.01).collect::<Vec<_>>();
-            semantic.sort_by(|a,b|b.1.total_cmp(&a.1).then_with(||a.0.cmp(&b.0)));semantic.truncate(20);
-            let semantic=semantic.into_iter().collect::<HashMap<_,_>>();
+            let semantic=if semantic_enabled {
+                let mut scored=rows.iter().map(|row|(row.memory.id.clone(),crate::embeddings::cosine(&query_vector,&row.vector))).filter(|(_,score)|*score>0.01).collect::<Vec<_>>();
+                scored.sort_by(|a,b|b.1.total_cmp(&a.1).then_with(||a.0.cmp(&b.0)));scored.truncate(20);
+                scored.into_iter().collect::<HashMap<_,_>>()
+            } else {
+                HashMap::new()
+            };
             let candidate_ids=lexical.keys().chain(semantic.keys()).cloned().collect::<HashSet<_>>();
             let now_at=Utc::now();
             let mut ranked=rows.into_iter().filter(|row|candidate_ids.contains(&row.memory.id)).map(|row|{
