@@ -120,7 +120,10 @@ pub(crate) async fn authenticate(
         tokio::time::sleep(AUTH_FAILURE_DELAY).await;
         return (
             StatusCode::UNAUTHORIZED,
-            Json(json!({"error":"Bearer token required"})),
+            Json(crate::api::error::error_body(
+                StatusCode::UNAUTHORIZED,
+                "Bearer token required",
+            )),
         )
             .into_response();
     }
@@ -138,7 +141,10 @@ pub(crate) async fn authenticate(
             None => {
                 return (
                     StatusCode::UNAUTHORIZED,
-                    Json(json!({"error":"Trusted proxy identity required"})),
+                    Json(crate::api::error::error_body(
+                        StatusCode::UNAUTHORIZED,
+                        "Trusted proxy identity required",
+                    )),
                 )
                     .into_response()
             }
@@ -158,7 +164,10 @@ pub(crate) async fn authenticate(
     if !h.auth.allow(&identity, &route_key, limit) {
         return (
             StatusCode::TOO_MANY_REQUESTS,
-            Json(json!({"error":"Request rate limit exceeded"})),
+            Json(crate::api::error::error_body(
+                StatusCode::TOO_MANY_REQUESTS,
+                "Request rate limit exceeded",
+            )),
         )
             .into_response();
     }
@@ -170,7 +179,10 @@ pub(crate) async fn authenticate(
         {
             return (
                 StatusCode::FORBIDDEN,
-                Json(json!({"error":"Origin not allowed"})),
+                Json(crate::api::error::error_body(
+                    StatusCode::FORBIDDEN,
+                    "Origin not allowed",
+                )),
             )
                 .into_response();
         }
@@ -178,7 +190,10 @@ pub(crate) async fn authenticate(
     let Ok(_permit) = h.api_limit.clone().try_acquire_owned() else {
         return (
             StatusCode::TOO_MANY_REQUESTS,
-            Json(json!({"error":"Too many concurrent requests"})),
+            Json(crate::api::error::error_body(
+                StatusCode::TOO_MANY_REQUESTS,
+                "Too many concurrent requests",
+            )),
         )
             .into_response();
     };
@@ -191,7 +206,10 @@ pub(crate) async fn create_browser_session(
     let Ok(_permit) = h.api_limit.clone().try_acquire_owned() else {
         return (
             StatusCode::TOO_MANY_REQUESTS,
-            Json(json!({"error":"Too many concurrent requests"})),
+            Json(crate::api::error::error_body(
+                StatusCode::TOO_MANY_REQUESTS,
+                "Too many concurrent requests",
+            )),
         )
             .into_response();
     };
@@ -203,7 +221,10 @@ pub(crate) async fn create_browser_session(
         tokio::time::sleep(AUTH_FAILURE_DELAY).await;
         return (
             StatusCode::UNAUTHORIZED,
-            Json(json!({"error":"Master bearer token required"})),
+            Json(crate::api::error::error_body(
+                StatusCode::UNAUTHORIZED,
+                "Master bearer token required",
+            )),
         )
             .into_response();
     }
@@ -215,7 +236,10 @@ pub(crate) async fn create_browser_session(
         {
             return (
                 StatusCode::FORBIDDEN,
-                Json(json!({"error":"Origin not allowed"})),
+                Json(crate::api::error::error_body(
+                    StatusCode::FORBIDDEN,
+                    "Origin not allowed",
+                )),
             )
                 .into_response();
         }
@@ -223,7 +247,10 @@ pub(crate) async fn create_browser_session(
     if !h.auth.allow("local", "session", 5) {
         return (
             StatusCode::TOO_MANY_REQUESTS,
-            Json(json!({"error":"Session creation rate limit exceeded"})),
+            Json(crate::api::error::error_body(
+                StatusCode::TOO_MANY_REQUESTS,
+                "Session creation rate limit exceeded",
+            )),
         )
             .into_response();
     }
