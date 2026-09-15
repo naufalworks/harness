@@ -145,7 +145,7 @@ def server_request_states() -> set[str]:
         fail(f"no RequestState enum found in {RECORDING_RS}")
         return set()
     body = source[start : source.find("}", start)]
-    return {name.lower() for name in re.findall(r"^\s{4}([A-Z][A-Za-z]*),", body, re.M)}
+    return {name.lower() for name in re.findall(r"^\s{4}([A-Z][A-Za-z]*),", body, re.MULTILINE)}
 
 
 def server_receipt_fields() -> set[str]:
@@ -166,7 +166,7 @@ def client_frozen_list(name: str) -> set[str]:
     there is no Node requirement and nothing from the client runs here.
     """
     source = API_JS.read_text(encoding="utf-8")
-    match = re.search(rf"const {name} = Object\.freeze\(\[(.*?)\]\)", source, re.S)
+    match = re.search(rf"const {name} = Object\.freeze\(\[(.*?)\]\)", source, re.DOTALL)
     if not match:
         fail(f"no {name} list found in {API_JS}")
         return set()
@@ -176,11 +176,11 @@ def client_frozen_list(name: str) -> set[str]:
 def client_label_keys() -> set[str]:
     """The states static/api.js has a reader-facing label for."""
     source = API_JS.read_text(encoding="utf-8")
-    match = re.search(r"const REQUEST_STATE_LABELS = Object\.freeze\(\{(.*?)\}\)", source, re.S)
+    match = re.search(r"const REQUEST_STATE_LABELS = Object\.freeze\(\{(.*?)\}\)", source, re.DOTALL)
     if not match:
         fail(f"no REQUEST_STATE_LABELS map found in {API_JS}")
         return set()
-    return set(re.findall(r"^\s*([a-z_]+):", match.group(1), re.M))
+    return set(re.findall(r"^\s*([a-z_]+):", match.group(1), re.MULTILINE))
 
 
 def main() -> int:
@@ -236,7 +236,7 @@ def main() -> int:
     if not receipt:
         fail("docs/api.yaml has no components.schemas.Receipt")
     else:
-        properties = set((receipt.get("properties") or {}))
+        properties = set(receipt.get("properties") or {})
         emitted = server_receipt_fields()
         for field in sorted(emitted - properties):
             fail(f"the receipt builder emits {field!r}, absent from docs/api.yaml")
