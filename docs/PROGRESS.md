@@ -1,5 +1,15 @@
 # PROGRESS — journal
 
+## 2026-09-15T18:42:35Z · P17-T03 — strict replay and divergence reporting started
+
+P17-T02 was fast-forwarded into `main` and pushed at `eee2704`; it remains undeployed. P17-T03 is
+isolated on `task/p17-t03-strict-replay`. This slice will execute only recorded strict-capsule
+boundaries, bind each recorded provider response and tool result to its actual request identity,
+and stop at the first changed request or context instead of presenting an old response as a new
+counterfactual outcome. The report will align deterministic steps and mark downstream behavioral
+evidence unavailable after divergence. No live provider/tool call, approved-memory mutation, source
+project write, deployment, service restart, access or infrastructure change is part of this task.
+
 ## 2026-09-15T18:33:11Z · P17-T02 — isolated treatment freezing completed
 
 Implemented content-addressed `harness-treatment-v1` children without adding a live schema or write

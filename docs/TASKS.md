@@ -1125,7 +1125,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - result-verify: Exact task gate passed: 2 treatment tests plus the complete browser-to-Rust-to-SQLite-to-filesystem E2E and all failure-path lanes. The full 300-test Rust suite, strict Clippy, formatting, Python lint/compile, capsule-script freeze smoke test, migration chain 001->016, 16 SQL contracts, API schema, and diff checks also passed. This task was not deployed.
 
 ### P17-T03 · Implement strict replay and first-divergence reports
-- status: todo
+- status: doing
 - priority: research
 - lane: experiment-replay
 - parallel: yes
