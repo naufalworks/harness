@@ -3,6 +3,7 @@
 //! Moved verbatim from `main.rs` by P12-T01; behaviour is unchanged.
 use crate::api::assets::{css, index, js};
 use crate::api::auth::{authenticate, create_browser_session, headers};
+use crate::api::dto::ReceiptView;
 use crate::api::error::{db_error, invalid, ApiError, ApiResult, JsonBody};
 use crate::api::stream::{activity, activity_stream, generation, generation_stream};
 use crate::archive::{ArchiveStore, PrivacyAction};
@@ -87,7 +88,11 @@ async fn submit_chat(
     JsonBody(req): JsonBody<ChatRequest>,
 ) -> ApiResult<(StatusCode, Json<Value>)> {
     let receipt = admit_chat(&h, req).await?;
-    let code = if receipt["state"] == "captured" || receipt["state"] == "generating" {
+    // Pending means the answer is still owed, which is the 202 case.
+    let code = if ReceiptView::of(&receipt)
+        .state()
+        .is_some_and(recording::RequestState::is_pending)
+    {
         StatusCode::ACCEPTED
     } else {
         StatusCode::OK
@@ -103,13 +108,17 @@ async fn chat(
     let mut receipt = admit_chat(&h, req).await?;
     // A receipt without a request_id cannot be polled, so return it as-is rather than
     // panicking the handler; the durable 202 receipt is still a correct answer here.
-    let Some(request) = receipt["request_id"].as_str().map(str::to_string) else {
+    let Some(request) = ReceiptView::of(&receipt).request_id else {
         return Ok((StatusCode::ACCEPTED, Json(receipt)));
     };
     for _ in 0..20 {
-        match receipt["state"].as_str() {
-            Some("complete") => return Ok((StatusCode::OK, Json(receipt))),
-            Some("failed" | "interrupted") => return Ok((StatusCode::BAD_GATEWAY, Json(receipt))),
+        match ReceiptView::of(&receipt).state() {
+            Some(recording::RequestState::Complete) => return Ok((StatusCode::OK, Json(receipt))),
+            Some(recording::RequestState::Failed | recording::RequestState::Interrupted) => {
+                return Ok((StatusCode::BAD_GATEWAY, Json(receipt)))
+            }
+            // Still pending, or a state this build does not recognise: keep
+            // waiting rather than reporting a terminal outcome we invented.
             _ => tokio::time::sleep(std::time::Duration::from_millis(250)).await,
         }
         receipt = h
@@ -154,9 +163,10 @@ async fn cancel_request(
     // The durable intent is committed first; only then stop any process group the turn is still
     // blocked on. A restart that loses this in-memory handle still leaves the turn interrupted.
     crate::processes::terminate(&id);
-    match receipt["state"].as_str() {
-        Some("generating") => Ok((StatusCode::ACCEPTED, Json(receipt))),
-        Some("interrupted") if receipt["error_code"] == "cancelled" => {
+    let view = ReceiptView::of(&receipt);
+    match view.state() {
+        Some(recording::RequestState::Generating) => Ok((StatusCode::ACCEPTED, Json(receipt))),
+        Some(recording::RequestState::Interrupted) if view.was_cancelled() => {
             Ok((StatusCode::OK, Json(receipt)))
         }
         _ => Err(ApiError(

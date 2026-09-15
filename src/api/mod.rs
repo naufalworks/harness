@@ -4,6 +4,7 @@
 //! behaviour of a single concern can be reviewed without reading the whole server.
 pub(crate) mod assets;
 pub(crate) mod auth;
+pub(crate) mod dto;
 pub(crate) mod error;
 pub(crate) mod routes;
 pub(crate) mod stream;

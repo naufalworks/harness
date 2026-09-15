@@ -10,6 +10,7 @@ use crate::{
 };
 use anyhow::{bail, Result};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 pub struct CaptureInput {
@@ -34,6 +35,44 @@ pub enum RetryAdmission {
     NotTerminal,
     Busy,
     NotFound,
+}
+
+/// The states a chat receipt can be in.
+///
+/// The strings are a durable contract, not an implementation detail: they are
+/// stored in `chat_receipts.state`, filtered on by the admission queries, and
+/// echoed verbatim in API responses. This enum exists so the pending/terminal
+/// rule is written once instead of being re-derived by string comparison at
+/// every site that needs it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RequestState {
+    Captured,
+    Generating,
+    Complete,
+    Failed,
+    Interrupted,
+}
+
+impl RequestState {
+    /// `None` for a state this build does not know. Callers decide what an
+    /// unrecognised state means; it is never assumed to be terminal.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "captured" => Some(Self::Captured),
+            "generating" => Some(Self::Generating),
+            "complete" => Some(Self::Complete),
+            "failed" => Some(Self::Failed),
+            "interrupted" => Some(Self::Interrupted),
+            _ => None,
+        }
+    }
+
+    /// An answer is still owed for this request. Mirrors the SQL predicate
+    /// `state IN ('captured','generating')` used by the admission queries.
+    pub fn is_pending(self) -> bool {
+        matches!(self, Self::Captured | Self::Generating)
+    }
 }
 
 /// Publishes generation text to the durable event feed as it arrives.
@@ -227,7 +266,7 @@ fn receipt(c: &Connection, request: &str) -> Result<Option<Value>> {
             let context: Option<String> = r.get(9)?;
             let context: Value = context.and_then(|v| serde_json::from_str(&v).ok()).unwrap_or(Value::Null);
             let job_status: Option<String> = r.get(12)?;
-            let memory_status = job_status.unwrap_or_else(|| if state=="captured" || state=="generating" {"waiting_for_turn".into()} else {"deferred".into()});
+            let memory_status = job_status.unwrap_or_else(|| if RequestState::parse(&state).is_some_and(RequestState::is_pending) {"waiting_for_turn".into()} else {"deferred".into()});
             Ok(json!({"request_id":r.get::<_,String>(0)?,"session_id":r.get::<_,String>(1)?,
                 "scope":r.get::<_,String>(2)?,"model":r.get::<_,String>(3)?,"redacted":r.get::<_,bool>(4)?,
                 "state":state,"error_code":r.get::<_,Option<String>>(6)?,"captured_at":r.get::<_,String>(7)?,
@@ -291,7 +330,7 @@ impl DbStore {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             ).optional()?;
             let Some((state, session)) = found else { return Ok(None); };
-            if state == "captured" || state == "generating" {
+            if RequestState::parse(&state).is_some_and(RequestState::is_pending) {
                 let stamp = now();
                 let already_requested: bool = tx.query_row(
                     "SELECT EXISTS(SELECT 1 FROM run_controls WHERE request_id=?1 AND cancel_requested_at IS NOT NULL)",
@@ -312,7 +351,7 @@ impl DbStore {
                         params![request, session, None::<String>, "cancel_requested", "{}", stamp],
                     )?;
                 }
-                if state == "captured" {
+                if RequestState::parse(&state) == Some(RequestState::Captured) {
                     cancel_tx(&tx, &request, &session, &stamp)?;
                 }
             }
@@ -341,7 +380,12 @@ impl DbStore {
             let Some((state, session, scope, model, prompt, redacted)) = source else {
                 return Ok(RetryAdmission::NotFound);
             };
-            if !matches!(state.as_str(), "failed" | "interrupted") {
+            // Retryable is narrower than terminal: `complete` is also terminal,
+            // and re-running a finished answer would bill for it twice.
+            if !matches!(
+                RequestState::parse(&state),
+                Some(RequestState::Failed | RequestState::Interrupted)
+            ) {
                 return Ok(RetryAdmission::NotTerminal);
             }
             let prior_retry: Option<String> = tx.query_row(
