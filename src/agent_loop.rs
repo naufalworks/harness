@@ -2723,7 +2723,8 @@ mod tests {
             "the delegated call records the capability, not a provider failure: {rows:#?}"
         );
         assert!(
-            rows.iter().any(|r| r["kind"] == "subagent" && r["status"] == "complete"),
+            rows.iter()
+                .any(|r| r["kind"] == "subagent" && r["status"] == "complete"),
             "the delegation itself still completes: {rows:#?}"
         );
 
