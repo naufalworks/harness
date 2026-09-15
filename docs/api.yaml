@@ -1,0 +1,746 @@
+# OpenAPI contract for the Harness HTTP surface.
+#
+# This file is checked, not decorative. `tests/test_api_schema.py` compares every
+# method+path pair here against `router()` in `src/api/routes.rs` in both
+# directions, and compares the error-code enum below against the code table in
+# `src/api/error.rs`. A route cannot be added, renamed or removed, and an error
+# code cannot be introduced, without this file changing in the same commit.
+#
+# Scope note, so this contract does not over-claim: success payloads are
+# deliberately left unconstrained for now. Handlers still return
+# `Json<serde_json::Value>`, so writing field-level success schemas here would
+# document an intention rather than the running code. Those schemas arrive with
+# the typed-DTO seam of P12-T03, which is what makes them true. Error bodies are
+# fully specified, because they are already produced by one shared envelope.
+openapi: 3.1.0
+info:
+  title: Harness API
+  version: 0.2.0
+  description: |
+    The HTTP surface of the Harness process.
+
+    Authentication is checked before existence: an unauthenticated request to an
+    authenticated route never learns whether the path exists. Every JSON failure
+    shares one envelope (`ApiError`) carrying a human sentence, a stable machine
+    code, and whether a retry may help.
+servers:
+  - url: http://127.0.0.1:8080
+    description: Default local bind address.
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        Master token from `HARNESS_AUTH_TOKEN`, or a short-lived session token
+        issued by `POST /auth/session`.
+  schemas:
+    ApiError:
+      type: object
+      description: |
+        The single failure envelope for every JSON route. `error` is a complete
+        human sentence intended to be shown verbatim; it is the field the browser
+        UI reads. `code` is the stable token clients branch on. `retryable` says
+        whether repeating the identical request may succeed.
+      required: [error, code, retryable]
+      additionalProperties: false
+      properties:
+        error:
+          type: string
+          description: Human-readable sentence, safe to display verbatim.
+        code:
+          type: string
+          description: |
+            Stable machine-readable code. Derived from the HTTP status by
+            `error_code` in `src/api/error.rs`; this enum must match that table
+            exactly.
+          enum:
+            - invalid_request
+            - unauthorized
+            - forbidden
+            - not_found
+            - conflict
+            - gone
+            - payload_too_large
+            - unsupported_media_type
+            - unprocessable_body
+            - rate_limited
+            - internal_error
+            - not_implemented
+            - upstream_failed
+            - unavailable
+            - upstream_timeout
+            - error
+        retryable:
+          type: boolean
+          description: |
+            True only for congestion and upstream faults (429, 502, 503, 504).
+            A 500 is deliberately false: the server cannot promise the failed
+            operation had no effect. Clients that retry anyway must rely on the
+            request identifier for idempotency.
+  responses:
+    Error:
+      description: Request failed; body is the shared error envelope.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+  parameters:
+    RequestId:
+      name: id
+      in: path
+      required: true
+      description: Request identifier (UUID).
+      schema:
+        type: string
+        format: uuid
+    SessionId:
+      name: id
+      in: path
+      required: true
+      description: Session identifier (UUID).
+      schema:
+        type: string
+        format: uuid
+    OpaqueId:
+      name: id
+      in: path
+      required: true
+      description: Identifier of the addressed record.
+      schema:
+        type: string
+    ScopeName:
+      name: scope
+      in: path
+      required: true
+      description: Scope name.
+      schema:
+        type: string
+security:
+  - bearerAuth: []
+paths:
+  /:
+    get:
+      operationId: index
+      summary: Serve the single-page application shell.
+      security: []
+      responses:
+        '200':
+          description: HTML document.
+          content:
+            text/html: {}
+        '304':
+          description: Cached copy is still valid.
+  /app.js:
+    get:
+      operationId: appScript
+      summary: Serve the application script.
+      security: []
+      responses:
+        '200':
+          description: JavaScript, content-encoding negotiated.
+          content:
+            text/javascript: {}
+        '304':
+          description: Cached copy is still valid.
+  /style.css:
+    get:
+      operationId: appStyles
+      summary: Serve the application stylesheet.
+      security: []
+      responses:
+        '200':
+          description: CSS, content-encoding negotiated.
+          content:
+            text/css: {}
+        '304':
+          description: Cached copy is still valid.
+  /auth/session:
+    post:
+      operationId: createBrowserSession
+      summary: Exchange the master token for a short-lived session token.
+      description: |
+        Requires the master bearer token specifically; a session token cannot
+        mint another session.
+      responses:
+        '201':
+          description: Session token and its lifetime in seconds.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [session_token, expires_in]
+                additionalProperties: false
+                properties:
+                  session_token:
+                    type: string
+                  expires_in:
+                    type: integer
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /chat:
+    post:
+      operationId: chat
+      summary: Submit a prompt, briefly waiting for fast providers.
+      description: |
+        Compatibility endpoint. Waits a bounded time for a complete answer and
+        otherwise returns the durable receipt. Disconnecting never cancels the
+        generation worker.
+      responses:
+        '200':
+          description: Generation completed within the wait window.
+          content:
+            application/json: {}
+        '202':
+          description: Durable receipt; poll it for the outcome.
+          content:
+            application/json: {}
+        '502':
+          description: Generation failed or was interrupted; receipt included.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /chat/submit:
+    post:
+      operationId: submitChat
+      summary: Submit a prompt and return its durable receipt immediately.
+      responses:
+        '200':
+          description: Existing terminal receipt for an identical request.
+          content:
+            application/json: {}
+        '202':
+          description: Accepted; receipt is captured or generating.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /chat/requests/{id}:
+    get:
+      operationId: getReceipt
+      summary: Read the durable receipt for a request.
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Receipt.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /chat/requests/{id}/cancel:
+    post:
+      operationId: cancelRequest
+      summary: Request cancellation of an in-flight generation.
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Cancellation recorded.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /chat/requests/{id}/retry:
+    post:
+      operationId: retryRequest
+      summary: Retry a failed or interrupted request.
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Retry admitted.
+          content:
+            application/json: {}
+        '202':
+          description: Retry accepted; poll the receipt.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /chat/requests/{id}/context:
+    get:
+      operationId: getContext
+      summary: Read the context assembled for a request.
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Context record.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /chat/requests/{id}/steps:
+    get:
+      operationId: requestSteps
+      summary: List the recorded steps of a turn.
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Steps in sequence order.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /chat/requests/{id}/incident:
+    get:
+      operationId: requestIncident
+      summary: Read the incident graph for a request.
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Incident graph, including the earliest known break.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /chat/requests/{id}/provenance:
+    get:
+      operationId: requestProvenance
+      summary: Read the provenance edges recorded for a request.
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Provenance edges.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /sessions:
+    get:
+      operationId: sessions
+      summary: List conversations.
+      responses:
+        '200':
+          description: Sessions.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /sessions/{id}/messages:
+    get:
+      operationId: sessionMessages
+      summary: Read the message history of a conversation.
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+      responses:
+        '200':
+          description: Messages in order.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /sessions/{id}/plan:
+    get:
+      operationId: sessionPlan
+      summary: Read the plan associated with a conversation.
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+      responses:
+        '200':
+          description: Plan.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /models:
+    get:
+      operationId: models
+      summary: List models offered by the configured provider.
+      responses:
+        '200':
+          description: Models.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /config:
+    get:
+      operationId: getConfig
+      summary: Read the effective configuration.
+      responses:
+        '200':
+          description: Configuration.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+    post:
+      operationId: setConfig
+      summary: Update configuration values.
+      responses:
+        '200':
+          description: Stored configuration after the update.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /health:
+    get:
+      operationId: health
+      summary: Readiness and build identity.
+      description: |
+        Answers with a body in both the ready and not-ready cases; the `ready`
+        flag, not the status alone, is the signal.
+      responses:
+        '200':
+          description: Ready.
+          content:
+            application/json: {}
+        '503':
+          description: Not ready; body reports which probe failed.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+  /memory/status:
+    get:
+      operationId: memoryStatus
+      summary: Summarise stored memories and pending candidates.
+      responses:
+        '200':
+          description: Memory status.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /memory/candidates:
+    get:
+      operationId: memoryCandidates
+      summary: List memory candidates awaiting a decision.
+      responses:
+        '200':
+          description: Candidates.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /memory/candidates/{id}/edit:
+    post:
+      operationId: editMemoryCandidate
+      summary: Edit a candidate before confirming it.
+      parameters:
+        - $ref: '#/components/parameters/OpaqueId'
+      responses:
+        '200':
+          description: Updated candidate.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /memory/confirm:
+    post:
+      operationId: confirmMemory
+      summary: Accept or reject memory candidates.
+      responses:
+        '200':
+          description: Outcome of the decision.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /memory/ingest:
+    post:
+      operationId: ingestMemory
+      summary: Ingest source material for memory extraction.
+      description: Accepts a larger body than other routes (2 MiB).
+      responses:
+        '200':
+          description: Ingest receipt.
+          content:
+            application/json: {}
+        '202':
+          description: Ingest accepted for background work.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /jobs:
+    get:
+      operationId: jobs
+      summary: List background jobs.
+      responses:
+        '200':
+          description: Jobs.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /jobs/{id}/retry:
+    post:
+      operationId: retryJob
+      summary: Retry a failed background job.
+      parameters:
+        - $ref: '#/components/parameters/OpaqueId'
+      responses:
+        '200':
+          description: Job requeued.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /scopes:
+    get:
+      operationId: listScopes
+      summary: List known scopes.
+      responses:
+        '200':
+          description: Scopes.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /scopes/{scope}:
+    get:
+      operationId: getScope
+      summary: Read one scope's limits and constraints.
+      parameters:
+        - $ref: '#/components/parameters/ScopeName'
+      responses:
+        '200':
+          description: Scope record.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+    post:
+      operationId: setScope
+      summary: Patch one scope's limits and constraints.
+      parameters:
+        - $ref: '#/components/parameters/ScopeName'
+      responses:
+        '200':
+          description: Scope record after the patch.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /permissions:
+    get:
+      operationId: permissions
+      summary: List permission requests awaiting a decision.
+      responses:
+        '200':
+          description: Pending permission requests.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /permissions/{id}:
+    post:
+      operationId: decidePermission
+      summary: Approve or deny a permission request.
+      parameters:
+        - $ref: '#/components/parameters/OpaqueId'
+      responses:
+        '200':
+          description: Decision recorded.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /activity:
+    get:
+      operationId: activity
+      summary: Poll recent activity events.
+      responses:
+        '200':
+          description: Activity events.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /activity/stream:
+    get:
+      operationId: activityStream
+      summary: Stream activity events as server-sent events.
+      responses:
+        '200':
+          description: Event stream.
+          content:
+            text/event-stream: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /generation:
+    get:
+      operationId: generation
+      summary: Poll the state of the current generation.
+      responses:
+        '200':
+          description: Generation state.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /generation/stream:
+    get:
+      operationId: generationStream
+      summary: Stream generation progress as server-sent events.
+      responses:
+        '200':
+          description: Event stream.
+          content:
+            text/event-stream: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /changes:
+    get:
+      operationId: changes
+      summary: List recorded file changes.
+      responses:
+        '200':
+          description: File changes.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /changes/{id}/revert:
+    post:
+      operationId: revertChange
+      summary: Revert one recorded file change.
+      parameters:
+        - $ref: '#/components/parameters/OpaqueId'
+      responses:
+        '200':
+          description: Revert applied.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /sources/{id}/archive:
+    post:
+      operationId: archiveSource
+      summary: Archive source material for a recorded source.
+      description: Accepts a larger body than other routes (2 MiB).
+      parameters:
+        - $ref: '#/components/parameters/OpaqueId'
+      responses:
+        '200':
+          description: Archive stored.
+          content:
+            application/json: {}
+        '201':
+          description: Archive created.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /sources/{id}/privacy:
+    post:
+      operationId: recordPrivacyAction
+      summary: Record a privacy action against a source.
+      parameters:
+        - $ref: '#/components/parameters/OpaqueId'
+      responses:
+        '200':
+          description: Privacy action recorded.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /archives/{id}:
+    get:
+      operationId: readArchive
+      summary: Read archived source material.
+      parameters:
+        - $ref: '#/components/parameters/OpaqueId'
+      responses:
+        '200':
+          description: Archived material.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+    delete:
+      operationId: deleteArchive
+      summary: Delete archived source material.
+      parameters:
+        - $ref: '#/components/parameters/OpaqueId'
+      responses:
+        '200':
+          description: Deletion recorded.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
