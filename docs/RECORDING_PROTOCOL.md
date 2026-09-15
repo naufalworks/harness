@@ -14,6 +14,8 @@ A background serial worker claims captured turns, builds a deterministic initial
 - `GET /sessions?before_seq=N`: up to 50 most-recent sessions with saved title excerpt and message count. Keyset paging is not a frozen snapshot; concurrently updated sessions can move toward the newest page—refresh newest to see them.
 - `GET /memory/candidates?scope=&request_id=|chat_only=true|imports_only=true`: pending review candidates, filtered so inline chat suggestions and the import Inbox do not duplicate each other.
 - `POST /memory/candidates/{id}/edit`: revalidates and edits a still-pending value in the named scope; evidence/category/revision are unchanged. Save/Dismiss continue through `/memory/confirm`.
+- `GET /chat/requests/{request_id}/retrieval`: the write-once retrieval receipt for the turn — strategy, embedding model, prompt fingerprint, recall budget, and every ranked candidate with its scores, revision, `included`/`excluded` decision and reason (`ranked_and_fit`, `rank_cutoff`, `payload_ceiling`, `category_budget`). It records what retrieval did, not what the model did with it; 404 when the turn recorded none. The prompt itself is never stored, only its fingerprint.
+- `POST /memory/retrieval/preview`: re-runs the shipped ranking for a prompt, optionally with a still-pending candidate approved, inside a transaction that is always rolled back. Nothing is approved, no embedding is written and no recall counter moves. Reports `before`, `after`, `added`, `removed` and a note stating that a ranking change is not a claim about the answer.
 
 ## State machine
 `captured → generating → complete | failed | interrupted`

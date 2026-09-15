@@ -1,5 +1,69 @@
 # PROGRESS — journal
 
+## 2026-09-15T06:45:00Z · P15-T02 — done; explaining retrieval without claiming causation
+
+Selected by the ledger rule, not by preference: after P15-T01 this was the only `high` with all
+dependencies `done`.
+
+The done-when has two halves, and the second one is where the honesty risk lives. Retaining
+included/excluded candidates with scores, reasons and revisions is bookkeeping. "Preview
+deterministic retrieval changes without causal overclaiming" is a claim discipline: the tempting
+feature is "approving this memory would change the answer", and I cannot support that sentence.
+Nothing here runs a counterfactual generation, so every string the user sees says *sent to the
+model* or *retrieval would change*, never *the answer would change*. The preview response carries
+that note from the server, and the UI test asserts the note is present.
+
+Design decision that mattered most: one ranking implementation. `rank_in_tx` now serves live
+recall, the persisted receipt and the rehearsal. A separate preview ranker would have been a copy,
+and the copy is what would have drifted — the same trap P15-T01 avoided by measuring the real
+`DbStore::recall` instead of a Python reimplementation. The preview opens an `IMMEDIATE`
+transaction, ranks, optionally applies the pending approval, ranks again, and always rolls back;
+`persist: false` additionally skips the embedding upsert and the `recall_count` increment, so
+rehearsing is observation-free rather than merely non-destructive. A test asserts the candidate is
+still pending and recall still returns nothing afterwards, because "it rolls back" is the kind of
+claim that stays true only while someone checks it.
+
+Receipts are write-once: `save_retrieval_receipt` inserts with `ON CONFLICT DO NOTHING` and
+returns whether it wrote, and the test asserts `true` then `false` on retry. `revision` is stored
+per candidate so a later memory edit cannot retroactively change what the receipt says was sent.
+The prompt is fingerprinted, never stored.
+
+Three defects my own gates caught, all worth naming:
+
+- `cargo check` flagged `recall` / `recall_with_strategy` as never used once `recording.rs` moved
+  to `recall_explained`. Left alone it would have failed `clippy -D warnings`. They are still the
+  public API the eval and the memory tests drive, so they carry `#[allow(dead_code)]` with the
+  reason written down, not a deletion.
+- clippy `type_complexity` on the nine-column receipt header row. Factored into a named
+  `ReceiptHeader` alias whose comment lists the column order.
+- **The one I would have shipped blind:** migration 011 moved `user_version` to 11, but readiness
+  still hard-coded `schema_version==10`. The full suite failed three tests — one schema assertion
+  and two `/health` tests returning 503 rather than 200. A gate that only ran the new tests would
+  have passed and the deployed server would have reported itself not ready. Fixed in
+  `storage.rs` and the two assertions.
+
+One UI assertion changed rather than being worked around: `ui_smoke.cjs` asserted the proposal
+controls were exactly `['Save','Edit','Dismiss']`. Adding "Preview retrieval" between Edit and the
+destructive Dismiss breaks it by design, so I updated the expected list rather than loosening the
+assertion to a `includes` check — the exact list is what catches a silently reordered or duplicated
+control.
+
+Evidence from the commands actually run: `cargo test --locked context` 11 passed · full suite
+**254 passed** (was 252) · `cargo clippy --locked --all-targets -- -D warnings` clean ·
+`cargo fmt --all` clean · `python3 tests/test_migrations.py` 001→011, `user_version=11` ·
+`scripts/verify_browser.sh` both suites passed, with three new checks
+(`retrieval_receipt_panel`, `retrieval_receipt_text_inert`, `retrieval_preview_rehearsal`).
+
+Declared-files caveat, flagged rather than papered over: the task lists `migrations/*`,
+`src/context.rs`, `src/storage.rs`, `static/*`. The work also had to touch
+`src/storage/memories.rs` (recall and the ranking live there), `src/recording.rs` (the only place
+that knows a turn's request id at recall time), `src/api/routes.rs` (the two new endpoints),
+`src/recording_tests.rs`, `src/main.rs` (schema-version assertion) and the tests/docs listed in
+`CHANGED_FILES.md`. Noted in the ledger too.
+
+Next by the selection rule: P15-T03 (`medium`, depends P15-T02, `parallel: no`). P15-T04 also
+unblocks only once P13-T02 is done. P13-T04 remains blocked on P16-T03.
+
 ## 2026-09-15T05:50:00Z · P15-T01 — done; the measurement overruled the plan
 
 I planned to calibrate thresholds by observing the numbers and then writing honest ones. That

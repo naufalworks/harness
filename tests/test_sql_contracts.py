@@ -26,8 +26,13 @@ MIGRATIONS=['001_core.sql','002_recording.sql','003_agentic.sql','004_memory_kin
 # in the single file. Read the submodules first so first-match still picks implementation
 # SQL over test fixtures, and sort them for determinism.
 RUST='\n'.join([p.read_text() for p in sorted((ROOT/'src/storage').glob('*.rs'))]+[(ROOT/'src/storage.rs').read_text()])
+# P15-T02: the literal may sit on the line after `execute(`/`prepare(` once rustfmt wraps a
+# long call, so allow whitespace before the string. The contract being asserted is "this test
+# runs the SQL the Rust actually ships", which is a property of the statement, not of its
+# line breaks; without the `\s*` a pure reformat silently turns a contract test into a
+# collection error, which is what happened when the receipt work reformatted memories.rs.
 def sql_start(prefix):
-    for raw in re.findall(r'(?:tx|c)\.execute\("((?:[^"\\]|\\.)*)"',RUST):
+    for raw in re.findall(r'(?:tx|c)\.execute\(\s*"((?:[^"\\]|\\.)*)"',RUST):
         sql=json.loads('"'+raw+'"')
         if sql.startswith(prefix):return sql
     raise AssertionError('SQL not found: '+prefix)
@@ -35,7 +40,7 @@ UPSERT=sql_start('INSERT INTO memories(')
 REVISION=sql_start('INSERT INTO memory_revisions(')
 APPROVE=sql_start("UPDATE candidates SET status='approved'")
 def prepared_start(prefix):
-    for raw in re.findall(r'(?:tx|c)\.prepare\("((?:[^"\\]|\\.)*)"',RUST):
+    for raw in re.findall(r'(?:tx|c)\.prepare\(\s*"((?:[^"\\]|\\.)*)"',RUST):
         sql=json.loads('"'+raw+'"')
         if sql.startswith(prefix):return sql
     raise AssertionError('prepared SQL not found: '+prefix)

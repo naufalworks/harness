@@ -132,6 +132,19 @@ impl Ledger {
         self.excluded_parts
             .push(json!({"id":id.into(),"bytes":bytes,"reason":"category_budget"}));
     }
+    /// P15-T02: a recalled memory's part also records the revision that was in the window, so a
+    /// receipt read later cannot be confused by a memory that has since been revised.
+    fn include_memory(&mut self, id: impl Into<String>, bytes: usize, revision: i64) {
+        self.included_bytes += bytes;
+        self.included_parts
+            .push(json!({"id":id.into(),"bytes":bytes,"revision":revision}));
+    }
+    fn exclude_memory(&mut self, id: impl Into<String>, bytes: usize, revision: i64) {
+        self.excluded_bytes += bytes;
+        self.excluded_parts.push(
+            json!({"id":id.into(),"bytes":bytes,"revision":revision,"reason":"category_budget"}),
+        );
+    }
     fn candidate_bytes(&self) -> usize {
         self.included_bytes + self.excluded_bytes
     }
@@ -227,11 +240,11 @@ fn select_memories(memories: &[Recall], ledger: &mut Ledger) -> Result<Vec<Recal
     for memory in memories {
         let bytes = serde_json::to_vec(memory)?.len();
         if !blocked && ledger.can_fit(bytes) {
-            ledger.include(memory.id.clone(), bytes);
+            ledger.include_memory(memory.id.clone(), bytes, memory.revision);
             selected.push(memory.clone());
         } else {
             blocked = true;
-            ledger.exclude(memory.id.clone(), bytes);
+            ledger.exclude_memory(memory.id.clone(), bytes, memory.revision);
         }
     }
     Ok(selected)

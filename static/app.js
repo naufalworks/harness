@@ -387,7 +387,7 @@ $('authform').addEventListener('submit', async event => {
 $('lock').addEventListener('click', () => {
   token = ''; epoch++; setBusy(false); pendingPrompt = null; closeGenerationStream(); closeActivityStream();
   $('workspace').hidden = true; $('auth').hidden = false; $('connection').textContent = 'Locked';
-  for (const id of ['log','candidates','jobs','recalled','sessionlist']) $(id).replaceChildren();
+  for (const id of ['log','candidates','jobs','recalled','sessionlist','retrieval-list']) $(id).replaceChildren();
   $('modelnames').textContent = ''; $('stats').textContent = ''; $('mainmodel').value = ''; $('extractmodel').value = ''; $('verificationmodel').value = ''; $('prompt').value = ''; $('file').value = ''; $('consent').checked = false;
   $('setup-banner').hidden = true; $('scopelist').replaceChildren();
   notice('Locked. Unsaved draft text was cleared; recorded work stays on the server.');
@@ -436,7 +436,27 @@ function candidateCard(c) {
     card.append(form); textarea.focus();
   });
   const dismiss = node('button', 'Dismiss', 'secondary'); dismiss.type = 'button'; dismiss.addEventListener('click', () => resolve(false));
-  controls.append(save, edit, dismiss); card.append(controls); return card;
+  // P15-T02: rehearse retrieval before approving. The server rolls the trial approval back, so
+  // this button changes nothing; it reports which memories retrieval would send, not what the
+  // model would answer.
+  const preview = node('button', 'Preview retrieval', 'secondary'); preview.type = 'button';
+  preview.addEventListener('click', async () => {
+    card.querySelector('.retrieval-preview')?.remove();
+    preview.disabled = true;
+    const box = node('div', undefined, 'retrieval-preview');
+    try {
+      const out = await api('/memory/retrieval/preview', { prompt: c.evidence?.quote || c.value, scope: c.scope, candidate_id: c.id });
+      const added = Array.isArray(out.added) ? out.added : [];
+      const removed = Array.isArray(out.removed) ? out.removed : [];
+      box.append(node('strong', added.length || removed.length ? `Retrieval would change: +${added.length} / -${removed.length}` : 'Retrieval would not change'));
+      for (const row of added) box.append(node('span', `+ ${String(row.key ?? 'memory')} · score ${Number(row.total_score || 0).toFixed(3)}`, 'muted small'));
+      for (const row of removed) box.append(node('span', `- ${String(row.key ?? 'memory')} · score ${Number(row.total_score || 0).toFixed(3)}`, 'muted small'));
+      box.append(node('span', String(out.note || ''), 'muted small'));
+      card.append(box);
+    } catch (error) { notice(error.message, true); }
+    finally { preview.disabled = false; }
+  });
+  controls.append(save, edit, preview, dismiss); card.append(controls); return card;
 }
 async function loadCandidates() {
   const myEpoch = epoch; const data = await api(`/memory/candidates?scope=${encodeURIComponent(scope)}&imports_only=true`);
@@ -625,6 +645,38 @@ function renderAgentSteps(steps) {
   }
 }
 
+// P15-T02: every number here is read from the turn's persisted retrieval receipt. Keys and
+// reasons come from stored memory text, so all of it is placed with textContent (via `node`)
+// and never parsed as markup. The panel says what retrieval did; it makes no claim about how
+// the answer used it.
+const RETRIEVAL_REASONS = {
+  ranked_and_fit: 'sent to the model',
+  rank_cutoff: 'ranked below the top 20',
+  payload_ceiling: 'would not fit the recall byte ceiling',
+  category_budget: 'dropped by the context budget',
+};
+function renderRetrieval(receipt) {
+  const panel = $('agent-retrieval');
+  const list = $('retrieval-list');
+  list.replaceChildren();
+  $('retrieval-note').textContent = '';
+  const rows = Array.isArray(receipt?.candidates) ? receipt.candidates : [];
+  if (!rows.length) { panel.hidden = true; return; }
+  panel.hidden = false;
+  const included = rows.filter(row => row.decision === 'included').length;
+  $('retrieval-count').textContent = `${included} of ${rows.length} sent`;
+  $('retrieval-note').textContent = `${String(receipt.strategy || 'unknown')} retrieval · ${Number(receipt.included_bytes || 0)} of ${Number(receipt.budget_bytes || 0)} bytes used · recorded before the model answered`;
+  for (const row of rows) {
+    const included = row.decision === 'included';
+    const item = node('div', undefined, `retrieval-row ${included ? 'included' : 'excluded'}`);
+    item.append(node('span', `${String(row.key ?? 'memory')} · r${Number(row.revision || 0)}`, 'retrieval-key'));
+    item.append(node('span', `score ${Number(row.total_score || 0).toFixed(3)}`, 'muted small'));
+    const why = RETRIEVAL_REASONS[row.reason] || String(row.reason ?? 'recorded');
+    item.append(node('span', `${included ? 'Included' : 'Excluded'} — ${why} · lexical ${Number(row.lexical_score || 0).toFixed(2)} · semantic ${Number(row.semantic_score || 0).toFixed(2)} · ${Number(row.bytes || 0)} bytes`, 'retrieval-why muted small'));
+    list.append(item);
+  }
+}
+
 function renderAgentPlan(plan) {
   const panel = $('agent-plan');
   const list = $('plan-items');
@@ -796,6 +848,9 @@ async function refreshAgentTurn(receipt) {
     // reason to blank the rest of the rail.
     api(`/changes?request_id=${encodeURIComponent(requestId)}`).catch(() => ({changes: []})),
     api(`/chat/requests/${encodeURIComponent(requestId)}/incident`).catch(() => null),
+    // A turn recorded before this route existed simply has no retrieval receipt; that is not a
+    // reason to blank the rest of the rail.
+    api(`/chat/requests/${encodeURIComponent(requestId)}/retrieval`).catch(() => null),
   ]);
   if (!token || requestId !== (pending?.request_id || requestId) || sessionId !== session) return;
   agentState.requestId = requestId; agentState.sessionId = sessionId; agentState.scope = turnScope;
@@ -811,6 +866,7 @@ async function refreshAgentTurn(receipt) {
   agentState.changes = data[3].changes || [];
   renderAgentChanges(agentState.changes);
   renderIncident(data[4]);
+  renderRetrieval(data[5]);
   // P2 context meter placeholder: real tokens-so-far from step receipts; the budget bar lands in P3.
   const tokens = (data[0].steps || []).reduce((sum, s) => sum + (s.tokens_in || 0) + (s.tokens_out || 0), 0);
   $('context-tokens').textContent = tokens ? `${tokens.toLocaleString()} tokens so far` : 'meter lands in P3';

@@ -916,6 +916,55 @@ async fn request_provenance(
         h.store.provenance_edges(request).await.map_err(db_error)?,
     ))
 }
+/// P15-T02: the persisted retrieval explanation for one turn. Every field is a row recall wrote
+/// before the provider was called, so this is what retrieval did, not a reconstruction of it.
+async fn request_retrieval(
+    State(h): State<Harness>,
+    Path(request): Path<String>,
+) -> ApiResult<Json<Value>> {
+    Uuid::parse_str(&request).map_err(|_| invalid("Invalid request identifier"))?;
+    Ok(Json(
+        h.store
+            .retrieval_receipt(request)
+            .await
+            .map_err(db_error)?
+            .ok_or(ApiError(
+                StatusCode::NOT_FOUND,
+                "No retrieval receipt was recorded for this request",
+            ))?,
+    ))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RetrievalPreviewRequest {
+    prompt: String,
+    #[serde(default = "default_scope")]
+    scope: String,
+    #[serde(default)]
+    candidate_id: Option<String>,
+}
+/// P15-T02 rehearsal: re-run the shipped ranking, optionally as if a pending candidate were
+/// approved, and report the retrieval difference. The store applies the approval inside a
+/// transaction it always rolls back, so this endpoint approves nothing and saves nothing.
+async fn preview_retrieval(
+    State(h): State<Harness>,
+    JsonBody(req): JsonBody<RetrievalPreviewRequest>,
+) -> ApiResult<Json<Value>> {
+    safety::scope(&req.scope).map_err(|_| invalid("Invalid scope"))?;
+    let prompt = req.prompt.trim().to_string();
+    if prompt.is_empty() || prompt.len() > 16_000 {
+        return Err(invalid("Preview needs a prompt of 1 to 16,000 characters"));
+    }
+    if let Some(id) = req.candidate_id.as_deref() {
+        Uuid::parse_str(id).map_err(|_| invalid("Invalid candidate identifier"))?;
+    }
+    Ok(Json(
+        h.store
+            .preview_retrieval(req.scope, prompt, req.candidate_id)
+            .await
+            .map_err(db_error)?,
+    ))
+}
 
 pub(crate) fn router(state: Harness) -> Router {
     let api = Router::new()
@@ -954,6 +1003,8 @@ pub(crate) fn router(state: Harness) -> Router {
         .route("/changes", get(request_changes))
         .route("/changes/{id}/revert", post(revert_change))
         .route("/chat/requests/{id}/provenance", get(request_provenance))
+        .route("/chat/requests/{id}/retrieval", get(request_retrieval))
+        .route("/memory/retrieval/preview", post(preview_retrieval))
         .route(
             "/sources/{id}/archive",
             post(archive_source).layer(DefaultBodyLimit::max(2 * 1024 * 1024)),

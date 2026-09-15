@@ -43,6 +43,52 @@ pub struct Recall {
     pub revision: i64,
     pub evidence: Value,
 }
+/// P15-T02: one considered memory and why retrieval kept or dropped it. The scores are the
+/// ranking terms recall actually summed, not a re-derivation, and `reason` names the rule that
+/// decided the outcome. It carries no claim about how a model used the memory.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RecallCandidate {
+    pub id: String,
+    pub scope: String,
+    pub key: String,
+    pub revision: i64,
+    pub rank: i64,
+    pub decision: String,
+    pub reason: String,
+    pub lexical_score: f64,
+    pub semantic_score: f64,
+    pub scope_score: f64,
+    pub recency_score: f64,
+    pub usefulness_score: f64,
+    pub total_score: f64,
+    pub bytes: i64,
+}
+impl RecallCandidate {
+    pub fn as_value(&self) -> Value {
+        json!({
+            "memory_id":self.id,
+            "scope":self.scope,
+            "key":self.key,
+            "revision":self.revision,
+            "rank":self.rank,
+            "decision":self.decision,
+            "reason":self.reason,
+            "lexical_score":self.lexical_score,
+            "semantic_score":self.semantic_score,
+            "scope_score":self.scope_score,
+            "recency_score":self.recency_score,
+            "usefulness_score":self.usefulness_score,
+            "total_score":self.total_score,
+            "bytes":self.bytes,
+        })
+    }
+    /// The budget decision belongs to the context builder, so recall's row is amended rather
+    /// than rewritten: the scores stay, the outcome becomes the one that shipped.
+    pub fn excluded_by_context_budget(&mut self) {
+        self.decision = "excluded".into();
+        self.reason = "category_budget".into();
+    }
+}
 pub struct Job {
     pub id: String,
     pub scope: String,
@@ -80,7 +126,7 @@ impl DbStore {
                     "legacy or unknown database: use scripts/migrate_legacy.py into a NEW database"
                 );
             }
-        } else if !(1..=10).contains(&version) {
+        } else if !(1..=11).contains(&version) {
             bail!("unsupported schema version {version}");
         }
         conn.execute_batch(
@@ -115,6 +161,9 @@ impl DbStore {
         }
         if version < 10 {
             conn.execute_batch(include_str!("../migrations/010_retention_maintenance.sql"))?;
+        }
+        if version < 11 {
+            conn.execute_batch(include_str!("../migrations/011_retrieval_receipts.sql"))?;
         }
         conn.execute(
             "UPDATE provider_calls SET state='failed',usage_status='unavailable',reason='process_restarted_with_call_reserved',finished_at=?1 WHERE state='reserved'",
@@ -230,7 +279,7 @@ impl DbStore {
             let last_checkpoint:Option<String>=c.query_row("SELECT finished_at FROM maintenance_runs WHERE action='wal_checkpoint' ORDER BY id DESC LIMIT 1",[],|r|r.get(0)).optional()?;
             let last_retention:Option<String>=c.query_row("SELECT finished_at FROM maintenance_runs WHERE action='retention' ORDER BY id DESC LIMIT 1",[],|r|r.get(0)).optional()?;
             let last_compaction:Option<String>=c.query_row("SELECT finished_at FROM maintenance_runs WHERE action='compaction' ORDER BY id DESC LIMIT 1",[],|r|r.get(0)).optional()?;
-            Ok(json!({"ready":schema_version==10&&quick_check=="ok","schema_version":schema_version,
+            Ok(json!({"ready":schema_version==11&&quick_check=="ok","schema_version":schema_version,
                 "quick_check":quick_check,"queue":{"jobs_pending":pending_jobs,"jobs_running":running_jobs,
                 "jobs_failed":failed_jobs,"turns_waiting":waiting_turns,"turns_running":running_turns},
                 "maintenance":{"journal_mode":journal_mode,"last_wal_checkpoint_at":last_checkpoint,
@@ -310,7 +359,7 @@ mod tests {
         let db = DbStore::init(":memory:").unwrap();
         seed_retention_fixture(&db).await;
         let readiness = db.readiness().await.unwrap();
-        assert_eq!(readiness["schema_version"], 10);
+        assert_eq!(readiness["schema_version"], 11);
         assert_eq!(readiness["ready"], true);
         assert!(
             readiness["maintenance"]["last_retention_at"].is_null(),

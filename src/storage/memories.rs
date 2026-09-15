@@ -1,15 +1,315 @@
 //! P12-T02 seam 3: the memory candidate repository. Compaction candidates, the
 //! candidate feed, candidate edits, approve/reject resolution and hybrid recall
-//! move here byte for byte from `src/storage.rs`. The child module still uses the
-//! private `DbStore::run`/`read` helpers, so no visibility was widened.
+//! live here. The child module still uses the private `DbStore::run`/`read`
+//! helpers, so no visibility was widened.
+//!
+//! P15-T02: ranking is factored into `rank_in_tx` so exactly one implementation answers three
+//! questions — what a turn retrieved, why each candidate was kept or dropped, and what the same
+//! ranking would return if a pending candidate were approved. A second implementation for the
+//! preview would be a copy that drifts.
 
-use super::{now, uid, DbStore, Recall};
+use super::{now, uid, DbStore, Recall, RecallCandidate};
 use crate::safety;
 use anyhow::{bail, Result};
 use chrono::Utc;
-use rusqlite::{params, OptionalExtension, TransactionBehavior};
+use rusqlite::{params, OptionalExtension, Transaction, TransactionBehavior};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
+
+/// The context payload ceiling recall has always enforced, and the number of ranked rows it
+/// considers. Named so the receipt can report the same constants it was judged against.
+const RECALL_BYTE_CEILING: usize = 6000;
+const RECALL_RANK_LIMIT: usize = 20;
+
+/// The stored receipt header, as one row:
+/// scope, strategy, embedding model, prompt fingerprint, budget bytes, included bytes,
+/// considered, included, created_at.
+type ReceiptHeader = (String, String, String, String, i64, i64, i64, i64, String);
+
+pub(crate) fn strategy_label(strategy: crate::embeddings::Strategy) -> &'static str {
+    match strategy {
+        crate::embeddings::Strategy::Hybrid => "hybrid",
+        crate::embeddings::Strategy::LexicalOnly => "lexical_only",
+    }
+}
+
+/// True when neither retrieval arm can admit anything, so recall must return nothing rather
+/// than fall through to a full scan.
+fn no_arm_can_match(
+    fts: &str,
+    query_vector: &[f32],
+    strategy: crate::embeddings::Strategy,
+) -> bool {
+    let semantic_enabled = strategy == crate::embeddings::Strategy::Hybrid;
+    fts.is_empty() && (!semantic_enabled || query_vector.iter().all(|value| *value == 0.0))
+}
+
+/// Rank the scope's active memories against one prompt inside an open transaction.
+///
+/// Returns the payload recall would hand to the context builder, plus one explanation row per
+/// considered candidate. `persist` is false for previews: the embedding cache and the
+/// `recall_count` counters are left untouched so looking does not change what is measured.
+pub(crate) fn rank_in_tx(
+    tx: &Transaction<'_>,
+    scope: &str,
+    prompt: &str,
+    strategy: crate::embeddings::Strategy,
+    persist: bool,
+) -> Result<(Vec<Recall>, Vec<RecallCandidate>)> {
+    let semantic_enabled = strategy == crate::embeddings::Strategy::Hybrid;
+    let fts = safety::fts_query(prompt);
+    let query_vector = crate::embeddings::embed(prompt);
+    if no_arm_can_match(&fts, &query_vector, strategy) {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    struct Row {
+        memory: Recall,
+        updated_at: String,
+        vector: Vec<f32>,
+        recall_count: i64,
+        useful_count: i64,
+    }
+    let raw = {
+        let mut stmt = tx.prepare("SELECT m.id,m.scope,m.key,m.value,m.revision,c.evidence,m.updated_at,e.dimensions,e.vector,e.content_hash,COALESCE(e.recall_count,0),COALESCE(e.useful_count,0) FROM memories m JOIN candidates c ON c.id=m.candidate_id LEFT JOIN memory_embeddings e ON e.memory_id=m.id AND e.model=?1 WHERE m.status='active' AND (m.scope=?2 OR m.scope='global') AND (m.scope=?2 OR NOT EXISTS(SELECT 1 FROM memories p WHERE p.scope=?2 AND p.key=m.key AND p.status='active')) ORDER BY m.id LIMIT 10000")?;
+        let collected = stmt
+            .query_map(params![crate::embeddings::MODEL, scope], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, i64>(4)?,
+                    r.get::<_, String>(5)?,
+                    r.get::<_, String>(6)?,
+                    r.get::<_, Option<i64>>(7)?,
+                    r.get::<_, Option<Vec<u8>>>(8)?,
+                    r.get::<_, Option<String>>(9)?,
+                    r.get::<_, i64>(10)?,
+                    r.get::<_, i64>(11)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        collected
+    };
+    let mut rows = Vec::new();
+    for (
+        id,
+        row_scope,
+        key,
+        value,
+        revision,
+        evidence,
+        updated_at,
+        dimensions,
+        blob,
+        stored_hash,
+        recall_count,
+        useful_count,
+    ) in raw
+    {
+        if safety::sensitive(&value) {
+            continue;
+        }
+        let content = format!("{key}\n{value}");
+        let content_hash = safety::fingerprint(&content);
+        // `dimensions` is whatever the row holds; a negative or oversized value must fail
+        // the cache lookup, not wrap into a huge length.
+        let stored_dimensions = dimensions.and_then(|value| usize::try_from(value).ok());
+        let decoded = blob
+            .as_deref()
+            .zip(stored_dimensions)
+            .and_then(|(bytes, dims)| crate::embeddings::decode(bytes, dims));
+        let cache_hit = stored_hash.as_deref() == Some(&content_hash)
+            && dimensions == Some(crate::embeddings::DIMENSIONS as i64)
+            && decoded.is_some();
+        let vector = match decoded {
+            Some(cached) if cache_hit => cached,
+            _ => crate::embeddings::embed(&content),
+        };
+        if !cache_hit && persist {
+            tx.execute("INSERT INTO memory_embeddings(memory_id,model,dimensions,vector,content_hash,recall_count,useful_count,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(memory_id) DO UPDATE SET model=excluded.model,dimensions=excluded.dimensions,vector=excluded.vector,content_hash=excluded.content_hash,updated_at=excluded.updated_at",
+                params![id,crate::embeddings::MODEL,crate::embeddings::DIMENSIONS as i64,crate::embeddings::encode(&vector),content_hash,recall_count,useful_count,now()])?;
+        }
+        rows.push(Row {
+            memory: Recall {
+                id,
+                scope: row_scope,
+                key,
+                value,
+                revision,
+                evidence: serde_json::from_str(&evidence).unwrap_or(Value::Null),
+            },
+            updated_at,
+            vector,
+            recall_count,
+            useful_count,
+        });
+    }
+
+    let mut lexical = HashMap::<String, usize>::new();
+    if !fts.is_empty() {
+        let mut stmt = tx.prepare("SELECT m.id FROM memory_fts JOIN memories m ON m.rowid=memory_fts.rowid WHERE memory_fts MATCH ?1 AND m.status='active' AND (m.scope=?2 OR m.scope='global') AND (m.scope=?2 OR NOT EXISTS(SELECT 1 FROM memories p WHERE p.scope=?2 AND p.key=m.key AND p.status='active')) ORDER BY bm25(memory_fts),m.updated_at DESC LIMIT 20")?;
+        for (rank, id) in stmt
+            .query_map(params![fts, scope], |r| r.get::<_, String>(0))?
+            .enumerate()
+        {
+            lexical.insert(id?, rank);
+        }
+    }
+    let semantic = if semantic_enabled {
+        let mut scored = rows
+            .iter()
+            .map(|row| {
+                (
+                    row.memory.id.clone(),
+                    crate::embeddings::cosine(&query_vector, &row.vector),
+                )
+            })
+            .filter(|(_, score)| *score > 0.01)
+            .collect::<Vec<_>>();
+        scored.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        scored.truncate(20);
+        scored.into_iter().collect::<HashMap<_, _>>()
+    } else {
+        HashMap::new()
+    };
+    let candidate_ids = lexical
+        .keys()
+        .chain(semantic.keys())
+        .cloned()
+        .collect::<HashSet<_>>();
+    let now_at = Utc::now();
+    struct Scores {
+        lexical: f64,
+        semantic: f64,
+        scope: f64,
+        recency: f64,
+        usefulness: f64,
+        total: f64,
+    }
+    let mut ranked = rows
+        .into_iter()
+        .filter(|row| candidate_ids.contains(&row.memory.id))
+        .map(|row| {
+            let lexical_score = lexical
+                .get(&row.memory.id)
+                .map(|rank| 2.0 / (1.0 + *rank as f64))
+                .unwrap_or(0.0);
+            let semantic_score = semantic
+                .get(&row.memory.id)
+                .copied()
+                .unwrap_or(0.0)
+                .max(0.0) as f64;
+            let scope_score = if row.memory.scope == scope { 0.5 } else { 0.0 };
+            let days = chrono::DateTime::parse_from_rfc3339(&row.updated_at)
+                .map(|at| (now_at - at.with_timezone(&Utc)).num_days().max(0) as f64)
+                .unwrap_or(365.0);
+            let recency_score = 0.25 / (1.0 + days / 30.0);
+            let useful_ratio =
+                row.useful_count.max(0) as f64 / (1 + row.recall_count.max(0)) as f64;
+            let usefulness_score = 0.5 * useful_ratio;
+            let total =
+                lexical_score + semantic_score + scope_score + recency_score + usefulness_score;
+            (
+                Scores {
+                    lexical: lexical_score,
+                    semantic: semantic_score,
+                    scope: scope_score,
+                    recency: recency_score,
+                    usefulness: usefulness_score,
+                    total,
+                },
+                row,
+            )
+        })
+        .collect::<Vec<_>>();
+    ranked.sort_by(|a, b| {
+        b.0.total
+            .total_cmp(&a.0.total)
+            .then_with(|| b.1.updated_at.cmp(&a.1.updated_at))
+            .then_with(|| a.1.memory.id.cmp(&b.1.memory.id))
+    });
+    let mut out = Vec::new();
+    let mut explained = Vec::new();
+    let mut bytes = 0usize;
+    for (index, (scores, row)) in ranked.into_iter().enumerate() {
+        let size = serde_json::to_vec(&row.memory)?.len();
+        // Order matters: the rank cutoff is decided before the payload ceiling, which is the
+        // order recall itself applies them.
+        let (decision, reason) = if index >= RECALL_RANK_LIMIT {
+            ("excluded", "rank_cutoff")
+        } else if bytes + size > RECALL_BYTE_CEILING {
+            ("excluded", "payload_ceiling")
+        } else {
+            ("included", "ranked_and_fit")
+        };
+        explained.push(RecallCandidate {
+            id: row.memory.id.clone(),
+            scope: row.memory.scope.clone(),
+            key: row.memory.key.clone(),
+            revision: row.memory.revision,
+            rank: index as i64,
+            decision: decision.to_string(),
+            reason: reason.to_string(),
+            lexical_score: scores.lexical,
+            semantic_score: scores.semantic,
+            scope_score: scores.scope,
+            recency_score: scores.recency,
+            usefulness_score: scores.usefulness,
+            total_score: scores.total,
+            bytes: size as i64,
+        });
+        if decision == "included" {
+            bytes += size;
+            if persist {
+                tx.execute(
+                    "UPDATE memory_embeddings SET recall_count=recall_count+1 WHERE memory_id=?1",
+                    [&row.memory.id],
+                )?;
+            }
+            out.push(row.memory);
+        }
+    }
+    Ok((out, explained))
+}
+
+/// The approval write itself, shared by `resolve` and by the rehearsal preview. The preview runs
+/// it inside a transaction it then rolls back, so the preview cannot approve anything.
+fn apply_candidate(
+    tx: &Transaction<'_>,
+    id: &str,
+    scope: &str,
+    key: &str,
+    value: &str,
+    category: &str,
+    expected: i64,
+) -> Result<&'static str> {
+    safety::validate_fact(key, value, category)?;
+    let current: Option<(String, i64, String)> = tx
+        .query_row(
+            "SELECT id,revision,value FROM memories WHERE scope=?1 AND key=?2",
+            params![scope, key],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    if current.as_ref().map(|m| m.1).unwrap_or(0) != expected {
+        tx.execute(
+            "UPDATE candidates SET status='conflict',resolved_at=?1 WHERE id=?2",
+            params![now(), id],
+        )?;
+        return Ok("conflict");
+    }
+    let memory_id = current.as_ref().map(|m| m.0.clone()).unwrap_or_else(uid);
+    let old = current.map(|m| m.2);
+    let stamp = now();
+    tx.execute("INSERT INTO memories(id,scope,key,value,category,status,revision,candidate_id,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,'active',?6,?7,?8,?8) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value,category=excluded.category,status='active',revision=excluded.revision,candidate_id=excluded.candidate_id,updated_at=excluded.updated_at",params![memory_id,scope,key,value,category,expected+1,id,stamp])?;
+    tx.execute("INSERT INTO memory_revisions(id,memory_id,revision,action,old_value,new_value,candidate_id,created_at) VALUES(?1,?2,?3,'approve',?4,?5,?6,?7)",params![uid(),memory_id,expected+1,old,value,id,stamp])?;
+    tx.execute(
+        "UPDATE candidates SET status='approved',resolved_at=?1 WHERE id=?2 AND status='pending'",
+        params![stamp, id],
+    )?;
+    Ok("approved")
+}
 
 impl DbStore {
     /// Store a model-produced turn summary as review-only episodic evidence. It does not enter
@@ -99,21 +399,15 @@ impl DbStore {
             if status!="pending" {return Ok("already_resolved".into());}
             if expiry<=Utc::now().timestamp(){tx.execute("UPDATE candidates SET status='expired',resolved_at=?1 WHERE id=?2",params![now(),id])?;tx.commit()?;return Ok("expired".into());}
             if !confirm {tx.execute("UPDATE candidates SET status='rejected',resolved_at=?1 WHERE id=?2 AND status='pending'",params![now(),id])?;tx.commit()?;return Ok("rejected".into());}
-            safety::validate_fact(&key,&value,&category)?;
-            let current:Option<(String,i64,String)>=tx.query_row("SELECT id,revision,value FROM memories WHERE scope=?1 AND key=?2",params![scope,key],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
-            if current.as_ref().map(|m|m.1).unwrap_or(0)!=expected {
-                tx.execute("UPDATE candidates SET status='conflict',resolved_at=?1 WHERE id=?2",params![now(),id])?;tx.commit()?;return Ok("conflict".into());
-            }
-            let memory_id=current.as_ref().map(|m|m.0.clone()).unwrap_or_else(uid);
-            let old=current.map(|m|m.2);let stamp=now();
-            tx.execute("INSERT INTO memories(id,scope,key,value,category,status,revision,candidate_id,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,'active',?6,?7,?8,?8) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value,category=excluded.category,status='active',revision=excluded.revision,candidate_id=excluded.candidate_id,updated_at=excluded.updated_at",params![memory_id,scope,key,value,category,expected+1,id,stamp])?;
-            tx.execute("INSERT INTO memory_revisions(id,memory_id,revision,action,old_value,new_value,candidate_id,created_at) VALUES(?1,?2,?3,'approve',?4,?5,?6,?7)",params![uid(),memory_id,expected+1,old,value,id,stamp])?;
-            tx.execute("UPDATE candidates SET status='approved',resolved_at=?1 WHERE id=?2 AND status='pending'",params![stamp,id])?;
-            tx.commit()?;Ok("approved".into())
+            let outcome=apply_candidate(&tx,&id,&scope,&key,&value,&category,expected)?;
+            tx.commit()?;Ok(outcome.into())
         }).await
     }
     /// Hybrid local recall: union lexical and vector top-20s, then rerank deterministically.
     /// The final context payload retains the original 6,000-byte hard ceiling.
+    /// Kept as the narrow payload-only entry point: the turn uses `recall_explained`, while the
+    /// recall evaluation and the memory tests drive this one.
+    #[allow(dead_code)]
     pub async fn recall(&self, scope: String, prompt: String) -> Result<Vec<Recall>> {
         self.recall_with_strategy(scope, prompt, crate::embeddings::strategy_from_env())
             .await
@@ -121,80 +415,182 @@ impl DbStore {
 
     /// P15-T01: the strategy is an explicit argument so tests and the recall evaluation can
     /// compare arms without mutating process environment, which would race other tests.
+    #[allow(dead_code)]
     pub async fn recall_with_strategy(
         &self,
         scope: String,
         prompt: String,
         strategy: crate::embeddings::Strategy,
     ) -> Result<Vec<Recall>> {
-        let semantic_enabled = strategy == crate::embeddings::Strategy::Hybrid;
-        let fts = safety::fts_query(&prompt);
-        let query_vector = crate::embeddings::embed(&prompt);
-        // With the vector arm disabled, lexical support is the only way in, so an empty FTS
-        // query must return nothing rather than fall through to a full scan.
-        if fts.is_empty() && (!semantic_enabled || query_vector.iter().all(|value| *value == 0.0)) {
-            return Ok(Vec::new());
-        }
-        self.run(move|c|{
-            struct Row { memory:Recall, updated_at:String, vector:Vec<f32>, recall_count:i64, useful_count:i64 }
-            let tx=c.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            let raw={
-                let mut stmt=tx.prepare("SELECT m.id,m.scope,m.key,m.value,m.revision,c.evidence,m.updated_at,e.dimensions,e.vector,e.content_hash,COALESCE(e.recall_count,0),COALESCE(e.useful_count,0) FROM memories m JOIN candidates c ON c.id=m.candidate_id LEFT JOIN memory_embeddings e ON e.memory_id=m.id AND e.model=?1 WHERE m.status='active' AND (m.scope=?2 OR m.scope='global') AND (m.scope=?2 OR NOT EXISTS(SELECT 1 FROM memories p WHERE p.scope=?2 AND p.key=m.key AND p.status='active')) ORDER BY m.id LIMIT 10000")?;
-                let collected=stmt.query_map(params![crate::embeddings::MODEL,scope],|r|Ok((
-                    r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,i64>(4)?,r.get::<_,String>(5)?,r.get::<_,String>(6)?,
-                    r.get::<_,Option<i64>>(7)?,r.get::<_,Option<Vec<u8>>>(8)?,r.get::<_,Option<String>>(9)?,r.get::<_,i64>(10)?,r.get::<_,i64>(11)?
-                )))?.collect::<rusqlite::Result<Vec<_>>>()?;
-                collected
-            };
-            let mut rows=Vec::new();
-            for (id,row_scope,key,value,revision,evidence,updated_at,dimensions,blob,stored_hash,recall_count,useful_count) in raw {
-                if safety::sensitive(&value){continue;}
-                let content=format!("{key}\n{value}");
-                let content_hash=safety::fingerprint(&content);
-                // `dimensions` is whatever the row holds; a negative or oversized value must fail
-                // the cache lookup, not wrap into a huge length.
-                let stored_dimensions=dimensions.and_then(|value|usize::try_from(value).ok());
-                let decoded=blob.as_deref().zip(stored_dimensions).and_then(|(bytes,dims)|crate::embeddings::decode(bytes,dims));
-                let cache_hit=stored_hash.as_deref()==Some(&content_hash) && dimensions==Some(crate::embeddings::DIMENSIONS as i64) && decoded.is_some();
-                let vector=match decoded{Some(cached) if cache_hit=>cached,_=>crate::embeddings::embed(&content)};
-                if !cache_hit {
-                    tx.execute("INSERT INTO memory_embeddings(memory_id,model,dimensions,vector,content_hash,recall_count,useful_count,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(memory_id) DO UPDATE SET model=excluded.model,dimensions=excluded.dimensions,vector=excluded.vector,content_hash=excluded.content_hash,updated_at=excluded.updated_at",
-                        params![id,crate::embeddings::MODEL,crate::embeddings::DIMENSIONS as i64,crate::embeddings::encode(&vector),content_hash,recall_count,useful_count,now()])?;
-                }
-                rows.push(Row{memory:Recall{id,scope:row_scope,key,value,revision,evidence:serde_json::from_str(&evidence).unwrap_or(Value::Null)},updated_at,vector,recall_count,useful_count});
-            }
+        Ok(self.recall_explained(scope, prompt, strategy).await?.0)
+    }
 
-            let mut lexical=HashMap::<String,usize>::new();
-            if !fts.is_empty(){
-                let mut stmt=tx.prepare("SELECT m.id FROM memory_fts JOIN memories m ON m.rowid=memory_fts.rowid WHERE memory_fts MATCH ?1 AND m.status='active' AND (m.scope=?2 OR m.scope='global') AND (m.scope=?2 OR NOT EXISTS(SELECT 1 FROM memories p WHERE p.scope=?2 AND p.key=m.key AND p.status='active')) ORDER BY bm25(memory_fts),m.updated_at DESC LIMIT 20")?;
-                for (rank,id) in stmt.query_map(params![fts,scope],|r|r.get::<_,String>(0))?.enumerate(){lexical.insert(id?,rank);}
+    /// P15-T02: the same recall, plus the per-candidate scores and decisions behind it. Callers
+    /// that only need the payload go through `recall_with_strategy`.
+    pub async fn recall_explained(
+        &self,
+        scope: String,
+        prompt: String,
+        strategy: crate::embeddings::Strategy,
+    ) -> Result<(Vec<Recall>, Vec<RecallCandidate>)> {
+        // Checked before opening a write transaction: a prompt no arm can match must not take
+        // the database lock at all.
+        if no_arm_can_match(
+            &safety::fts_query(&prompt),
+            &crate::embeddings::embed(&prompt),
+            strategy,
+        ) {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        self.run(move |c| {
+            let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let ranked = rank_in_tx(&tx, &scope, &prompt, strategy, true)?;
+            tx.commit()?;
+            Ok(ranked)
+        })
+        .await
+    }
+
+    /// P15-T02 rehearsal: what this scope's retrieval would return for `prompt`, and what it
+    /// would return if `candidate` were approved. The approval is applied inside a transaction
+    /// that is always rolled back, so the shipped ranking answers the question and nothing is
+    /// written — including the recall counters, which a preview must not move.
+    ///
+    /// This is a retrieval difference only. It does not claim the answer would change.
+    pub async fn preview_retrieval(
+        &self,
+        scope: String,
+        prompt: String,
+        candidate: Option<String>,
+    ) -> Result<Value> {
+        let strategy = crate::embeddings::strategy_from_env();
+        self.run(move |c| {
+            let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let (_, before) = rank_in_tx(&tx, &scope, &prompt, strategy, false)?;
+            let mut applied = "none";
+            if let Some(id) = candidate.as_deref() {
+                let row:Option<(String,String,String,i64,String,i64)>=tx.query_row("SELECT key,value,category,expected_revision,status,expires_at FROM candidates WHERE id=?1 AND scope=?2",params![id,scope],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional()?;
+                applied = match row {
+                    None => "not_found",
+                    Some((_, _, _, _, status, _)) if status != "pending" => "already_resolved",
+                    Some((_, _, _, _, _, expiry)) if expiry <= Utc::now().timestamp() => "expired",
+                    Some((key, value, category, expected, _, _)) => {
+                        apply_candidate(&tx, id, &scope, &key, &value, &category, expected)?
+                    }
+                };
             }
-            let semantic=if semantic_enabled {
-                let mut scored=rows.iter().map(|row|(row.memory.id.clone(),crate::embeddings::cosine(&query_vector,&row.vector))).filter(|(_,score)|*score>0.01).collect::<Vec<_>>();
-                scored.sort_by(|a,b|b.1.total_cmp(&a.1).then_with(||a.0.cmp(&b.0)));scored.truncate(20);
-                scored.into_iter().collect::<HashMap<_,_>>()
+            let after = if applied == "approved" {
+                rank_in_tx(&tx, &scope, &prompt, strategy, false)?.1
             } else {
-                HashMap::new()
+                before.clone()
             };
-            let candidate_ids=lexical.keys().chain(semantic.keys()).cloned().collect::<HashSet<_>>();
-            let now_at=Utc::now();
-            let mut ranked=rows.into_iter().filter(|row|candidate_ids.contains(&row.memory.id)).map(|row|{
-                let lexical_score=lexical.get(&row.memory.id).map(|rank|2.0/(1.0+*rank as f64)).unwrap_or(0.0);
-                let semantic_score=semantic.get(&row.memory.id).copied().unwrap_or(0.0).max(0.0) as f64;
-                let scope_score=if row.memory.scope==scope{0.5}else{0.0};
-                let days=chrono::DateTime::parse_from_rfc3339(&row.updated_at).map(|at|(now_at-at.with_timezone(&Utc)).num_days().max(0) as f64).unwrap_or(365.0);
-                let recency_score=0.25/(1.0+days/30.0);
-                let useful_ratio=row.useful_count.max(0) as f64/(1+row.recall_count.max(0)) as f64;
-                (lexical_score+semantic_score+scope_score+recency_score+0.5*useful_ratio,row)
-            }).collect::<Vec<_>>();
-            ranked.sort_by(|a,b|b.0.total_cmp(&a.0).then_with(||b.1.updated_at.cmp(&a.1.updated_at)).then_with(||a.1.memory.id.cmp(&b.1.memory.id)));
-            let mut out=Vec::new();let mut bytes=0;
-            for (_,row) in ranked.into_iter().take(20){
-                let size=serde_json::to_vec(&row.memory)?.len();if bytes+size>6000{continue;}bytes+=size;
-                tx.execute("UPDATE memory_embeddings SET recall_count=recall_count+1 WHERE memory_id=?1",[&row.memory.id])?;
-                out.push(row.memory);
+            // Always: a preview that could commit would be an approval wearing a preview's name.
+            tx.rollback()?;
+            let included = |rows: &[RecallCandidate]| {
+                rows.iter()
+                    .filter(|row| row.decision == "included")
+                    .map(|row| row.id.clone())
+                    .collect::<HashSet<_>>()
+            };
+            let before_included = included(&before);
+            let after_included = included(&after);
+            let describe = |rows: &[RecallCandidate], ids: &HashSet<String>| {
+                rows.iter()
+                    .filter(|row| ids.contains(&row.id))
+                    .map(|row| json!({"memory_id":row.id,"key":row.key,"scope":row.scope,"revision":row.revision,"total_score":row.total_score,"rank":row.rank}))
+                    .collect::<Vec<_>>()
+            };
+            let added = after_included
+                .difference(&before_included)
+                .cloned()
+                .collect::<HashSet<_>>();
+            let removed = before_included
+                .difference(&after_included)
+                .cloned()
+                .collect::<HashSet<_>>();
+            Ok(json!({
+                "scope":scope,
+                "strategy":strategy_label(strategy),
+                "candidate_id":candidate,
+                "candidate_state":applied,
+                "rehearsed":applied=="approved",
+                "before":before.iter().map(RecallCandidate::as_value).collect::<Vec<_>>(),
+                "after":after.iter().map(RecallCandidate::as_value).collect::<Vec<_>>(),
+                "added":describe(&after,&added),
+                "removed":describe(&before,&removed),
+                "note":"Deterministic re-run of the shipped retrieval ranking over the memories stored right now. It shows which memories retrieval would include, not how the model would answer, and nothing was saved."
+            }))
+        })
+        .await
+    }
+
+    /// Persist the retrieval explanation for one turn. Write-once, like the context receipt it
+    /// accompanies: a second call for the same request is ignored rather than allowed to rewrite
+    /// history.
+    pub async fn save_retrieval_receipt(
+        &self,
+        request: String,
+        scope: String,
+        strategy: crate::embeddings::Strategy,
+        prompt: String,
+        budget_bytes: i64,
+        candidates: Vec<RecallCandidate>,
+    ) -> Result<bool> {
+        let fingerprint = safety::fingerprint(&prompt);
+        self.run(move |c| {
+            let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let included_bytes: i64 = candidates
+                .iter()
+                .filter(|row| row.decision == "included")
+                .map(|row| row.bytes)
+                .sum();
+            let included = candidates
+                .iter()
+                .filter(|row| row.decision == "included")
+                .count() as i64;
+            let inserted = tx.execute("INSERT INTO retrieval_receipts(request_id,scope,strategy,embedding_model,prompt_fingerprint,budget_bytes,included_bytes,considered,included,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) ON CONFLICT(request_id) DO NOTHING",
+                params![request,scope,strategy_label(strategy),crate::embeddings::MODEL,fingerprint,budget_bytes,included_bytes,candidates.len() as i64,included,now()])?;
+            if inserted == 0 {
+                tx.commit()?;
+                return Ok(false);
             }
-            tx.commit()?;Ok(out)
-        }).await
+            for row in &candidates {
+                tx.execute("INSERT INTO retrieval_candidates(request_id,memory_id,scope,key,revision,rank,decision,reason,lexical_score,semantic_score,scope_score,recency_score,usefulness_score,total_score,bytes) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+                    params![request,row.id,row.scope,row.key,row.revision,row.rank,row.decision,row.reason,row.lexical_score,row.semantic_score,row.scope_score,row.recency_score,row.usefulness_score,row.total_score,row.bytes])?;
+            }
+            tx.commit()?;
+            Ok(true)
+        })
+        .await
+    }
+
+    /// The persisted retrieval explanation for one turn, exactly as it was written.
+    pub async fn retrieval_receipt(&self, request: String) -> Result<Option<Value>> {
+        self.read(move |c| {
+            let header:Option<ReceiptHeader>=c.query_row("SELECT scope,strategy,embedding_model,prompt_fingerprint,budget_bytes,included_bytes,considered,included,created_at FROM retrieval_receipts WHERE request_id=?1",[&request],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?))).optional()?;
+            let Some((scope,strategy,model,fingerprint,budget_bytes,included_bytes,considered,included,created_at))=header else{return Ok(None)};
+            let mut stmt=c.prepare("SELECT memory_id,scope,key,revision,rank,decision,reason,lexical_score,semantic_score,scope_score,recency_score,usefulness_score,total_score,bytes FROM retrieval_candidates WHERE request_id=?1 ORDER BY rank")?;
+            let rows=stmt.query_map([&request],|r|Ok(json!({
+                "memory_id":r.get::<_,String>(0)?,"scope":r.get::<_,String>(1)?,"key":r.get::<_,String>(2)?,"revision":r.get::<_,i64>(3)?,
+                "rank":r.get::<_,i64>(4)?,"decision":r.get::<_,String>(5)?,"reason":r.get::<_,String>(6)?,
+                "lexical_score":r.get::<_,f64>(7)?,"semantic_score":r.get::<_,f64>(8)?,"scope_score":r.get::<_,f64>(9)?,
+                "recency_score":r.get::<_,f64>(10)?,"usefulness_score":r.get::<_,f64>(11)?,"total_score":r.get::<_,f64>(12)?,"bytes":r.get::<_,i64>(13)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(Some(json!({
+                "format_version":1,
+                "request_id":request,
+                "scope":scope,
+                "strategy":strategy,
+                "embedding_model":model,
+                "prompt_fingerprint":fingerprint,
+                "budget_bytes":budget_bytes,
+                "included_bytes":included_bytes,
+                "considered":considered,
+                "included":included,
+                "created_at":created_at,
+                "candidates":rows,
+                "note":"Recorded retrieval evidence for this turn: which memories were ranked, which were sent and why the rest were not. It is not a claim about how the model used them."
+            })))
+        })
+        .await
     }
 }

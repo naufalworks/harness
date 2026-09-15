@@ -674,8 +674,14 @@ pub(crate) async fn generate(
         store.finalize_cancellation(turn.request).await?;
         return Ok(());
     }
-    let recalled: Vec<Recall> = match store.recall(turn.scope.clone(), turn.prompt.clone()).await {
-        Ok(r) => r,
+    // P15-T02: recall reports what it considered as well as what it returned, so the turn can
+    // persist why each candidate was kept or dropped instead of only the survivors.
+    let strategy = crate::embeddings::strategy_from_env();
+    let (recalled, mut retrieval): (Vec<Recall>, Vec<crate::storage::RecallCandidate>) = match store
+        .recall_explained(turn.scope.clone(), turn.prompt.clone(), strategy)
+        .await
+    {
+        Ok(pair) => pair,
         Err(_) => return store.fail_recording(turn.request, "context_failed").await,
     };
     // The scope decides whether this turn has tools at all (P1-T04). Without a configured
@@ -753,6 +759,31 @@ pub(crate) async fn generate(
         receipt: context_receipt,
     } = built;
     let agentic_turn = !tools.is_empty();
+    // Recall admitted these rows; the context builder is what dropped any of them, so the
+    // recorded reason names the budget rather than the ranking.
+    let sent = memories
+        .iter()
+        .map(|memory| memory.id.clone())
+        .collect::<std::collections::HashSet<_>>();
+    for row in retrieval.iter_mut() {
+        if row.decision == "included" && !sent.contains(&row.id) {
+            row.excluded_by_context_budget();
+        }
+    }
+    if store
+        .save_retrieval_receipt(
+            turn.request.clone(),
+            turn.scope.clone(),
+            strategy,
+            turn.prompt.clone(),
+            context::Budgets::default().recalled_memories as i64,
+            retrieval,
+        )
+        .await
+        .is_err()
+    {
+        return store.fail_recording(turn.request, "context_failed").await;
+    }
     let receipt = json!({"format_version":2,"adapter":if agentic_turn {"tool_calls_v1"} else {"text_completion_v1"},
         "model":turn.model,"provider_messages":messages.clone(),"provider_tools":tools.clone(),"memories":memories,
         "context_receipt":context_receipt,

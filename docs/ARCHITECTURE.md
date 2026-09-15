@@ -58,6 +58,8 @@ existence: an unauthenticated request never learns whether a path exists.
 - `GET /changes`
 - `POST /changes/{id}/revert`
 - `GET /chat/requests/{id}/provenance`
+- `GET /chat/requests/{id}/retrieval`
+- `POST /memory/retrieval/preview`
 - `POST /sources/{id}/archive`
 - `POST /sources/{id}/privacy`
 - `GET|DELETE /archives/{id}`

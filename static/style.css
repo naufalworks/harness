@@ -476,3 +476,13 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere}
   .suggestion-tray{grid-column:1 / -1}
   .send-actions button{flex:1}
 }
+
+/* ---------- P15-T02 retrieval explanation ---------- */
+.retrieval-panel{border-top:1px solid var(--border);padding-top:12px;display:flex;flex-direction:column;gap:8px}
+#retrieval-list{display:flex;flex-direction:column;gap:6px}
+.retrieval-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px;align-items:baseline;border:1px solid var(--border);border-radius:8px;padding:6px 8px;min-width:0}
+.retrieval-row .retrieval-key{font-weight:600;overflow-wrap:anywhere;min-width:0}
+.retrieval-row .retrieval-why{grid-column:1 / -1;overflow-wrap:anywhere}
+.retrieval-row.included{border-left:3px solid var(--ok,#2f8132)}
+.retrieval-row.excluded{border-left:3px solid var(--border);opacity:.85}
+.retrieval-preview{display:flex;flex-direction:column;gap:4px;border-top:1px dashed var(--border);margin-top:8px;padding-top:8px}

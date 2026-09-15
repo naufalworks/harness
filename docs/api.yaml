@@ -476,6 +476,42 @@ paths:
           $ref: '#/components/responses/Error'
         '5XX':
           $ref: '#/components/responses/Error'
+  /chat/requests/{id}/retrieval:
+    get:
+      operationId: requestRetrieval
+      summary: Read the retrieval explanation recorded for a request.
+      description: >-
+        Write-once receipt of which memories retrieval considered, which were sent, and why each
+        was included or excluded. Records retrieval behaviour only; it makes no claim about how
+        the model used the sent memories. 404 when the turn recorded no retrieval receipt.
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Retrieval receipt with per-candidate scores, decisions and reasons.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /memory/retrieval/preview:
+    post:
+      operationId: previewRetrieval
+      summary: Rehearse retrieval for a prompt, optionally with a pending candidate approved.
+      description: >-
+        Runs the shipped ranking inside a transaction that is always rolled back, so nothing is
+        approved, no embedding is written and no recall counter moves. Reports the before/after
+        ranking and the added/removed delta.
+      responses:
+        '200':
+          description: Rehearsed ranking delta and its no-causal-claim note.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
   /sessions:
     get:
       operationId: sessions

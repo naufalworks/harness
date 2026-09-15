@@ -60,6 +60,23 @@ For each `file_changes` row: header `path · +A −B · applied 12:42`, body uni
 
 ## Keyboard and commands (P2+)
 
+## Memory retrieval panel (P15-T02)
+
+The rail gains a “Memory retrieval” panel under Steps, fed by
+`GET /chat/requests/{id}/retrieval`. Each row names the memory key and revision, its total score,
+whether it was sent, and the reason in plain words (“sent to the model”, “ranked below the top 20”,
+“would not fit the recall byte ceiling”, “dropped by the context budget”). The header states the
+strategy and the bytes used against the budget.
+
+Copy rule: the panel describes retrieval, never causation. It says a memory was *sent*, not that it
+*changed the answer*. A turn with no receipt hides the panel instead of showing an empty one.
+
+Each pending proposal also offers “Preview retrieval”, which posts to
+`POST /memory/retrieval/preview` and reports the ranking delta (`+added / -removed`) plus the
+server's note that the rehearsal is a re-run of the ranking, not a prediction about the model. The
+proposal stays pending and approvable afterwards. Memory keys and notes are placed with
+`textContent`, so hostile stored text renders as text.
+
 `Enter` send, `Shift+Enter` newline, `Esc` focus composer, `Cmd/Ctrl+K` palette. Slash commands: `/scope <name>`, `/mode ask|auto_edit|auto_all`, `/plan`, `/compact` (P3), `/forget <key>` (P4), `/skill <name>` (P5).
 
 ## Copy rules

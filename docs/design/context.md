@@ -159,6 +159,57 @@ trail.
 
 ## Production sources
 
+## Retrieval receipt (P15-T02)
+
+The context receipt above explains what the *builder* did with the memories it was handed. It
+cannot explain what retrieval never handed over. `retrieval_receipts` / `retrieval_candidates`
+(migration 011, `user_version=11`) close that gap with one write-once row per request plus one row
+per ranked candidate:
+
+```json
+{
+  "format_version": 1,
+  "scope": "global",
+  "strategy": "hybrid",
+  "embedding_model": "harness-local-hash-v1",
+  "prompt_fingerprint": "<sha256>",
+  "budget_bytes": 6144,
+  "included_bytes": 64,
+  "considered": 2,
+  "included": 1,
+  "candidates": [
+    {
+      "memory_id": "...", "scope": "global", "key": "preferred_language", "revision": 1,
+      "rank": 0, "decision": "included", "reason": "ranked_and_fit",
+      "lexical_score": 2.0, "semantic_score": 0.11, "scope_score": 0.5,
+      "recency_score": 0.25, "usefulness_score": 0.0, "total_score": 2.86, "bytes": 64
+    }
+  ]
+}
+```
+
+Decision reasons are exactly four: `ranked_and_fit`, `rank_cutoff` (below the 20-row ranking
+limit), `payload_ceiling` (the 6000-byte recall cap), and `category_budget` (the builder dropped it
+from `recalled_memories`). `revision` is stored so a later memory edit cannot retroactively change
+what the receipt says was sent. The prompt is fingerprinted, never stored.
+
+Three properties are deliberate:
+
+- **Write-once.** `save_retrieval_receipt` inserts with `ON CONFLICT DO NOTHING` and returns
+  whether it wrote. A retried turn cannot rewrite history.
+- **One ranking implementation.** `rank_in_tx` serves live recall, the receipt and the preview. A
+  separate preview implementation would be a copy that drifts, and the preview would then measure
+  the copy rather than the shipped behaviour.
+- **No causal claim.** The receipt and the UI say which memories retrieval sent. Neither claims the
+  answer was caused by them; only a counterfactual generation could support that, and none is run.
+
+### Rehearsal
+
+`preview_retrieval` opens an `IMMEDIATE` transaction, ranks before, optionally applies a pending
+candidate's approval, ranks again, and always rolls back. Because `persist: false` also skips the
+embedding upsert and the `recall_count` increment, rehearsing is observation-free: the candidate
+stays pending and recall is unchanged afterwards, which is asserted by a test rather than assumed.
+
 - `system_rules`, `tool_definitions`, `repo_map`, `recalled_memories`, `plan`, `compacted_history`,
   `recent_steps`, and `user_message` are populated when their scoped source exists.
 - `skills_index` is populated for configured project scopes that have a `skills/` directory. Any

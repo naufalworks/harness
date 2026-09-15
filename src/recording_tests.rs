@@ -291,3 +291,143 @@ async fn actual_history_and_sessions_queries_page_older_rows() {
         257
     );
 }
+
+/// P15-T02: the retrieval explanation is written as evidence, so it must survive a read exactly
+/// as recall produced it, refuse to be rewritten, and carry a fingerprint rather than the prompt.
+#[tokio::test]
+async fn context_retrieval_receipt_is_write_once_and_records_why() {
+    let db = DbStore::init(":memory:").unwrap();
+    start(&db, "r", "s").await;
+    let candidate = db
+        .save_compaction_candidate(
+            "global".into(),
+            "req".into(),
+            "step".into(),
+            "The operator prefers Rust for systems work".into(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        db.resolve(candidate, "global".into(), true).await.unwrap(),
+        "approved"
+    );
+    let (recalled, candidates) = db
+        .recall_explained(
+            "global".into(),
+            "Rust systems".into(),
+            crate::embeddings::Strategy::Hybrid,
+        )
+        .await
+        .unwrap();
+    assert_eq!(recalled.len(), 1);
+    assert_eq!(candidates.len(), 1);
+    assert!(db
+        .save_retrieval_receipt(
+            "r".into(),
+            "global".into(),
+            crate::embeddings::Strategy::Hybrid,
+            "Rust systems".into(),
+            6_144,
+            candidates.clone()
+        )
+        .await
+        .unwrap());
+    // A turn's evidence is written once. A retry must not be able to rewrite history.
+    assert!(!db
+        .save_retrieval_receipt(
+            "r".into(),
+            "global".into(),
+            crate::embeddings::Strategy::LexicalOnly,
+            "a different prompt".into(),
+            1,
+            Vec::new()
+        )
+        .await
+        .unwrap());
+    let receipt = db.retrieval_receipt("r".into()).await.unwrap().unwrap();
+    assert_eq!(receipt["strategy"], "hybrid");
+    assert_eq!(receipt["embedding_model"], crate::embeddings::MODEL);
+    assert_eq!(receipt["considered"], 1);
+    assert_eq!(receipt["included"], 1);
+    assert_eq!(receipt["budget_bytes"], 6_144);
+    let row = &receipt["candidates"][0];
+    assert_eq!(row["decision"], "included");
+    assert_eq!(row["reason"], "ranked_and_fit");
+    assert_eq!(row["revision"], 1);
+    assert!(row["total_score"].as_f64().unwrap() > 0.0);
+    assert_eq!(row["bytes"], receipt["included_bytes"]);
+    // The prompt itself is not stored, only a fingerprint of it.
+    assert!(!receipt["prompt_fingerprint"]
+        .as_str()
+        .unwrap()
+        .contains("Rust"));
+    assert!(db
+        .retrieval_receipt("missing".into())
+        .await
+        .unwrap()
+        .is_none());
+}
+
+/// P15-T02: a rehearsal must answer with the shipped ranking and still change nothing. If the
+/// preview could commit, it would be an approval wearing a preview's name.
+#[tokio::test]
+async fn context_retrieval_preview_rehearses_without_writing() {
+    let db = DbStore::init(":memory:").unwrap();
+    let candidate = db
+        .save_compaction_candidate(
+            "global".into(),
+            "req".into(),
+            "step".into(),
+            "The operator prefers Rust for systems work".into(),
+        )
+        .await
+        .unwrap();
+    let recall_now = || async {
+        db.recall_explained(
+            "global".into(),
+            "Rust systems".into(),
+            crate::embeddings::Strategy::Hybrid,
+        )
+        .await
+        .unwrap()
+        .0
+        .len()
+    };
+    assert_eq!(recall_now().await, 0);
+
+    let preview = db
+        .preview_retrieval(
+            "global".into(),
+            "Rust systems".into(),
+            Some(candidate.clone()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(preview["candidate_state"], "approved");
+    assert_eq!(preview["rehearsed"], true);
+    assert!(preview["before"].as_array().unwrap().is_empty());
+    assert_eq!(preview["added"].as_array().unwrap().len(), 1);
+    assert!(preview["removed"].as_array().unwrap().is_empty());
+    assert_eq!(preview["after"][0]["decision"], "included");
+    assert!(preview["note"]
+        .as_str()
+        .unwrap()
+        .contains("not how the model"));
+
+    // Rolled back: the candidate is still pending and recall still returns nothing.
+    let feed = db
+        .candidate_feed("global".into(), None, false, false)
+        .await
+        .unwrap();
+    assert_eq!(feed["candidates"].as_array().unwrap().len(), 1);
+    assert_eq!(feed["candidates"][0]["id"], candidate);
+    assert_eq!(recall_now().await, 0);
+
+    let plain = db
+        .preview_retrieval("global".into(), "Rust systems".into(), None)
+        .await
+        .unwrap();
+    assert_eq!(plain["candidate_state"], "none");
+    assert_eq!(plain["rehearsed"], false);
+    assert!(plain["added"].as_array().unwrap().is_empty());
+}

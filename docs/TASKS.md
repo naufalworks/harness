@@ -986,7 +986,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - verify: cargo test --locked recall && python3 tests/recall_eval/run.py --check
 
 ### P15-T02 · Persist retrieval explanations and rehearsal
-- status: todo
+- status: done
 - priority: high
 - lane: memory-observability
 - parallel: yes
@@ -995,6 +995,8 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - files: migrations/*, src/context.rs, src/storage.rs, static/*
 - done-when: receipts retain included/excluded candidates, scores, budget reasons and revisions; approval can preview deterministic retrieval changes without causal overclaiming.
 - verify: cargo test --locked context && scripts/verify_browser.sh
+- result: migration `011_retrieval_receipts.sql` (`user_version=11`) adds a write-once `retrieval_receipts` row per request plus one `retrieval_candidates` row per ranked candidate, carrying scope, key, revision, rank, the five component scores, total score, bytes, and an `included`/`excluded` decision with one of four reasons (`ranked_and_fit`, `rank_cutoff`, `payload_ceiling`, `category_budget`). `src/storage/memories.rs` was refactored so one ranking implementation (`rank_in_tx`) serves live recall, the persisted receipt and the rehearsal — a separate preview ranker would have been a copy that drifts. `src/context.rs` `Ledger::include_memory`/`exclude_memory` carry the revision so builder-dropped rows are attributed to `category_budget` rather than to retrieval. `save_retrieval_receipt` inserts `ON CONFLICT DO NOTHING` and reports whether it wrote, so a retried turn cannot rewrite history; the prompt is fingerprinted, never stored. `GET /chat/requests/{id}/retrieval` serves the receipt (404 when a turn recorded none) and `POST /memory/retrieval/preview` re-ranks inside an `IMMEDIATE` transaction that is always rolled back, with `persist: false` also skipping the embedding upsert and the `recall_count` increment, so rehearsal is observation-free and the candidate stays pending. On causal overclaiming: nothing runs a counterfactual generation, so every user-visible string says a memory was *sent* or that *retrieval would change*, never that the answer would change; the server returns that note and the browser test asserts it. Declared-files caveat: the work also had to touch `src/storage/memories.rs`, `src/recording.rs`, `src/api/routes.rs`, `src/recording_tests.rs` and `src/main.rs` (schema-version assertions) beyond the listed `migrations/*, src/context.rs, src/storage.rs, static/*`. A latent defect the full suite caught: readiness and `/health` still hard-coded `schema_version==10` after the migration bump, which would have deployed a server reporting itself not ready.
+- result-verify: `cargo test --locked context` (11 passed), `cargo test --locked` (254 passed, from 252), `scripts/verify_browser.sh` (both suites passed; new checks `retrieval_receipt_panel`, `retrieval_receipt_text_inert`, `retrieval_preview_rehearsal`), `python3 tests/test_migrations.py` (001→011, `user_version=11`, data/FTS/FKs preserved), `cargo clippy --locked --all-targets -- -D warnings` (clean), `cargo fmt --all` (clean).
 
 ### P15-T03 · Add memory governance and timelines
 - status: todo

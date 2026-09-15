@@ -6,8 +6,16 @@ const root=path.resolve(__dirname,'..');const out=process.env.QA_DIR || path.joi
  const browser=await chromium.launch({headless:true,executablePath:process.env.CHROMIUM_PATH||'/usr/local/bin/chromium',args:['--no-sandbox']});
  try{
   const page=await browser.newPage({viewport:{width:1120,height:900},colorScheme:'light'});const errors=[];page.on('pageerror',e=>errors.push(String(e)));
-  let importCandidate=true,inlineCandidate=true,inlineData=null,failConfirm=false,chatHistory=[],receipt=null,importCalls=0,retryCalls=0,reverts=0,editCalls=0,savedConfig=null;
+  let importCandidate=true,inlineCandidate=true,inlineData=null,failConfirm=false,chatHistory=[],receipt=null,importCalls=0,retryCalls=0,reverts=0,editCalls=0,savedConfig=null,previewCalls=0;
   const malicious='<img src=x onerror="window.INJECTED=1">';
+  // P15-T02 fixtures: the retrieval receipt explains an included and an excluded candidate. Keys
+  // and reasons come from stored memory text, so hostile content must stay inert in the rail.
+  const retrieval={format_version:1,request_id:'synthetic-request',scope:'global',strategy:'hybrid',embedding_model:'harness-local-hash-v1',prompt_fingerprint:'0'.repeat(64),budget_bytes:6144,included_bytes:64,considered:2,included:1,
+   candidates:[
+    {memory_id:'m-included',scope:'global',key:'preferred_language '+malicious,revision:1,rank:0,decision:'included',reason:'ranked_and_fit',lexical_score:2.0,semantic_score:0.11,scope_score:0.5,recency_score:0.25,usefulness_score:0.0,total_score:2.86,bytes:64},
+    {memory_id:'m-excluded',scope:'global',key:'database_choice',revision:2,rank:1,decision:'excluded',reason:'category_budget',lexical_score:1.0,semantic_score:0.04,scope_score:0.5,recency_score:0.25,usefulness_score:0.0,total_score:1.79,bytes:48}
+   ],
+   note:'Records which memories retrieval sent, not how the model used them. '+malicious};
   // P2-T03 fixtures: a hostile modify diff proves inert rendering; a create proves its distinct
   // undo result and user-facing copy rather than assuming it behaves like a modification.
   let changes=[
@@ -37,6 +45,8 @@ const root=path.resolve(__dirname,'..');const out=process.env.QA_DIR || path.joi
    else if(p==='/sessions')result={sessions:[]};
    else if(p.startsWith('/sessions/'))result={scope:'global',messages:chatHistory,has_more:false};
    else if(p.startsWith('/chat/requests/')&&p.endsWith('/steps'))result={steps:agentSteps,verification};
+   else if(p.startsWith('/chat/requests/')&&p.endsWith('/retrieval'))result=retrieval;
+   else if(p==='/memory/retrieval/preview'){previewCalls++;const body=JSON.parse(req.postData());result={scope:body.scope,strategy:'hybrid',candidate_id:body.candidate_id,candidate_state:'approved',rehearsed:true,before:[],after:[],added:[{memory_id:'m-preview',key:'database_choice '+malicious,scope:'global',revision:2,total_score:1.25,rank:0}],removed:[],note:'Deterministic re-run of the shipped retrieval ranking. '+malicious};}
    else if(p.startsWith('/chat/requests/'))result=receipt;
    else if(p==='/memory/candidates'){
     const imports=u.searchParams.get('imports_only')==='true',chat=u.searchParams.get('chat_only')==='true';
@@ -73,7 +83,9 @@ const root=path.resolve(__dirname,'..');const out=process.env.QA_DIR || path.joi
   assert.strictEqual(await page.locator('#token').inputValue(),'');assert(!await page.evaluate(()=>JSON.stringify({...localStorage,...sessionStorage}).includes('test-token')));
   await page.fill('#prompt','Help me choose the next implementation step.');await page.click('#send');await page.waitForFunction(()=>document.getElementById('notice').textContent.startsWith('Answer saved'));
   await page.waitForSelector('.suggestion-tray:not([hidden]) .candidate');
-  const inline=page.locator('.suggestion-tray:not([hidden]) .candidate').first();assert.deepStrictEqual(await inline.locator('.row > button').allTextContents(),['Save','Edit','Dismiss']);
+  // P15-T02 adds the rehearsal button between Edit and the destructive Dismiss; the exact list is
+  // asserted so a silently reordered or duplicated control fails here.
+  const inline=page.locator('.suggestion-tray:not([hidden]) .candidate').first();assert.deepStrictEqual(await inline.locator('.row > button').allTextContents(),['Save','Edit','Preview retrieval','Dismiss']);
   assert.strictEqual(await inline.locator('img').count(),0);await inline.getByRole('button',{name:'Edit'}).click();await inline.locator('textarea').fill('SQLite with WAL');await inline.getByRole('button',{name:'Apply edit'}).click();
   await page.waitForFunction(()=>document.querySelector('.suggestion-tray:not([hidden])')?.textContent.includes('SQLite with WAL'));assert.strictEqual(editCalls,1);
   await page.locator('.suggestion-tray:not([hidden]) .candidate').getByRole('button',{name:'Dismiss'}).click();await page.waitForFunction(()=>document.querySelector('.suggestion-tray')?.hidden===true);
@@ -94,6 +106,16 @@ const root=path.resolve(__dirname,'..');const out=process.env.QA_DIR || path.joi
   assert(tip.includes('No recorded step ran the suite. '+malicious)&&tip.includes('no test command ran in this turn'),'the tooltip quotes claim, reason and diagnostics: '+tip);
   assert.strictEqual(await page.locator('#verification-badge img').count(),0);assert.strictEqual(await page.evaluate(()=>window.INJECTED),undefined);
   assert((await page.locator('#steps-list').innerText()).includes('verification'),'the verification step is listed with the others');
+  // P15-T02: the rail explains why each memory was or was not sent, and hostile memory text stays
+  // inert. The copy must not claim the answer was caused by the included memory.
+  await page.waitForFunction(()=>document.querySelectorAll('#retrieval-list .retrieval-row').length===2);
+  assert.strictEqual(await page.locator('#retrieval-count').innerText(),'1 of 2 sent');
+  const retrievalText=await page.locator('#agent-retrieval').innerText();
+  assert(retrievalText.includes('preferred_language '+malicious),'the memory key renders as text: '+retrievalText);
+  assert(retrievalText.includes('sent to the model')&&retrievalText.includes('dropped by the context budget'),'both decisions are explained: '+retrievalText);
+  assert(retrievalText.includes('hybrid retrieval')&&retrievalText.includes('64 of 6144 bytes used'),'the strategy and budget are shown: '+retrievalText);
+  assert.strictEqual(await page.locator('#agent-retrieval img').count(),0);assert.strictEqual(await page.evaluate(()=>window.INJECTED),undefined);
+  assert.strictEqual(await page.locator('#retrieval-list .retrieval-row.included').count(),1);
   await shot('conversation-desktop');
   await modifyCard.locator('.diff-foot button').click();
   await page.waitForFunction(()=>document.getElementById('notice').textContent.startsWith('Reverted'));
@@ -108,6 +130,17 @@ const root=path.resolve(__dirname,'..');const out=process.env.QA_DIR || path.joi
   assert((await page.locator('#changes-list .diff-card').nth(1).locator('.diff-foot').innerText()).includes('Already reverted'),'an undone create also stops offering Revert');
   await page.click('[data-view="memory"]');await page.waitForSelector('.candidate h3');
   assert.strictEqual(await page.locator('#candidates img').count(),0);assert.strictEqual(await page.evaluate(()=>window.INJECTED),undefined);
+  // P15-T02: rehearsing retrieval for a pending proposal reports the ranking delta without
+  // approving anything, and its server-supplied note stays inert text.
+  const proposal=page.locator('#candidates .candidate').first();
+  await proposal.getByRole('button',{name:'Preview retrieval'}).click();
+  await page.waitForSelector('#candidates .retrieval-preview');
+  assert.strictEqual(previewCalls,1);
+  const previewText=await page.locator('#candidates .retrieval-preview').first().innerText();
+  assert(previewText.includes('Retrieval would change: +1 / -0'),'the delta is reported: '+previewText);
+  assert(previewText.includes('database_choice '+malicious)&&previewText.includes('Deterministic re-run'),'keys and the note render as text: '+previewText);
+  assert.strictEqual(await page.locator('#candidates .retrieval-preview img').count(),0);assert.strictEqual(await page.evaluate(()=>window.INJECTED),undefined);
+  assert(await proposal.getByRole('button',{name:'Save'}).isEnabled(),'previewing leaves the proposal pending and approvable');
   await shot('memory-desktop');
   failConfirm=true;await page.locator('#candidates button').first().click();await page.waitForFunction(()=>document.getElementById('notice').textContent.includes('conflicts'));
   assert(await page.locator('#candidates button').first().isEnabled());
@@ -128,7 +161,7 @@ const root=path.resolve(__dirname,'..');const out=process.env.QA_DIR || path.joi
   await page.click('#lock');assert(await page.locator('#workspace').isHidden());assert.strictEqual(await page.locator('#candidates').innerText(),'');
   assert.strictEqual(await page.locator('#verificationmodel').inputValue(),'');
   assert.deepStrictEqual(errors,[]);
-  const result={status:'passed',scope:'Mocked API browser checks; Rust server not executed',checks:['connect','token_not_persisted','conversation','inline_suggestion_tray','suggestion_edit','suggestion_dismiss','diff_card_rendered','diff_card_revert','diff_card_create_revert','verification_badge','verification_claim_text_inert','verification_model_setting','import_inbox_only','memory_evidence','html_injection_rendered_as_text','failed_approval_recoverable','suggestion_save','import','job_retry','model_settings','mobile_overflow','dark_mode','lock','no_javascript_exceptions']};
+  const result={status:'passed',scope:'Mocked API browser checks; Rust server not executed',checks:['connect','token_not_persisted','conversation','inline_suggestion_tray','suggestion_edit','suggestion_dismiss','diff_card_rendered','diff_card_revert','diff_card_create_revert','verification_badge','verification_claim_text_inert','verification_model_setting','retrieval_receipt_panel','retrieval_receipt_text_inert','retrieval_preview_rehearsal','import_inbox_only','memory_evidence','html_injection_rendered_as_text','failed_approval_recoverable','suggestion_save','import','job_retry','model_settings','mobile_overflow','dark_mode','lock','no_javascript_exceptions']};
   fs.writeFileSync(path.join(out,'ui-results.json'),JSON.stringify(result,null,2));console.log(JSON.stringify(result));
  }finally{await browser.close();}
 })().then(()=>process.exit(0)).catch(e=>{console.error(e);process.exit(1)});
