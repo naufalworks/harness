@@ -6,12 +6,13 @@
 # `src/api/error.rs`. A route cannot be added, renamed or removed, and an error
 # code cannot be introduced, without this file changing in the same commit.
 #
-# Scope note, so this contract does not over-claim: success payloads are
-# deliberately left unconstrained for now. Handlers still return
-# `Json<serde_json::Value>`, so writing field-level success schemas here would
-# document an intention rather than the running code. Those schemas arrive with
-# the typed-DTO seam of P12-T03, which is what makes them true. Error bodies are
-# fully specified, because they are already produced by one shared envelope.
+# Scope note, so this contract does not over-claim: the chat receipt is now
+# fully specified, and checked field for field against the builder in
+# `src/recording.rs` together with the `RequestState` enum the handlers branch
+# on. The remaining success payloads are still deliberately unconstrained:
+# their handlers assemble `Json<serde_json::Value>` inline, so field-level
+# schemas would document an intention rather than the running code. Error
+# bodies are fully specified, because one shared envelope produces them all.
 openapi: 3.1.0
 info:
   title: Harness API
@@ -78,6 +79,111 @@ components:
             A 500 is deliberately false: the server cannot promise the failed
             operation had no effect. Clients that retry anyway must rely on the
             request identifier for idempotency.
+    RequestState:
+      type: string
+      description: |
+        The durable state of a request, mirroring `recording::RequestState`.
+        `captured` and `generating` are the pending states; the other three are
+        terminal. Only `failed` and `interrupted` can be retried, because a
+        `complete` request already has a paid-for answer.
+      enum:
+        - captured
+        - generating
+        - complete
+        - failed
+        - interrupted
+    Receipt:
+      type: object
+      description: |
+        The durable record of one request, returned by every chat operation.
+        Every field is always present; absence is expressed as null rather than
+        omission, so a client can read a field without probing for it.
+      required:
+        - request_id
+        - session_id
+        - scope
+        - model
+        - redacted
+        - state
+        - error_code
+        - captured_at
+        - updated_at
+        - response
+        - memory_job_id
+        - memory_status
+        - recording
+        - context_available
+        - recalled
+        - recalled_context_applied
+        - confirmation_prompt
+        - cancel_requested_at
+        - cancelled_at
+        - safe_boundary_seq
+        - retry_of
+        - retried_by
+      additionalProperties: false
+      properties:
+        request_id:
+          type: string
+          format: uuid
+          description: Identifier to poll, cancel, or retry this request.
+        session_id:
+          type: string
+        scope:
+          type: string
+        model:
+          type: string
+        redacted:
+          type: boolean
+        state:
+          $ref: '#/components/schemas/RequestState'
+        error_code:
+          type: [string, 'null']
+          description: |
+            Why a terminal request ended that way. `cancelled` distinguishes a
+            deliberate cancellation from any other interruption.
+        captured_at:
+          type: string
+        updated_at:
+          type: string
+        response:
+          type: [string, 'null']
+          description: The answer text, once one exists.
+        memory_job_id:
+          type: [string, 'null']
+        memory_status:
+          type: string
+          description: |
+            The memory job's status when there is one, otherwise
+            `waiting_for_turn` while the request is pending and `deferred` once
+            it is not.
+        recording:
+          type: string
+          description: Always `sanitized_local`; recording never leaves the host.
+        context_available:
+          type: boolean
+        recalled:
+          type: array
+          description: Memories recalled into this turn's context; empty when none.
+          items: {}
+        recalled_context_applied:
+          type: boolean
+        confirmation_prompt:
+          type: [string, 'null']
+          description: Always null in this build; reserved for confirmation flows.
+        cancel_requested_at:
+          type: [string, 'null']
+        cancelled_at:
+          type: [string, 'null']
+        safe_boundary_seq:
+          type: [integer, 'null']
+          description: |
+            The last step known not to have crossed a mutating boundary. A retry
+            is refused when the run crossed, or may have crossed, past it.
+        retry_of:
+          type: [string, 'null']
+        retried_by:
+          type: [string, 'null']
   responses:
     Error:
       description: Request failed; body is the shared error envelope.
@@ -192,15 +298,21 @@ paths:
         '200':
           description: Generation completed within the wait window.
           content:
-            application/json: {}
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Receipt'
         '202':
           description: Durable receipt; poll it for the outcome.
           content:
-            application/json: {}
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Receipt'
         '502':
           description: Generation failed or was interrupted; receipt included.
           content:
-            application/json: {}
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Receipt'
         '4XX':
           $ref: '#/components/responses/Error'
         '5XX':
@@ -213,11 +325,15 @@ paths:
         '200':
           description: Existing terminal receipt for an identical request.
           content:
-            application/json: {}
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Receipt'
         '202':
           description: Accepted; receipt is captured or generating.
           content:
-            application/json: {}
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Receipt'
         '4XX':
           $ref: '#/components/responses/Error'
         '5XX':
@@ -232,7 +348,9 @@ paths:
         '200':
           description: Receipt.
           content:
-            application/json: {}
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Receipt'
         '4XX':
           $ref: '#/components/responses/Error'
         '5XX':
@@ -244,10 +362,22 @@ paths:
       parameters:
         - $ref: '#/components/parameters/RequestId'
       responses:
-        '200':
-          description: Cancellation recorded.
+        '202':
+          description: |
+            Cancellation recorded for a generating request; the turn is being
+            interrupted. Poll the receipt for the terminal state.
           content:
-            application/json: {}
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Receipt'
+        '200':
+          description: |
+            Already interrupted by an earlier cancellation, so a repeated
+            cancel is reported as done rather than as a conflict.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Receipt'
         '4XX':
           $ref: '#/components/responses/Error'
         '5XX':
@@ -259,14 +389,14 @@ paths:
       parameters:
         - $ref: '#/components/parameters/RequestId'
       responses:
-        '200':
-          description: Retry admitted.
-          content:
-            application/json: {}
         '202':
-          description: Retry accepted; poll the receipt.
+          description: |
+            Retry admitted; the new attempt is pending, so poll the receipt.
+            This is the only success status: a retry never completes inline.
           content:
-            application/json: {}
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Receipt'
         '4XX':
           $ref: '#/components/responses/Error'
         '5XX':

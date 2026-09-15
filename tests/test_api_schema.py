@@ -34,6 +34,7 @@ import yaml
 ROOT = Path(__file__).resolve().parent.parent
 ROUTES_RS = ROOT / "src" / "api" / "routes.rs"
 ERROR_RS = ROOT / "src" / "api" / "error.rs"
+RECORDING_RS = ROOT / "src" / "recording.rs"
 ARCHITECTURE = ROOT / "docs" / "ARCHITECTURE.md"
 CONTRACT = ROOT / "docs" / "api.yaml"
 
@@ -120,6 +121,32 @@ def compare(label_a: str, a: set, label_b: str, b: set) -> None:
         fail(f"{label_b} has {item[0].upper()} {item[1]}, missing from {label_a}")
 
 
+def server_request_states() -> set[str]:
+    """The durable strings `recording::RequestState` can represent.
+
+    The enum serialises with `rename_all = "lowercase"`, so the variant names
+    lowercased are exactly the strings that reach the wire.
+    """
+    source = RECORDING_RS.read_text(encoding="utf-8")
+    start = source.find("pub enum RequestState {")
+    if start < 0:
+        fail(f"no RequestState enum found in {RECORDING_RS}")
+        return set()
+    body = source[start : source.find("}", start)]
+    return {name.lower() for name in re.findall(r"^\s{4}([A-Z][A-Za-z]*),", body, re.M)}
+
+
+def server_receipt_fields() -> set[str]:
+    """The keys the receipt builder in src/recording.rs actually emits."""
+    source = RECORDING_RS.read_text(encoding="utf-8")
+    start = source.find("fn receipt(")
+    if start < 0:
+        fail(f"no receipt builder found in {RECORDING_RS}")
+        return set()
+    body = source[start : source.find("\n}", start)]
+    return set(re.findall(r'"([a-z_]+)"\s*:', body))
+
+
 def main() -> int:
     if not CONTRACT.exists():
         print(f"[FAIL] api-schema: {CONTRACT} is missing")
@@ -155,6 +182,36 @@ def main() -> int:
         for code in sorted(documented - actual):
             fail(f"docs/api.yaml documents code {code!r}, which src/api/error.rs never returns")
 
+    # The receipt is the one success payload this contract specifies, so it is
+    # held to the same standard as the error envelope: compared field for field
+    # against the code that builds it, in both directions.
+    states = schemas.get("RequestState")
+    if not states:
+        fail("docs/api.yaml has no components.schemas.RequestState")
+    else:
+        documented = set(states.get("enum") or [])
+        actual = server_request_states()
+        for state in sorted(actual - documented):
+            fail(f"recording::RequestState defines {state!r}, absent from docs/api.yaml")
+        for state in sorted(documented - actual):
+            fail(f"docs/api.yaml documents state {state!r}, which recording::RequestState does not define")
+
+    receipt = schemas.get("Receipt")
+    if not receipt:
+        fail("docs/api.yaml has no components.schemas.Receipt")
+    else:
+        properties = set((receipt.get("properties") or {}))
+        emitted = server_receipt_fields()
+        for field in sorted(emitted - properties):
+            fail(f"the receipt builder emits {field!r}, absent from docs/api.yaml")
+        for field in sorted(properties - emitted):
+            fail(f"docs/api.yaml documents receipt field {field!r}, which the builder never emits")
+        # The builder emits every key on every row, using null for absence, so
+        # a client may read any field without probing for it. Requiring all of
+        # them keeps that promise from quietly weakening.
+        if set(receipt.get("required") or []) != properties:
+            fail("Receipt must require every field it documents; the builder always emits all of them")
+
     for method, path in sorted(contract):
         if (method, path) in NON_JSON_OPERATIONS:
             continue
@@ -173,6 +230,10 @@ def main() -> int:
         f"and the HTTP surface inventory exactly"
     )
     print(f"[PASS] api-schema: error envelope and {len(server_error_codes())} error codes match src/api/error.rs")
+    print(
+        f"[PASS] api-schema: receipt schema matches the builder "
+        f"({len(server_receipt_fields())} fields, {len(server_request_states())} states) in src/recording.rs"
+    )
     return 0
 
 
