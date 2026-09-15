@@ -354,7 +354,10 @@ def test_015_causal_coverage_constraints():
     # Rewriting recorded history is refused, phase by phase.
     for statement, args in [
         ("UPDATE deployment_events SET phase='smoke' WHERE id='b1'", ()),
-        ("UPDATE deployment_events SET commit_sha='deadbee' , started_at=? WHERE id='b1'", (later,)),
+        ("UPDATE deployment_events SET commit_sha='deadbee' WHERE id='b1'", ()),
+        ("UPDATE deployment_events SET binary_sha256=? WHERE id='b1'", ("e" * 64,)),
+        ("UPDATE deployment_events SET schema_version=14 WHERE id='b1'", ()),
+        ("UPDATE deployment_events SET started_at=? WHERE id='b1'", (later,)),
         ("UPDATE deployment_events SET status='failed' WHERE id='b1'", ()),
         ("UPDATE deployment_events SET finished_at=? WHERE id='b1'", (now,)),
         ("UPDATE deployment_events SET deployment_id='d2' WHERE id='b1'", ()),

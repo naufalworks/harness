@@ -35,7 +35,14 @@ browser-to-service E2E then passed. The strict non-deploying release gate reache
 documentation check and reported exactly one failure: live `4cd8ec7` trails repository HEAD
 `a2b5474`. That mismatch is retained as an honest failure because deployment and schema advancement
 were explicitly withheld. The public domain, authenticated health endpoint, relay and service all
-still returned healthy after the gates. P16-T03 remains `doing` pending explicit deployment handling.
+still returned healthy after the gates. P16-T03 remained `doing` pending explicit deployment handling.
+
+Before promotion, a final provenance review found that migration 015's append-only trigger protected
+phase and timestamp fields but did not independently protect commit, binary hash and schema identity.
+The trigger and migration contract were tightened so a started phase may be completed exactly once,
+while its recorded identity cannot be rewritten. Migration/SQL contracts, format, strict clippy, all
+292 Rust tests, causal-coverage evidence, Ruff, shell syntax and diff checks passed again. P16-T03 is
+complete in the repository; deployment was then explicitly approved as a separate operational step.
 
 ## 2026-09-15T17:25:00Z · deployment — promote `7708e48` and advance live schema 11 → 13
 

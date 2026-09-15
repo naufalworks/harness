@@ -37,7 +37,7 @@
           "smoke_failed": null,
           "unready": null
         },
-        "id": "61a279b4-56ac-48d1-8339-a42f6f23a3ea",
+        "id": "18a2b5a4-f5b2-46b6-a1bb-355a81802222",
         "parent_id": null,
         "phase": "build",
         "status": "succeeded"
@@ -49,8 +49,8 @@
           "smoke_failed": null,
           "unready": null
         },
-        "id": "45ac9569-c52b-434d-88c7-19e9e6c54014",
-        "parent_id": "61a279b4-56ac-48d1-8339-a42f6f23a3ea",
+        "id": "5ba9e434-5993-4642-9a21-a3de649bc504",
+        "parent_id": "18a2b5a4-f5b2-46b6-a1bb-355a81802222",
         "phase": "restart",
         "status": "succeeded"
       },
@@ -61,8 +61,8 @@
           "smoke_failed": null,
           "unready": null
         },
-        "id": "d5e19c1b-4d6a-4dbb-a3e6-73daa144df63",
-        "parent_id": "45ac9569-c52b-434d-88c7-19e9e6c54014",
+        "id": "887a72a3-921f-4c23-86b9-b087d58bcc56",
+        "parent_id": "5ba9e434-5993-4642-9a21-a3de649bc504",
         "phase": "smoke",
         "status": "succeeded"
       }

@@ -80,8 +80,13 @@ CREATE TRIGGER deployment_events_append_only BEFORE UPDATE ON deployment_events 
  SELECT CASE WHEN old.id<>new.id OR old.deployment_id<>new.deployment_id OR old.phase<>new.phase
    OR old.started_at<>new.started_at
    OR COALESCE(old.parent_id,'')<>COALESCE(new.parent_id,'')
-   OR (old.finished_at IS NOT NULL AND COALESCE(old.finished_at,'')<>COALESCE(new.finished_at,''))
-   OR (old.status<>'started' AND old.status<>new.status)
+   OR COALESCE(old.commit_sha,'')<>COALESCE(new.commit_sha,'')
+   OR COALESCE(old.binary_sha256,'')<>COALESCE(new.binary_sha256,'')
+   OR COALESCE(old.schema_version,-1)<>COALESCE(new.schema_version,-1)
+   OR old.status<>'started'
+   OR new.status='started'
+   OR old.finished_at IS NOT NULL
+   OR new.finished_at IS NULL
   THEN RAISE(ABORT,'recorded deployment provenance is append-only')
  END;
 END;

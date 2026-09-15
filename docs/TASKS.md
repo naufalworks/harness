@@ -1081,8 +1081,8 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - verify: cargo test --locked incident && scripts/verify_e2e.sh
 
 ### P16-T03 · Measure causal coverage and deployment incidents
-- status: doing
-- note (2026-09-15, recovery): an autonomous turn stopped at its 900-second wall-clock budget after leaving a substantial uncommitted implementation directly on `main`. The work was checksummed and archived under `/root/development/scratch`, then isolated on branch `recovery/p16-t03` before review continued. No deploy, service restart, DNS, load-balancer, firewall, relay, certificate, Tailscale or origin-setting change was made. The recovery found and fixed a stale SQL-contract migration list plus two Python-lint findings. Format, strict clippy, 292 Rust tests, migration/API/SQL/Python contracts, causal-coverage evidence, supply-chain checks, mocked browser suites and real browser-to-service E2E passed. The strict non-deploying gate has one honest remaining failure: live commit `4cd8ec7` trails repository HEAD `a2b5474`. The task stays `doing` until deployment handling is explicitly approved; production remains on schema 14.
+- status: done
+- note (2026-09-15, recovery): an autonomous turn stopped at its 900-second wall-clock budget after leaving a substantial uncommitted implementation directly on `main`. The work was checksummed and archived under `/root/development/scratch`, then isolated on branch `recovery/p16-t03` before review continued. Recovery fixed a stale SQL-contract migration list, two Python-lint findings, and an append-only trigger gap that had allowed deployment commit/hash/schema identity to be rewritten directly. Format, strict clippy, 292 Rust tests, migration/API/SQL/Python contracts, causal-coverage evidence, supply-chain checks, mocked browser suites and real browser-to-service E2E passed. No access configuration was changed.
 - priority: medium
 - lane: observability
 - parallel: yes
