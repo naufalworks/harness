@@ -497,3 +497,49 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere}
 .retrieval-row.included{border-left:3px solid var(--ok,#2f8132)}
 .retrieval-row.excluded{border-left:3px solid var(--border);opacity:.85}
 .retrieval-preview{display:flex;flex-direction:column;gap:4px;border-top:1px dashed var(--border);margin-top:8px;padding-top:8px}
+
+/* ---------- P16-T01 incident controls, confidence labels and timeline ---------- */
+.incident-controls{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.incident-views{display:flex;gap:4px}
+.incident-controls input,.incident-controls select{min-height:28px;padding:4px 7px;font:11px/1.4 var(--mono);background:var(--surface);min-width:0;flex:1 1 90px}
+#incident-search{flex:1 1 140px}
+.incident-confidence{margin:0;font:10.5px/1.5 var(--mono)}
+.incident-confidence-tag{font:9.5px/1.4 var(--mono);padding:1px 5px;border-radius:999px;border:1px solid var(--border);color:var(--text-3);white-space:nowrap}
+.incident-confidence-tag.recorded_dependency{color:var(--green);border-color:var(--green)}
+.incident-confidence-tag.temporal_proximity{color:var(--orange);border-color:var(--orange)}
+.incident-confidence-tag.unknown{color:var(--text-3)}
+.incident-node{grid-template-columns:auto minmax(0,1fr) auto auto}
+.incident-timeline{display:flex;flex-direction:column;gap:3px;max-height:240px;overflow:auto}
+.incident-timeline-row{display:grid;grid-template-columns:auto auto minmax(0,1fr) auto;gap:6px;align-items:center;width:100%;min-height:30px;padding:5px 7px;border:1px solid transparent;border-radius:7px;background:transparent;color:var(--text);text-align:left;font-weight:400}
+.incident-timeline-row:hover:not(:disabled){background:var(--hover);border-color:var(--border)}
+.incident-timeline-row.active{background:var(--accent-soft);border-color:var(--accent)}
+.incident-time{font:9.5px/1.4 var(--mono);color:var(--text-3);white-space:nowrap}
+.incident-confidence-line.temporal_proximity{color:var(--orange)}
+.incident-confidence-line.unknown{color:var(--text-3)}
+
+/* ---------- P15-T05 history search, privacy boundary and export review ---------- */
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}
+.history-hit{border:1px solid var(--border);border-radius:var(--radius);background:var(--surface);padding:14px 16px;margin:12px 0;overflow-wrap:anywhere}
+.history-hit h3{font-size:14px;font-weight:650;margin-bottom:4px}
+.history-snippet{white-space:pre-wrap;margin:6px 0;font-size:13px}
+.citation-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:6px 14px;margin:8px 0 0}
+.citation-grid dt{font:9.5px/1.4 var(--mono);color:var(--text-3);text-transform:uppercase}
+.citation-grid dd{margin:0;font:11px/1.5 var(--mono);overflow-wrap:anywhere}
+.history-badge{display:inline-flex;padding:2px 8px;border-radius:999px;border:1px solid var(--border);font:10px/1.5 var(--mono)}
+.history-badge.live{color:var(--green);border-color:var(--green)}
+.history-badge.forgotten{color:var(--orange);border-color:var(--orange);background:var(--orange-soft)}
+.history-badge.deleted{color:var(--red);border-color:var(--red);background:var(--red-soft)}
+/* Forget and delete-source are drawn as two visibly different operations on purpose. */
+.privacy-op{border:1px solid var(--border);border-left-width:3px;border-radius:8px;padding:12px 14px;margin:12px 0}
+.privacy-op.reversible{border-left-color:var(--orange)}
+.privacy-op.destructive{border-left-color:var(--red);background:var(--red-soft)}
+.privacy-op h4{font-size:13px;font-weight:650;margin-bottom:2px}
+button.danger{border-color:var(--red);color:var(--red);background:transparent}
+button.danger:hover:not(:disabled){background:var(--red-soft)}
+.audit-list{margin:8px 0 0;padding-left:18px;font:11px/1.7 var(--mono)}
+.export-digest{font:11px/1.6 var(--mono);overflow-wrap:anywhere}
+.export-items{margin:10px 0;padding:0;list-style:none;display:flex;flex-direction:column;gap:6px}
+.export-items li{border:1px solid var(--border);border-radius:7px;padding:8px 10px;display:flex;flex-direction:column;gap:3px}
+.export-item-kind{font:9.5px/1.4 var(--mono);color:var(--text-3)}
+.export-item-title{font-size:13px;overflow-wrap:anywhere}
+.export-item-preview{margin:0;font-size:12px;color:var(--text-2);white-space:pre-wrap}

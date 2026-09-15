@@ -888,6 +888,11 @@ async function revertChange(id, button) {
 }
 
 const incidentRelations = ['supports','contradicts','depends_on','authorizes','mutates','invalidates','triggers'];
+const incidentKinds = ['request','step','permission','mutation','evidence','memory','recovery'];
+// P16-T01: what the reviewer has asked the *server* for. Filters are server-side because the
+// server holds the whole recorded set and this client only ever holds a bounded page of it —
+// filtering the page in the browser would silently search less than the reviewer thinks.
+const incidentQuery = { view: 'causal', relation: 'all', kind: 'all', status: '', q: '', anchor: null };
 function incidentNode(graph, id) { return (graph?.nodes || []).find(item => item.id === id); }
 function focusDurableRow(item) {
   const selector = item.kind === 'step' ? `.agent-step[data-step-id="${CSS.escape(item.row_id)}"]` : item.kind === 'mutation' ? `.diff-card[data-change-id="${CSS.escape(item.row_id)}"]` : '';
@@ -896,10 +901,23 @@ function focusDurableRow(item) {
   if (target.tagName === 'DETAILS') target.open = true;
   target.scrollIntoView({block:'center',behavior:'smooth'}); target.focus?.({preventScroll:true});
 }
+// The label a confidence value is shown under. The server also ships a legend; these strings
+// exist so the rail never renders a bare identifier, and they deliberately do not promote
+// proximity into a causal claim.
+const CONFIDENCE_LABELS = Object.freeze({
+  recorded_dependency: 'recorded dependency',
+  temporal_proximity: 'temporal proximity only',
+  unknown: 'unknown',
+});
+function confidenceLabel(value) { return CONFIDENCE_LABELS[value] || 'unknown'; }
 function renderIncidentDetail(graph, item) {
   const detail = $('incident-detail'); detail.replaceChildren(); detail.hidden = !item;
   if (!item) return;
-  detail.append(node('span', item.kind, `incident-kind ${item.kind}`), node('strong', item.label || item.id), node('p', `${item.status || 'recorded'} · provenance ${item.provenance || 'unknown'}`, 'muted'));
+  detail.append(node('span', item.kind, `incident-kind ${item.kind}`), node('strong', item.label || item.id));
+  detail.append(node('p', `${item.status || 'recorded'} · ${confidenceLabel(item.confidence)}`, `muted incident-confidence-line ${item.confidence || 'unknown'}`));
+  if (item.confidence === 'temporal_proximity') detail.append(node('p', 'This row occurred in the same request and has a recorded time, but no dependency was recorded. Co-occurrence is not causation.', 'muted small'));
+  if (item.confidence === 'unknown') detail.append(node('p', 'No dependency and no usable recorded time. Nothing is claimed about this row.', 'muted small'));
+  if (item.at) detail.append(node('p', `Recorded at ${item.at}`, 'muted small'));
   const relations = (graph.edges || []).filter(edge => edge.source === item.id || edge.target === item.id);
   const list = node('ul', undefined, 'incident-links');
   for (const edge of relations) {
@@ -911,27 +929,97 @@ function renderIncidentDetail(graph, item) {
   if (item.kind === 'step' || item.kind === 'mutation') { const back = node('button', item.kind === 'step' ? 'Show recorded step' : 'Show file change', 'secondary'); back.type = 'button'; back.addEventListener('click', () => focusDurableRow(item)); detail.append(back); }
   detail.append(node('code', item.row_id, 'incident-row-id'));
 }
+function renderIncidentTimeline(graph) {
+  const target = $('incident-timeline'); target.replaceChildren();
+  const chronological = incidentQuery.view === 'chronological';
+  target.hidden = !chronological;
+  $('incident-nodes').hidden = chronological;
+  if (!chronological) return;
+  const timeline = graph.timeline || [];
+  if (!timeline.length) return target.append(node('p', 'No recorded rows in this view.', 'muted'));
+  for (const entry of timeline) {
+    const row = node('button', undefined, `incident-timeline-row${agentState.incidentNode === entry.node_id ? ' active' : ''}`);
+    row.type = 'button'; row.dataset.confidence = entry.confidence || 'unknown';
+    row.append(node('span', entry.at || 'no recorded time', 'incident-time'));
+    row.append(node('span', entry.kind, `incident-kind ${entry.kind}`));
+    row.append(node('span', entry.label || entry.node_id, 'incident-label'));
+    row.append(node('span', confidenceLabel(entry.confidence), `incident-confidence-tag ${entry.confidence || 'unknown'}`));
+    row.addEventListener('click', () => { agentState.incidentNode = entry.node_id; renderIncident(graph); });
+    target.append(row);
+  }
+  if (graph.timeline_undated) target.append(node('p', `${graph.timeline_undated} row(s) carry no recorded time and are listed last rather than placed by guesswork.`, 'muted small'));
+}
 function renderIncident(graph) {
-  const panel = $('agent-incident'), select = $('incident-relation'), list = $('incident-nodes'); list.replaceChildren();
-  if (!graph?.nodes?.length) { panel.hidden = true; agentState.incident = null; return; }
+  const panel = $('agent-incident'), select = $('incident-relation'), kindSelect = $('incident-kind'), list = $('incident-nodes'); list.replaceChildren();
+  if (!graph?.nodes?.length) {
+    // A filter that matched only the request frame is a real answer, not an empty panel: keep
+    // the panel up so the reviewer can widen the filter again.
+    if (!graph || !incidentQueryIsFiltered()) { panel.hidden = true; agentState.incident = null; return; }
+  }
   panel.hidden = false; agentState.incident = graph;
   if (select.options.length === 1) for (const relation of incidentRelations) select.append(new Option(relation.replace('_',' '), relation));
-  const relation = select.value; const edges = graph.edges || [];
-  const visibleIds = relation === 'all' ? new Set(graph.nodes.map(item => item.id)) : new Set(edges.filter(edge => edge.relation === relation).flatMap(edge => [edge.source, edge.target]));
-  const visible = graph.nodes.filter(item => visibleIds.has(item.id));
-  $('incident-count').textContent = `${visible.length} nodes · ${relation === 'all' ? edges.length : edges.filter(edge => edge.relation === relation).length} edges`;
+  if (kindSelect.options.length === 1) for (const kind of incidentKinds) kindSelect.append(new Option(kind, kind));
+  const nodes = graph.nodes || [], edges = graph.edges || [];
+  const counts = graph.counts || {};
+  $('incident-count').textContent = `${nodes.length} of ${counts.nodes?.total ?? nodes.length} nodes · ${edges.length} of ${counts.edges?.total ?? edges.length} edges`;
+  const confidence = counts.confidence || {};
+  $('incident-confidence').textContent = `${confidence.recorded_dependency || 0} recorded dependency · ${confidence.temporal_proximity || 0} temporal proximity only · ${confidence.unknown || 0} unknown`;
   const earliest = graph.earliest_known_break || {};
   $('incident-break').textContent = earliest.known ? `Earliest known break: ${earliest.reason}` : 'Earliest break unknown';
-  if (!visible.length) list.append(node('p', 'No durable edges use this relation.', 'muted'));
-  for (const item of visible) {
+  // Bounded expansion. The cursor is passed back verbatim; this client never builds one.
+  const cursor = graph.expansion_cursors?.nodes || null;
+  const expand = $('incident-expand');
+  expand.hidden = !cursor;
+  if (cursor) {
+    expand.textContent = `Expand ${counts.nodes?.omitted || 0} more recorded node(s)`;
+    expand.onclick = () => { incidentQuery.anchor = cursor; void reloadIncident(); };
+  }
+  if (!nodes.length) list.append(node('p', 'No recorded row matches this filter. The filter narrowed the recorded set; it did not conclude anything.', 'muted'));
+  for (const item of nodes) {
     const button = node('button', undefined, `incident-node${agentState.incidentNode === item.id ? ' active' : ''}`); button.type = 'button';
-    button.append(node('span', item.kind, `incident-kind ${item.kind}`), node('span', item.label || item.id, 'incident-label'), node('span', item.status || 'recorded', 'incident-status'));
+    button.dataset.confidence = item.confidence || 'unknown';
+    button.append(node('span', item.kind, `incident-kind ${item.kind}`), node('span', item.label || item.id, 'incident-label'), node('span', item.status || 'recorded', 'incident-status'), node('span', confidenceLabel(item.confidence), `incident-confidence-tag ${item.confidence || 'unknown'}`));
     button.addEventListener('click', () => { agentState.incidentNode = item.id; renderIncident(graph); }); list.append(button);
   }
-  const selected = incidentNode(graph, agentState.incidentNode) || incidentNode(graph, earliest.node_id) || visible[0];
+  renderIncidentTimeline(graph);
+  const selected = incidentNode(graph, agentState.incidentNode) || incidentNode(graph, earliest.node_id) || nodes[0];
   agentState.incidentNode = selected?.id || null; renderIncidentDetail(graph, selected);
 }
-$('incident-relation').addEventListener('change', () => renderIncident(agentState.incident));
+function incidentQueryIsFiltered() {
+  return incidentQuery.relation !== 'all' || incidentQuery.kind !== 'all' || Boolean(incidentQuery.status) || Boolean(incidentQuery.q);
+}
+function incidentQueryParams() {
+  const params = new URLSearchParams({ view: incidentQuery.view });
+  if (incidentQuery.relation !== 'all') params.set('relation', incidentQuery.relation);
+  if (incidentQuery.kind !== 'all') params.set('kind', incidentQuery.kind);
+  if (incidentQuery.status) params.set('status', incidentQuery.status);
+  if (incidentQuery.q) params.set('q', incidentQuery.q);
+  if (incidentQuery.anchor) params.set('anchor', JSON.stringify(incidentQuery.anchor));
+  return params;
+}
+// Re-ask the server. Every filter change goes through here, so the rail can never show a
+// locally-narrowed view that the reviewer mistakes for the whole recorded set.
+async function reloadIncident() {
+  if (!agentState.requestId) return;
+  try {
+    const graph = await api(`/chat/requests/${encodeURIComponent(agentState.requestId)}/incident?${incidentQueryParams().toString()}`);
+    renderIncident(graph);
+  } catch (error) { notice(error.message, true); }
+}
+function setIncidentView(view) {
+  incidentQuery.view = view; incidentQuery.anchor = null;
+  for (const [id, value] of [['incident-view-causal','causal'],['incident-view-chronological','chronological']]) {
+    const button = $(id); const active = value === view;
+    button.classList.toggle('active', active); button.setAttribute('aria-pressed', String(active));
+  }
+  void reloadIncident();
+}
+$('incident-view-causal').addEventListener('click', () => setIncidentView('causal'));
+$('incident-view-chronological').addEventListener('click', () => setIncidentView('chronological'));
+$('incident-relation').addEventListener('change', event => { incidentQuery.relation = event.target.value; incidentQuery.anchor = null; void reloadIncident(); });
+$('incident-kind').addEventListener('change', event => { incidentQuery.kind = event.target.value; incidentQuery.anchor = null; void reloadIncident(); });
+$('incident-search').addEventListener('change', event => { incidentQuery.q = event.target.value.trim(); incidentQuery.anchor = null; void reloadIncident(); });
+$('incident-status').addEventListener('change', event => { incidentQuery.status = event.target.value.trim(); incidentQuery.anchor = null; void reloadIncident(); });
 
 async function refreshAgentTurn(receipt) {
   const requestId = receipt?.request_id || pending?.request_id;
@@ -1143,4 +1231,261 @@ document.addEventListener('keydown', event => {
 // CLI-style composer: Enter sends, Shift+Enter keeps the newline (design: ui.md#keyboard).
 $('prompt').addEventListener('keydown', event => {
   if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); $('chatform').requestSubmit(); }
+});
+
+// ---------------------------------------------------------------------------
+// P15-T05: the reviewer surface for the P15-T04 backend.
+//
+// Three panels that must never read as one operation. Search returns citations, never a claim
+// that an answer would have changed. Forget and delete-source are separate controls with
+// separate copy and separate confirmation, because one is reversible suppression and the other
+// destroys content. Export shows the exact item list and the digest it will be pinned to before
+// any release control exists.
+//
+// No response text is ever parsed as markup: every server string reaches the DOM through
+// `node()` / `textContent`, which is the same discipline the rest of this file holds.
+// ---------------------------------------------------------------------------
+const historyState = { results: [], selected: null, audit: null, bundle: null };
+
+function citationLine(citation) {
+  // A citation is shown field by field rather than as a sentence, so a reader can check the
+  // exact revision and checksum a hit was served from.
+  const list = node('dl', undefined, 'citation-grid');
+  for (const [label, value] of [
+    ['Kind', citation.kind],
+    ['Source row', citation.source_id],
+    ['Revision', citation.revision],
+    ['Scope', citation.scope],
+    ['Session', citation.session_id || 'not session-scoped'],
+    ['Recorded', citation.timestamp],
+    ['Checksum', citation.content_sha256],
+    ['Sanitizer', citation.sanitizer],
+  ]) {
+    const row = node('div');
+    row.append(node('dt', label), node('dd', value === undefined || value === null ? 'unknown' : String(value)));
+    list.append(row);
+  }
+  return list;
+}
+
+function renderHistoryResults(payload) {
+  const target = $('history-results');
+  target.replaceChildren();
+  const results = payload?.results || [];
+  historyState.results = results;
+  $('history-summary').textContent = payload
+    ? `${payload.returned} of ${payload.hits} shown · ${payload.suppressed} suppressed by the read-time sanitizer gate · sanitizer ${payload.sanitizer}`
+    : '';
+  if (!results.length) {
+    target.append(node('p', payload?.note || 'Nothing matched in this scope.', 'empty'));
+    return;
+  }
+  for (const hit of results) {
+    const card = node('article', undefined, 'history-hit');
+    card.dataset.documentId = hit.citation.id;
+    card.append(node('h3', hit.title || hit.citation.source_id));
+    card.append(node('p', hit.snippet, 'history-snippet'));
+    if (hit.snippet_truncated) card.append(node('p', 'Snippet truncated at the shared bound.', 'muted small'));
+    const cite = node('details', undefined, 'history-citation');
+    cite.append(node('summary', 'Citation'));
+    cite.append(citationLine(hit.citation));
+    card.append(cite);
+    const select = node('button', 'Privacy controls', 'secondary');
+    select.type = 'button';
+    select.addEventListener('click', () => selectHistoryDocument(hit.citation.id));
+    card.append(select);
+    target.append(card);
+  }
+}
+
+// The two operations, rendered as two visibly different controls. The copy states what each one
+// does and does not do; neither button implies the other's effect.
+function renderHistoryPrivacy() {
+  const panel = $('history-privacy');
+  panel.replaceChildren();
+  const audit = historyState.audit;
+  if (!audit) {
+    panel.append(node('p', 'Select a search result to see its privacy controls.', 'empty'));
+    $('history-audit').hidden = true;
+    return;
+  }
+  panel.append(node('h3', audit.title || audit.citation?.id || historyState.selected));
+  const forgotten = Boolean(audit.forgotten_at);
+  const deleted = Boolean(audit.source_deleted_at);
+  const state = node('p', undefined, 'history-state');
+  state.append(node('span', deleted ? 'source deleted' : forgotten ? 'forgotten' : 'searchable', `history-badge ${deleted ? 'deleted' : forgotten ? 'forgotten' : 'live'}`));
+  // The distinction that must be visible: content survives a forget and does not survive a
+  // source delete. This reads the server's own recorded flag rather than inferring it.
+  state.append(node('span', audit.content_present ? 'content retained' : 'content removed', 'muted small'));
+  panel.append(state);
+  if (audit.note) panel.append(node('p', audit.note, 'muted small'));
+
+  const forgetBox = node('div', undefined, 'privacy-op reversible');
+  forgetBox.append(node('h4', forgotten ? 'Restore' : 'Forget'));
+  forgetBox.append(node('p', forgotten
+    ? 'Lift the suppression. The content was never destroyed, which is why this is possible.'
+    : 'Stop this entry being recalled or returned. Content, citation and revision trail are kept, and this is reversible.', 'muted small'));
+  const forgetButton = node('button', forgotten ? 'Restore entry' : 'Forget entry', 'secondary');
+  forgetButton.type = 'button';
+  forgetButton.id = 'history-forget';
+  forgetButton.disabled = deleted;
+  forgetButton.addEventListener('click', () => runHistoryPrivacy(forgotten ? 'restore' : 'forget', forgetButton));
+  forgetBox.append(forgetButton);
+  if (deleted) forgetBox.append(node('p', 'This entry\u2019s source was deleted, so there is nothing left to forget.', 'muted small'));
+  panel.append(forgetBox);
+
+  const deleteBox = node('div', undefined, 'privacy-op destructive');
+  deleteBox.append(node('h4', 'Delete source'));
+  deleteBox.append(node('p', 'Remove the stored content. Only the audited fact that this entry existed and was deleted remains. This is a different operation from Forget and it cannot be undone.', 'muted small'));
+  const deleteButton = node('button', 'Delete source content', 'danger');
+  deleteButton.type = 'button';
+  deleteButton.id = 'history-delete-source';
+  deleteButton.disabled = deleted;
+  deleteButton.addEventListener('click', () => runHistoryPrivacy('delete_source', deleteButton));
+  deleteBox.append(deleteButton);
+  if (deleted) deleteBox.append(node('p', 'Already deleted; nothing would be written twice.', 'muted small'));
+  panel.append(deleteBox);
+
+  const auditPanel = $('history-audit');
+  auditPanel.replaceChildren();
+  auditPanel.hidden = false;
+  auditPanel.append(node('h3', 'Recorded privacy events'));
+  const events = audit.events || [];
+  if (!events.length) auditPanel.append(node('p', 'No privacy event recorded for this entry.', 'muted'));
+  const list = node('ul', undefined, 'audit-list');
+  for (const event of events) {
+    list.append(node('li', `${event.created_at} · ${event.action} · revision ${event.revision} · ${event.detail || 'no detail recorded'}`));
+  }
+  if (events.length) auditPanel.append(list);
+}
+
+async function selectHistoryDocument(id) {
+  historyState.selected = id;
+  try {
+    historyState.audit = await api(`/history/documents/${encodeURIComponent(id)}`);
+  } catch (error) {
+    historyState.audit = null;
+    notice(error.message, true);
+  }
+  renderHistoryPrivacy();
+}
+
+async function runHistoryPrivacy(action, button) {
+  // Deleting content is confirmed separately and by name, because it is not reversible and must
+  // not be reachable by the same reflex as a forget.
+  if (action === 'delete_source' && !window.confirm('Delete the stored content of this entry? Forget is reversible; this is not.')) return;
+  button.disabled = true;
+  try {
+    const result = await api(`/history/documents/${encodeURIComponent(historyState.selected)}/privacy`, { action });
+    notice(result.note || `Recorded: ${result.outcome}`);
+    await selectHistoryDocument(historyState.selected);
+  } catch (error) {
+    notice(error.message, true);
+    button.disabled = false;
+  }
+}
+
+$('historysearchform').addEventListener('submit', async event => {
+  event.preventDefault();
+  const query = $('history-query').value.trim();
+  if (!query) return;
+  const params = new URLSearchParams({ q: query, scope });
+  const kind = $('history-kind').value;
+  if (kind) params.set('kind', kind);
+  const sessionFilter = $('history-session').value.trim();
+  if (sessionFilter) params.set('session_id', sessionFilter);
+  $('history-search-button').disabled = true;
+  try {
+    renderHistoryResults(await api(`/history/search?${params.toString()}`));
+  } catch (error) {
+    notice(error.message, true);
+  } finally {
+    $('history-search-button').disabled = false;
+  }
+});
+
+$('history-index').addEventListener('click', async () => {
+  try {
+    const result = await api('/history/index', {});
+    notice(`Index refreshed: ${result.indexed} new, ${result.revision_advanced} advanced, ${result.unchanged} unchanged, ${(result.refused || []).length} refused by the sanitizer.`);
+  } catch (error) {
+    notice(error.message, true);
+  }
+});
+
+// Export review. The item list and the digest that would pin it are shown before any control
+// that releases anything exists, so "what will leave" is on screen first. The digest comes from
+// the server's own preview (`review` with `approve: false`); this client never computes one.
+function renderExportPreview(bundle) {
+  const panel = $('export-preview');
+  panel.replaceChildren();
+  historyState.bundle = bundle;
+  if (!bundle) { panel.hidden = true; return; }
+  panel.hidden = false;
+  const state = bundle.state || (bundle.outcome === 'reviewed' ? 'reviewed' : 'draft');
+  panel.append(node('h3', state === 'released' ? 'This left the machine' : 'This is what would leave'));
+  panel.append(node('p', `Bundle ${bundle.bundle_id} · state ${state} · audience ${bundle.audience || 'not recorded'}`, 'muted small'));
+  const items = bundle.items || [];
+  panel.append(node('p', `${items.length} item${items.length === 1 ? '' : 's'} · content digest ${bundle.content_sha256 || 'not computed yet'}`, 'export-digest'));
+  if (bundle.unsanitized_items) panel.append(node('p', `${bundle.unsanitized_items} item(s) were refused by the shared sanitizer and cannot be reviewed or released.`, 'muted small'));
+  const list = node('ul', undefined, 'export-items');
+  for (const item of items) {
+    const entry = node('li');
+    entry.append(node('span', `${item.kind} · revision ${item.revision} · ${item.sanitized ? 'sanitized' : 'refused by the sanitizer'}`, 'export-item-kind'));
+    entry.append(node('span', item.stable_id || item.id, 'export-item-title'));
+    const body = item.payload?.title || item.payload?.key || item.payload?.body;
+    if (body) entry.append(node('p', String(body), 'export-item-preview'));
+    list.append(entry);
+  }
+  if (items.length) panel.append(list); else panel.append(node('p', 'The draft selected nothing, so there is nothing to release.', 'muted'));
+  if (bundle.note) panel.append(node('p', bundle.note, 'muted small'));
+
+  if (state === 'draft' && items.length && bundle.content_sha256) {
+    const approve = node('button', 'Approve exactly these items for this audience', 'secondary');
+    approve.type = 'button'; approve.id = 'export-approve';
+    approve.addEventListener('click', async () => {
+      approve.disabled = true;
+      try {
+        const reviewed = await api(`/export/bundles/${encodeURIComponent(bundle.bundle_id)}/review`, { approve: true, content_sha256: bundle.content_sha256 });
+        notice('Review recorded against this exact digest. Release still has to be asked for separately.');
+        renderExportPreview({ ...bundle, ...reviewed, state: 'reviewed', items: bundle.items, audience: bundle.audience });
+      } catch (error) { notice(error.message, true); approve.disabled = false; }
+    });
+    panel.append(approve);
+  }
+  if (state === 'reviewed') {
+    const release = node('button', 'Release the reviewed packet', 'danger');
+    release.type = 'button'; release.id = 'export-release';
+    release.addEventListener('click', async () => {
+      if (!window.confirm('Release this reviewed packet? The listed sanitized items will leave this machine.')) return;
+      release.disabled = true;
+      try {
+        await api(`/export/bundles/${encodeURIComponent(bundle.bundle_id)}/release`, {});
+        notice('Released. The digest was recomputed and matched what was reviewed.');
+        renderExportPreview({ ...bundle, state: 'released' });
+      } catch (error) { notice(error.message, true); release.disabled = false; }
+    });
+    panel.append(release);
+  }
+  if (state === 'released') panel.append(node('p', 'Released. Nothing further leaves without a new draft and a new review.', 'muted small'));
+}
+
+$('exportform').addEventListener('submit', async event => {
+  event.preventDefault();
+  const audience = $('export-audience').value.trim();
+  if (!audience || !$('export-consent').checked) return;
+  const documentIds = historyState.results.map(hit => hit.citation.id);
+  if (!documentIds.length) return notice('Search first: an export draft is assembled from the current search results.', true);
+  $('export-draft').disabled = true;
+  try {
+    const draft = await api('/export/bundles', { kind: 'history', scope, audience, document_ids: documentIds });
+    // Ask the server what this draft's exact contents digest to. Nothing leaves on either call.
+    const preview = await api(`/export/bundles/${encodeURIComponent(draft.bundle_id)}/review`, { approve: false });
+    renderExportPreview({ ...draft, ...preview, state: 'draft' });
+    notice('Draft assembled. Nothing has left: review the item list and its digest below.');
+  } catch (error) {
+    notice(error.message, true);
+  } finally {
+    $('export-draft').disabled = false;
+  }
 });
