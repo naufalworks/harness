@@ -1,5 +1,15 @@
 # PROGRESS — journal
 
+## 2026-09-15T18:52:44Z · P17-T04 — bounded live-experiment analysis started
+
+P17-T03 was fast-forwarded into `main` and pushed at `fcf445b`; production remains unchanged.
+P17-T04 is isolated on `task/p17-t04-live-experiments`. This slice will define isolated stale,
+conflict, pollution, and poisoned-memory treatments; enforce request, token, spend, action, and trial
+budgets before dispatch; and summarize paired repeated outcomes with uncertainty and explicit
+unavailable evidence. Verification will use a deterministic local fixture only. It will not call a
+live provider, mutate approved memories or the live project, deploy code, restart services, or
+change access or infrastructure.
+
 ## 2026-09-15T18:48:52Z · P17-T03 — strict replay and divergence reporting completed
 
 Implemented offline, content-addressed strict replay tapes and deterministic reports. A tape is

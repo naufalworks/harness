@@ -1138,7 +1138,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - result-verify: Exact task gate passed with 7 replay-matching tests and the full browser-to-Rust-to-SQLite-to-filesystem E2E/failure-path suite. The full 305-test Rust suite, strict Clippy, formatting, migration chain 001->016, all 16 SQL contracts, API schema and diff checks also passed. This task was not deployed.
 
 ### P17-T04 · Add live treatments, budgets and statistics
-- status: todo
+- status: doing
 - priority: research
 - lane: experiment-live
 - parallel: yes
