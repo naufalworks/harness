@@ -12,7 +12,7 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MIG = ROOT / "migrations"
-CHAIN = ["001_core.sql", "002_recording.sql", "003_agentic.sql", "004_memory_kinds.sql", "005_generation_stream.sql", "006_provenance_edges.sql", "007_privacy_archive.sql", "008_provider_spend.sql", "009_run_cancellation.sql", "010_retention_maintenance.sql", "011_retrieval_receipts.sql", "012_memory_governance.sql", "013_session_workflows.sql"]
+CHAIN = ["001_core.sql", "002_recording.sql", "003_agentic.sql", "004_memory_kinds.sql", "005_generation_stream.sql", "006_provenance_edges.sql", "007_privacy_archive.sql", "008_provider_spend.sql", "009_run_cancellation.sql", "010_retention_maintenance.sql", "011_retrieval_receipts.sql", "012_memory_governance.sql", "013_session_workflows.sql", "014_history_search.sql"]
 VERSIONS = [name.split("_", 1)[0] for name in CHAIN]
 LATEST_VERSION = int(VERSIONS[-1])
 OPEN_CONNECTIONS = []
@@ -31,6 +31,7 @@ EXPECTED_TABLES = {
     11: {"retrieval_receipts", "retrieval_candidates"},
     12: {"memory_branches", "memory_decisions", "memory_feedback"},
     13: set(),
+    14: {"history_documents", "history_privacy_events", "export_bundles", "export_items", "import_receipts", "import_decisions"},
 }
 
 
@@ -319,6 +320,110 @@ def test_010_retention_maintenance_constraints():
             raise AssertionError(f"maintenance constraint was not enforced: {statement}")
 
 
+def test_014_history_search_constraints():
+    """P15-T04. The four invariants migration 014 exists to hold:
+
+    the FTS projection stays in sync through the same three-trigger pattern memory_fts uses;
+    forget and source-delete are different columns with different observable outcomes;
+    the privacy audit is append-only; and an export bundle cannot reach 'released' without a
+    reviewed checksum.
+    """
+    c = fresh()
+    apply(c, len(CHAIN))
+    now = "2026-01-01T00:00:00Z"
+    c.execute("INSERT INTO sessions(id,scope,created_at) VALUES('s1','proj',?)", (now,))
+    c.execute("INSERT INTO messages(id,session_id,role,content,status,created_at) VALUES('m1','s1','user','we chose SQLite for durability','complete',?)", (now,))
+    # Asserted here by name rather than only through EXPECTED_TABLES, which is a subset check:
+    # removing an entry from that dict weakens it silently, while this fails.
+    created = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    missing = {"history_documents", "history_fts", "history_privacy_events", "export_bundles",
+               "export_items", "import_receipts", "import_decisions"} - created
+    assert not missing, f"migration 014 did not create: {missing}"
+    c.execute("INSERT INTO sources(id,scope,name,format,fingerprint,parser_version,content,warnings,created_at) VALUES('src1','proj','notes','jsonl','fp','1','sanitized artifact body','[]',?)", (now,))
+    c.execute(
+        "INSERT INTO history_documents(id,kind,source_id,scope,session_id,revision,role,title,body,sanitizer,content_sha256,source_created_at,indexed_at)"
+        " VALUES('d1','turn','m1','proj','s1',1,'user','user turn','we chose SQLite for durability','harness-sanitize-v1',?,?,?)",
+        ("a" * 64, now, now),
+    )
+    c.execute(
+        "INSERT INTO history_documents(id,kind,source_id,scope,session_id,revision,role,title,body,sanitizer,content_sha256,source_created_at,indexed_at)"
+        " VALUES('d2','artifact','src1','proj',NULL,1,NULL,'notes','sanitized artifact body','harness-sanitize-v1',?,?,?)",
+        ("b" * 64, now, now),
+    )
+    # The FTS projection is populated by the insert trigger, and follows an update.
+    assert c.execute("SELECT count(*) FROM history_fts WHERE history_fts MATCH 'sqlite'").fetchone()[0] == 1
+    c.execute("UPDATE history_documents SET body='we chose Postgres instead' WHERE id='d1'")
+    assert c.execute("SELECT count(*) FROM history_fts WHERE history_fts MATCH 'sqlite'").fetchone()[0] == 0
+    assert c.execute("SELECT count(*) FROM history_fts WHERE history_fts MATCH 'postgres'").fetchone()[0] == 1
+
+    # forget: suppression only. The row, its citation and its body survive.
+    c.execute("UPDATE history_documents SET forgotten_at=? WHERE id='d1'", (now,))
+    c.execute("INSERT INTO history_privacy_events(id,document_id,kind,source_id,action,revision,created_at) VALUES('e1','d1','turn','m1','forget',1,?)", (now,))
+    row = c.execute("SELECT forgotten_at,source_deleted_at,body FROM history_documents WHERE id='d1'").fetchone()
+    assert row[0] == now and row[1] is None and row[2] != "", "forget must not destroy content"
+
+    # source delete: the body must be empty, enforced by CHECK rather than by convention.
+    try:
+        c.execute("UPDATE history_documents SET source_deleted_at=? WHERE id='d2'", (now,))
+    except sqlite3.IntegrityError:
+        pass
+    else:
+        raise AssertionError("a source-deleted document kept its body")
+    c.execute("UPDATE history_documents SET body='',source_deleted_at=? WHERE id='d2'", (now,))
+    c.execute("INSERT INTO history_privacy_events(id,document_id,kind,source_id,action,revision,created_at) VALUES('e2','d2','artifact','src1','delete_source',1,?)", (now,))
+    assert c.execute("SELECT count(*) FROM history_fts WHERE history_fts MATCH 'artifact'").fetchone()[0] == 0
+
+    # Deleting the source row from the source side reaches the same state.
+    c.execute(
+        "INSERT INTO history_documents(id,kind,source_id,scope,session_id,revision,role,title,body,sanitizer,content_sha256,source_created_at,indexed_at)"
+        " VALUES('d3','artifact','src2','proj',NULL,1,NULL,'other','another body','harness-sanitize-v1',?,?,?)",
+        ("c" * 64, now, now),
+    )
+    c.execute("INSERT INTO sources(id,scope,name,format,fingerprint,parser_version,content,warnings,created_at) VALUES('src2','proj','other','jsonl','fp2','1','another body','[]',?)", (now,))
+    c.execute("DELETE FROM sources WHERE id='src2'")
+    row = c.execute("SELECT body,source_deleted_at FROM history_documents WHERE id='d3'").fetchone()
+    assert row[0] == "" and row[1] is not None, "deleting a source must empty its indexed body"
+    assert c.execute("SELECT count(*) FROM history_documents WHERE id='d3'").fetchone()[0] == 1, "the citation must survive a source delete"
+
+    # The audit is append-only in both directions.
+    for statement in ("DELETE FROM history_privacy_events WHERE id='e1'", "UPDATE history_privacy_events SET action='restore' WHERE id='e1'"):
+        try:
+            c.execute(statement)
+        except sqlite3.IntegrityError:
+            pass
+        else:
+            raise AssertionError(f"history privacy audit was mutable: {statement}")
+    assert [r[0] for r in c.execute("SELECT action FROM history_privacy_events ORDER BY seq")] == ["forget", "delete_source"]
+
+    # Export bundles cannot claim a review they do not carry.
+    c.execute("INSERT INTO export_bundles(id,kind,scope,audience,state,format_version,item_count,created_at,updated_at) VALUES('b1','continuation_packet','proj','team','draft',1,1,?,?)", (now, now))
+    for statement, values in (
+        ("UPDATE export_bundles SET state='reviewed' WHERE id='b1'", ()),
+        ("UPDATE export_bundles SET state='released',content_sha256=?,reviewed_at=? WHERE id='b1'", ("d" * 64, now)),
+        ("INSERT INTO export_bundles(id,kind,scope,audience,state,format_version,item_count,created_at,updated_at) VALUES('b2','unknown_kind','proj','team','draft',1,0,?,?)", (now, now)),
+        ("INSERT INTO export_bundles(id,kind,scope,audience,state,format_version,item_count,created_at,updated_at) VALUES('b3','continuation_packet','proj','everyone','draft',1,0,?,?)", (now, now)),
+        ("INSERT INTO export_items(bundle_id,kind,stable_id,revision,payload_json,content_sha256,sanitized,created_at) VALUES('b1','memory','m',0,'{}',?,1,?)", ("e" * 64, now)),
+        ("INSERT INTO import_receipts(id,bundle_id,origin,scope,kind,content_sha256,accepted,unchanged,skipped,created_at) VALUES('r1','b1','o','proj','continuation_packet',?,-1,0,0,?)", ("f" * 64, now)),
+    ):
+        try:
+            c.execute(statement, values)
+        except sqlite3.IntegrityError:
+            pass
+        else:
+            raise AssertionError(f"export/import constraint was not enforced: {statement}")
+    c.execute("UPDATE export_bundles SET state='reviewed',content_sha256=?,reviewed_at=? WHERE id='b1'", ("d" * 64, now))
+    c.execute("UPDATE export_bundles SET state='released',released_at=? WHERE id='b1'", (now,))
+    assert c.execute("SELECT state FROM export_bundles WHERE id='b1'").fetchone()[0] == "released"
+    c.execute("INSERT INTO import_receipts(id,bundle_id,origin,scope,kind,content_sha256,accepted,unchanged,skipped,created_at) VALUES('r1','b1','remote','proj','continuation_packet',?,1,0,0,?)", ("f" * 64, now))
+    c.execute("INSERT INTO import_decisions(receipt_id,kind,stable_id,revision,outcome) VALUES('r1','history','d1',1,'unchanged')")
+    try:
+        c.execute("INSERT INTO import_decisions(receipt_id,kind,stable_id,revision,outcome) VALUES('r1','history','d1',1,'invented')")
+    except sqlite3.IntegrityError:
+        pass
+    else:
+        raise AssertionError("an unknown import outcome was accepted")
+
+
 def main():
     try:
         check_fts5()
@@ -331,6 +436,7 @@ def main():
         test_007_privacy_archive_constraints()
         test_009_run_cancellation_constraints()
         test_010_retention_maintenance_constraints()
+        test_014_history_search_constraints()
         print(
             f"migrations OK: {' -> '.join(VERSIONS)}, "
             f"user_version={LATEST_VERSION}, data/FTS/FKs preserved"
