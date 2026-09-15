@@ -1,5 +1,40 @@
 # PROGRESS — journal
 
+## 2026-09-15T19:28:00Z · P16-T03 — generated coverage metrics untracked, deployed
+
+Autonomous maintenance fix, chosen over the three remaining `todo` tasks. P18-T01, P18-T02 and
+P14-T05b are all Wave I / optional-priority work that `docs/ROADMAP.md` places explicitly outside
+the safe daily-use release boundary, and P18-T01 is gated on an owner-approved design. This defect
+sat inside that boundary instead, under truthful verification: it blocked deployment.
+
+`tests/coverage_eval/metrics.json` was tracked, but the Rust test
+`storage::tests::causal_coverage_metrics_meet_declared_budgets` rewrites it on every run with
+regenerated fixture UUIDs and parent_ids. Any `cargo test` therefore left the working tree dirty and
+`scripts/deploy.sh` refused with `BLOCKED: working tree has 1 uncommitted change(s)`. This was hit
+for real during the P17-T05 integration one commit earlier, where the file had to be restored by
+hand before production promotion could proceed. That is exactly the mistake `bb8f026` fixed for
+`tests/recall_eval/metrics.json` under P15-T01; the same class of file had been reintroduced one
+directory over, so the same remedy and the same recorded reasoning apply.
+
+The file is measured evidence, not source, so it was untracked and added to `.gitignore` rather than
+made deterministic: pinning the UUIDs would have meant fixture data that no longer matches what the
+shipped coverage path actually produces. Verified from both directions: with `metrics.json` deleted,
+`python3 tests/coverage_eval/run.py --check` still fails closed rather than passing vacuously, and
+the declared order `cargo test --locked coverage && python3 tests/coverage_eval/run.py --check`
+regenerates the evidence and passes with the projection identity `causal-neighborhood-v1` intact.
+The proof the defect is gone: the working tree was still clean after a complete
+`scripts/verify_release.sh` run, which was not previously true.
+
+Committed `c87af79`, pushed, and promoted with `scripts/deploy.sh`: pid 643613, release sha256
+`21023326...7ed14fbd`, schema version 16, readiness verified, API answering, non-object body refused
+with 400, provenance `deploy-20260915T192536Z-c87af79`. The post-deploy strict gate passed with 0
+failing checks, including `deployment: live binary matches HEAD (c87af79)` and the 100-task ledger at
+97 done / 3 todo. Coverage, signature, cross-target and public-smoke remain SKIPPED locally and
+CI-owned. No schema change, no database restore, and no access, UpCloud, Cloudflare, DNS, TLS,
+firewall, relay or Tailscale change. The ledger is unchanged because this is a fix to delivered
+P16-T03 work, not a new task; remaining eligible work is still P18-T01, P18-T02 and P14-T05b, all of
+which need an owner decision before they start.
+
 ## 2026-09-15T19:18:46Z · P17-T05 — merged into main and promoted to production
 
 Re-ran the exact P17-T05 gate independently before integration: `python3 scripts/remote_runner.py
