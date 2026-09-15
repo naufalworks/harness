@@ -2612,3 +2612,29 @@ is the one that will need migration `015`. Graph retention and anomaly flags fro
 roadmap paragraph are explicitly *not* in T01 and are not claimed here. The incident UI is
 covered by mocked-browser checks only; there is no Playwright run against the real server for
 the new panels, same limitation the rest of `ui_smoke.cjs` has.
+
+## 2026-09-15 · Deployment of 4cd8ec7 — P16-T01 and P15-T05 live, verified independently
+
+`bash scripts/deploy.sh` exit 0: candidate built from `4cd8ec7`, rollback snapshot taken
+(`.harness/deploy/previous-harness`, `previous.json`), service restarted, identity and readiness
+waited on, API smoked. Then verified again without trusting any of that:
+
+- `systemctl is-active harness harness-relay` → `active`, `active`.
+- `git rev-parse HEAD` = `4cd8ec759a36cdcea1382685d8f85845e448930d`; served `/health` `commit`
+  is the same 40 hex characters.
+- `binary_sha256` served = `1359bb7cd2771863aa20281fae83995ef782c367959a40d61e742d4cc06b9b26`,
+  equal to `sha256sum target/release/harness` *and* to `sha256sum /proc/581480/exe`, so the
+  running image is the artifact that was built, not a stale one that happens to answer.
+- `schema_version` is 14 at the top level and 14 under `database`, matching the unchanged chain
+  end. `ready: true` at both levels, `database.quick_check: ok`, `workers.recording: true`,
+  `workers.extraction: true`, queue and job counters all zero.
+- `http://127.0.0.1:8080/` 200, `http://10.0.0.2:8081/` 200, `https://harness.keizerfps.store/`
+  200. `/health` fetched separately through the relay and through the public LB both report the
+  same commit, the same schema version and `ready: true`, so the whole path serves one build.
+
+No extra DB copy was taken beyond the script's own snapshot, and that is a decision rather than
+an oversight: this release adds no migration. `user_version` is still 14, exactly what the
+previous release ran on, so the schema-aware rollback policy in `docs/ARCHITECTURE.md` can
+auto-restore the previous binary without a schema question — which is precisely the case where
+the extra verified copy P15-T04's deployment took is not needed. `agent-monitor.service` was
+left `active` and untouched.
