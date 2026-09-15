@@ -1151,7 +1151,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - result-verify: Exact task gate passed with 14 experiment-focused tests and `scripts/experiment.py --fixture --check`. The full 309-test Rust suite, strict all-feature Clippy, formatting, Python lint/compile, migration chain 001->016, all 16 SQL contracts, API schema and diff checks also passed. No live provider call or deployment occurred.
 
 ### P17-T05 · Export sanitized research reports and optional remote runs
-- status: todo
+- status: doing
 - priority: research
 - lane: experiment-reporting
 - parallel: yes

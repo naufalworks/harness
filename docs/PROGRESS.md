@@ -1,5 +1,14 @@
 # PROGRESS — journal
 
+## 2026-09-15T19:01:53Z · P17-T05 — sanitized reports and remote guardrails started
+
+Started from merged P17-T04 commit `fd8acb8` on isolated branch
+`task/p17-t05-reports-remote-guardrails`. The implementation will reuse the shared export
+sanitizer and content-addressed review gate for bounded research reports. Remote execution remains
+disabled by default and fixture verification will make no network, provider, infrastructure or
+cloud API call. A future real remote run must require an explicit opt-in plus pinned image, region
+and size, positive TTL and spend cap, a kill switch, sanitized inputs and confirmed cleanup.
+
 ## 2026-09-15T18:58:05Z · P17-T04 — bounded live-experiment analysis completed
 
 Added content-addressed isolated treatments for stale revisions, conflicting memories,
