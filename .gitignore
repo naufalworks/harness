@@ -20,3 +20,4 @@ docs/changes.patch
 docs/INPUTS.json
 reference/source-archives/
 *.bak*
+tests/recall_eval/metrics.json
