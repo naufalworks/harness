@@ -973,7 +973,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 ## P15 · Memory and history
 
 ### P15-T01 · Add optional semantic recall and evaluation
-- status: todo
+- status: doing
 - priority: high
 - lane: memory-retrieval
 - parallel: yes

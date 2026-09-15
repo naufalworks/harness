@@ -1,5 +1,47 @@
 # PROGRESS — journal
 
+## 2026-09-15T05:40:00Z · P15-T01 — doing; and what the task actually still needs
+
+Selected by the ROADMAP rule rather than by my own judgement. P15-T01 is the only eligible
+`high` task: P15-T02 is also `high` but depends on this one, and everything else eligible is
+`medium`. In the previous session I had suggested P16-T01 next because it unblocks P16-T03 and
+P13-T04, which was wrong — P16-T01 is `medium`, and the rule is priority first, `release-blocker`
+second, task ID only as a tiebreak. Unblocking value is not a term in it. Dependency P11-T03 is
+done, so this is eligible now.
+
+Recon before planning, because the task title oversells what is missing:
+
+- `src/embeddings.rs` already exists (109 lines): a signed feature-hashing model, `MODEL =
+  "harness-local-hash-v1"`, `DIMENSIONS = 256`, deterministic, normalized, with `encode`/`decode`/
+  `cosine` and no network or model download.
+- `DbStore::recall` in `src/storage/memories.rs:117` already implements the hybrid: a lexical FTS5
+  top-20 unioned with a vector top-20, reranked on lexical rank, cosine, scope, recency and a
+  usefulness ratio, then truncated to a 6,000-byte ceiling. Vectors are cached in
+  `memory_embeddings` and re-embedded on a content-hash miss.
+- So the "optional local semantic embeddings coexist with deterministic hashing" clause is
+  substantially already met, and is covered by two passing tests.
+
+Baseline evidence: `cargo test --locked recall` -> `2 passed; 0 failed; 246 filtered out`
+(`embeddings::tests::character_features_recall_related_spelling` and
+`storage::tests::hybrid_recall_uses_offline_vectors_shadowing_usefulness_and_budget`).
+
+Two genuine gaps remain:
+
+1. `tests/recall_eval/` does not exist, so the declared verify command
+   `python3 tests/recall_eval/run.py --check` cannot run. This is the standing WARN that
+   `check_docs.py` has been reporting. The clause requires labeled fixtures measuring precision,
+   stale use, latency and context cost.
+2. Nothing is actually *optional*. Grep finds no `HARNESS_*` toggle for embeddings or recall; the
+   feature-hash vectors are always computed. The clause's "before enabling a model" only means
+   something if enabling is a decision the operator can make, and if the measurement gate exists
+   to inform it.
+
+Planned order: build the eval harness first (it is the blocking half and the missing verify
+command), then add the opt-in switch so the measured numbers are what gates enabling. Note that
+`docs/PLAN.md:25` and `docs/ARCHITECTURE.md:123` both promise no embedding API or model download
+and explicitly make no synonym-quality claim; the switch must not quietly break either promise,
+so it will select among local strategies rather than introduce a remote model.
+
 ## 2026-09-15T05:30:00Z · P14-T04b — done; capability detection moved before dispatch
 
 The last open clause was capability detection. Step 1 had already made the tools-unsupported
