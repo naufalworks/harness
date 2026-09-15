@@ -966,6 +966,171 @@ async fn preview_retrieval(
     ))
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GovernanceQuery {
+    #[serde(default = "default_scope")]
+    scope: String,
+}
+/// P15-T03: the governance overview for one scope. The lapse sweep runs first so the branch,
+/// pin and expiry state shown here is the state recall would act on, not a stale snapshot.
+async fn memory_governance(
+    State(h): State<Harness>,
+    Query(q): Query<GovernanceQuery>,
+) -> ApiResult<Json<Value>> {
+    safety::scope(&q.scope).map_err(|_| invalid("Invalid scope"))?;
+    h.store.lapse_expired_memories().await.map_err(db_error)?;
+    Ok(Json(
+        h.store.memory_governance(q.scope).await.map_err(db_error)?,
+    ))
+}
+/// The stored review history of one memory: value revisions, decisions and usefulness verdicts.
+async fn memory_timeline(
+    State(h): State<Harness>,
+    Path(id): Path<String>,
+    Query(q): Query<GovernanceQuery>,
+) -> ApiResult<Json<Value>> {
+    Uuid::parse_str(&id).map_err(|_| invalid("Invalid memory identifier"))?;
+    safety::scope(&q.scope).map_err(|_| invalid("Invalid scope"))?;
+    Ok(Json(
+        h.store
+            .memory_timeline(q.scope, id)
+            .await
+            .map_err(db_error)?
+            .ok_or(ApiError(
+                StatusCode::NOT_FOUND,
+                "Memory not found in this scope",
+            ))?,
+    ))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GovernanceAction {
+    action: String,
+    #[serde(default = "default_scope")]
+    scope: String,
+    #[serde(default)]
+    expires_at: Option<i64>,
+    #[serde(default)]
+    target_id: Option<String>,
+    #[serde(default)]
+    note: Option<String>,
+    #[serde(default)]
+    request_id: Option<String>,
+}
+/// One audited governance act on one memory: pin, unpin, expire, clear_expiry, merge or a
+/// usefulness verdict. Every accepted act writes a revision row, so nothing here is silent.
+async fn govern_memory(
+    State(h): State<Harness>,
+    Path(id): Path<String>,
+    JsonBody(req): JsonBody<GovernanceAction>,
+) -> ApiResult<Json<Value>> {
+    Uuid::parse_str(&id).map_err(|_| invalid("Invalid memory identifier"))?;
+    safety::scope(&req.scope).map_err(|_| invalid("Invalid scope"))?;
+    if let Some(target) = req.target_id.as_deref() {
+        Uuid::parse_str(target).map_err(|_| invalid("Invalid duplicate identifier"))?;
+    }
+    if let Some(request) = req.request_id.as_deref() {
+        Uuid::parse_str(request).map_err(|_| invalid("Invalid request identifier"))?;
+    }
+    if req
+        .note
+        .as_ref()
+        .is_some_and(|note| note.chars().count() > 500 || safety::sensitive(note))
+    {
+        return Err(invalid("Note must be under 500 safe characters"));
+    }
+    // `clear_expiry` is the same audited act as `expire` with no timestamp, so the store keeps
+    // one expiry code path instead of two that can disagree.
+    let (action, expires_at) = match req.action.as_str() {
+        "clear_expiry" => ("expire".to_string(), None),
+        "expire" => {
+            let at = req
+                .expires_at
+                .ok_or_else(|| invalid("Scheduling an expiry needs expires_at"))?;
+            if at <= 0 {
+                return Err(invalid("expires_at must be a positive unix timestamp"));
+            }
+            ("expire".to_string(), Some(at))
+        }
+        other @ ("pin" | "unpin" | "merge" | "useful" | "not_useful") => (other.to_string(), None),
+        _ => return Err(invalid("Unsupported governance action")),
+    };
+    match h
+        .store
+        .govern_memory(
+            req.scope,
+            id,
+            action,
+            expires_at,
+            req.target_id,
+            req.note,
+            req.request_id,
+        )
+        .await
+        .map_err(db_error)?
+        .as_str()
+    {
+        "not_found" => Err(ApiError(
+            StatusCode::NOT_FOUND,
+            "Memory not found in this scope",
+        )),
+        "target_not_found" => Err(ApiError(
+            StatusCode::NOT_FOUND,
+            "Duplicate memory not found in this scope",
+        )),
+        "not_active" | "same_memory" | "missing_target" | "duplicate_feedback" => Err(ApiError(
+            StatusCode::CONFLICT,
+            "This memory cannot take that governance action; reload the panel",
+        )),
+        "unsupported_action" => Err(invalid("Unsupported governance action")),
+        outcome => Ok(Json(json!({"status":outcome}))),
+    }
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BranchRequest {
+    branch: String,
+    #[serde(default = "default_scope")]
+    scope: String,
+    #[serde(default)]
+    note: Option<String>,
+    #[serde(default)]
+    activate: bool,
+}
+/// Create and/or check out a memory branch. Approvals then land on that branch, so a value can
+/// be revised under review without overwriting the reviewed one on 'main'.
+async fn checkout_memory_branch(
+    State(h): State<Harness>,
+    JsonBody(req): JsonBody<BranchRequest>,
+) -> ApiResult<Json<Value>> {
+    safety::scope(&req.scope).map_err(|_| invalid("Invalid scope"))?;
+    let branch = req.branch.trim().to_string();
+    if branch.is_empty()
+        || branch.chars().count() > 60
+        || !branch
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+    {
+        return Err(invalid(
+            "Branch names use 1–60 characters from a-z, 0-9, dot, dash or underscore",
+        ));
+    }
+    if req
+        .note
+        .as_ref()
+        .is_some_and(|note| note.chars().count() > 500 || safety::sensitive(note))
+    {
+        return Err(invalid("Note must be under 500 safe characters"));
+    }
+    Ok(Json(
+        h.store
+            .checkout_memory_branch(req.scope, branch, req.note, req.activate)
+            .await
+            .map_err(db_error)?,
+    ))
+}
+
 pub(crate) fn router(state: Harness) -> Router {
     let api = Router::new()
         .route("/chat", post(chat))
@@ -1005,6 +1170,10 @@ pub(crate) fn router(state: Harness) -> Router {
         .route("/chat/requests/{id}/provenance", get(request_provenance))
         .route("/chat/requests/{id}/retrieval", get(request_retrieval))
         .route("/memory/retrieval/preview", post(preview_retrieval))
+        .route("/memory/governance", get(memory_governance))
+        .route("/memory/entries/{id}/timeline", get(memory_timeline))
+        .route("/memory/entries/{id}/governance", post(govern_memory))
+        .route("/memory/branches", post(checkout_memory_branch))
         .route(
             "/sources/{id}/archive",
             post(archive_source).layer(DefaultBodyLimit::max(2 * 1024 * 1024)),

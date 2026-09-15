@@ -431,3 +431,292 @@ async fn context_retrieval_preview_rehearses_without_writing() {
     assert_eq!(plain["rehearsed"], false);
     assert!(plain["added"].as_array().unwrap().is_empty());
 }
+
+/// P15-T03: a review branch must shadow 'main' for the same key without overwriting it, and a
+/// lapsed temporary memory must stop being recalled while its value is retained.
+#[tokio::test]
+async fn governance_branches_and_expiry_gate_recall_without_deleting_history() {
+    let db = DbStore::init(":memory:").unwrap();
+    let reviewed = db
+        .save_compaction_candidate(
+            "global".into(),
+            "req".into(),
+            "step".into(),
+            "The operator prefers Rust for systems work".into(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        db.resolve(reviewed, "global".into(), true).await.unwrap(),
+        "approved"
+    );
+    let recall_values = || async {
+        db.recall_explained(
+            "global".into(),
+            "systems work".into(),
+            crate::embeddings::Strategy::Hybrid,
+        )
+        .await
+        .unwrap()
+        .0
+        .into_iter()
+        .map(|m| m.value)
+        .collect::<Vec<_>>()
+    };
+    assert_eq!(recall_values().await.len(), 1);
+
+    let checkout = db
+        .checkout_memory_branch(
+            "global".into(),
+            "review".into(),
+            Some("trialling a revision".into()),
+            true,
+        )
+        .await
+        .unwrap();
+    assert_eq!(checkout["active_branch"], "review");
+    let trial = db
+        .save_compaction_candidate(
+            "global".into(),
+            "req2".into(),
+            "step2".into(),
+            "The operator prefers Go for systems work".into(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        db.resolve(trial, "global".into(), true).await.unwrap(),
+        "approved"
+    );
+    // Both values are stored, but only the branch value is recalled while it is checked out.
+    let recalled = recall_values().await;
+    assert_eq!(recalled.len(), 1);
+    assert!(recalled[0].contains("Go"));
+
+    let overview = db.memory_governance("global".into()).await.unwrap();
+    assert_eq!(overview["active_branch"], "review");
+    assert_eq!(overview["entries"].as_array().unwrap().len(), 2);
+    let branch_entry = overview["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["branch"] == "review")
+        .unwrap()
+        .clone();
+    let branch_id = branch_entry["id"].as_str().unwrap().to_string();
+
+    // A temporary memory whose clock has passed stops being recalled, and the sweep records why.
+    assert_eq!(
+        db.govern_memory(
+            "global".into(),
+            branch_id.clone(),
+            "expire".into(),
+            Some(chrono::Utc::now().timestamp() - 10),
+            None,
+            None,
+            None
+        )
+        .await
+        .unwrap(),
+        "expiry_scheduled"
+    );
+    let lapsed = recall_values().await;
+    assert_eq!(lapsed.len(), 1);
+    assert!(lapsed[0].contains("Rust"));
+    assert_eq!(db.lapse_expired_memories().await.unwrap(), 1);
+    assert_eq!(db.lapse_expired_memories().await.unwrap(), 0);
+    let timeline = db
+        .memory_timeline("global".into(), branch_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(timeline["status"], "expired");
+    assert_eq!(
+        timeline["value"],
+        "The operator prefers Go for systems work"
+    );
+    assert!(timeline["revisions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|row| row["action"] == "expire" && row["detail"] == "lapsed"));
+    assert!(timeline["decisions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|row| row["reason"] == "expired"));
+}
+
+/// P15-T03: pinning, duplicate merges and usefulness verdicts are owner acts, so each one has to
+/// leave an audited trail and a rejected value has to stay on the timeline as considered.
+#[tokio::test]
+async fn governance_pins_merges_and_feedback_are_recorded_as_history() {
+    let db = DbStore::init(":memory:").unwrap();
+    let kept = db
+        .save_compaction_candidate(
+            "global".into(),
+            "req".into(),
+            "step".into(),
+            "The operator prefers Rust for systems work".into(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        db.resolve(kept, "global".into(), true).await.unwrap(),
+        "approved"
+    );
+    let turned_down = db
+        .save_compaction_candidate(
+            "global".into(),
+            "req2".into(),
+            "step2".into(),
+            "The operator prefers Perl for systems work".into(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        db.resolve(turned_down, "global".into(), false)
+            .await
+            .unwrap(),
+        "rejected"
+    );
+    // A duplicate of the kept value, sharing its dedup key, so the overview can suggest a merge.
+    db.run(|c| {
+        c.execute("INSERT INTO memories(id,scope,key,value,branch,category,status,revision,candidate_id,created_at,updated_at) SELECT 'duplicate-row',scope,'turn_summary_copy',value,branch,category,'active',1,candidate_id,created_at,updated_at FROM memories WHERE key='turn_summary'",[])?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+
+    let overview = db.memory_governance("global".into()).await.unwrap();
+    assert_eq!(
+        overview["duplicate_suggestions"].as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(overview["duplicate_suggestions"][0]["count"], 2);
+    let keeper = overview["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["key"] == "turn_summary")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    assert_eq!(
+        db.govern_memory(
+            "global".into(),
+            keeper.clone(),
+            "merge".into(),
+            None,
+            Some("duplicate-row".into()),
+            None,
+            None
+        )
+        .await
+        .unwrap(),
+        "merged"
+    );
+    assert_eq!(
+        db.govern_memory(
+            "global".into(),
+            keeper.clone(),
+            "pin".into(),
+            None,
+            None,
+            Some("owner asked for this to always be present".into()),
+            None
+        )
+        .await
+        .unwrap(),
+        "pin"
+    );
+    assert_eq!(
+        db.govern_memory(
+            "global".into(),
+            keeper.clone(),
+            "useful".into(),
+            None,
+            None,
+            None,
+            None
+        )
+        .await
+        .unwrap(),
+        "recorded"
+    );
+    // The same verdict for the same revision is not counted twice.
+    assert_eq!(
+        db.govern_memory(
+            "global".into(),
+            keeper.clone(),
+            "useful".into(),
+            None,
+            None,
+            None,
+            None
+        )
+        .await
+        .unwrap(),
+        "duplicate_feedback"
+    );
+    assert_eq!(
+        db.govern_memory(
+            "global".into(),
+            "missing".into(),
+            "pin".into(),
+            None,
+            None,
+            None,
+            None
+        )
+        .await
+        .unwrap(),
+        "not_found"
+    );
+
+    let after = db.memory_governance("global".into()).await.unwrap();
+    assert_eq!(after["pinned"].as_array().unwrap().len(), 1);
+    assert!(after["duplicate_suggestions"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let absorbed = after["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == "duplicate-row")
+        .unwrap()
+        .clone();
+    // The absorbed row is retained as superseded rather than deleted.
+    assert_eq!(absorbed["status"], "superseded");
+
+    let timeline = db
+        .memory_timeline("global".into(), keeper)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(timeline["pinned"], true);
+    let actions = timeline["revisions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["action"].as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    assert!(actions.contains(&"approve".to_string()));
+    assert!(actions.contains(&"merge".to_string()));
+    assert!(actions.contains(&"pin".to_string()));
+    assert_eq!(timeline["feedback"].as_array().unwrap().len(), 1);
+    assert_eq!(timeline["feedback"][0]["verdict"], "useful");
+    let decisions = timeline["decisions"].as_array().unwrap();
+    assert!(decisions
+        .iter()
+        .any(|row| row["state"] == "chosen" && row["reason"] == "approved"));
+    assert!(decisions
+        .iter()
+        .any(|row| row["state"] == "considered" && row["reason"] == "rejected"));
+    assert!(decisions
+        .iter()
+        .any(|row| row["reason"] == "duplicate_merged"));
+}

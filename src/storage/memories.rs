@@ -33,6 +33,39 @@ pub(crate) fn strategy_label(strategy: crate::embeddings::Strategy) -> &'static 
     }
 }
 
+/// The branch checked out for this scope. No row means 'main', so a scope that has never used
+/// branching keeps behaving exactly as it did before P15-T03.
+pub(crate) fn active_branch(c: &rusqlite::Connection, scope: &str) -> Result<String> {
+    Ok(c.query_row(
+        "SELECT branch FROM memory_branches WHERE scope=?1 AND active=1",
+        [scope],
+        |r| r.get::<_, String>(0),
+    )
+    .optional()?
+    .unwrap_or_else(|| "main".to_string()))
+}
+
+/// The decision group for one (scope, key, branch). Deriving it keeps `memories.conflict_group`
+/// and `memory_decisions.group_id` the same concept instead of two that can disagree.
+pub(crate) fn decision_group(scope: &str, key: &str, branch: &str) -> String {
+    format!("{scope}\u{1f}{key}\u{1f}{branch}")
+}
+
+/// One memory row as the timeline reads it: key, value, branch, status, revision, pinned,
+/// expires_at, conflict group, created_at, updated_at.
+type GovernedMemory = (
+    String,
+    String,
+    String,
+    String,
+    i64,
+    i64,
+    Option<i64>,
+    Option<String>,
+    String,
+    String,
+);
+
 /// True when neither retrieval arm can admit anything, so recall must return nothing rather
 /// than fall through to a full scan.
 fn no_arm_can_match(
@@ -62,32 +95,42 @@ pub(crate) fn rank_in_tx(
     if no_arm_can_match(&fts, &query_vector, strategy) {
         return Ok((Vec::new(), Vec::new()));
     }
+    // P15-T03: recall reads the checked-out branch plus 'main', drops a 'main' row that the
+    // branch shadows for the same key, and refuses lapsed temporary memories by clock rather
+    // than by waiting for the expiry sweep to have run.
+    let branch = active_branch(tx, scope)?;
+    let now_unix = Utc::now().timestamp();
     struct Row {
         memory: Recall,
         updated_at: String,
+        pinned: bool,
         vector: Vec<f32>,
         recall_count: i64,
         useful_count: i64,
     }
     let raw = {
-        let mut stmt = tx.prepare("SELECT m.id,m.scope,m.key,m.value,m.revision,c.evidence,m.updated_at,e.dimensions,e.vector,e.content_hash,COALESCE(e.recall_count,0),COALESCE(e.useful_count,0) FROM memories m JOIN candidates c ON c.id=m.candidate_id LEFT JOIN memory_embeddings e ON e.memory_id=m.id AND e.model=?1 WHERE m.status='active' AND (m.scope=?2 OR m.scope='global') AND (m.scope=?2 OR NOT EXISTS(SELECT 1 FROM memories p WHERE p.scope=?2 AND p.key=m.key AND p.status='active')) ORDER BY m.id LIMIT 10000")?;
+        let mut stmt = tx.prepare("SELECT m.id,m.scope,m.key,m.value,m.revision,c.evidence,m.updated_at,m.pinned,e.dimensions,e.vector,e.content_hash,COALESCE(e.recall_count,0),COALESCE(e.useful_count,0) FROM memories m JOIN candidates c ON c.id=m.candidate_id LEFT JOIN memory_embeddings e ON e.memory_id=m.id AND e.model=?1 WHERE m.status='active' AND m.branch IN ('main',?3) AND (m.expires_at IS NULL OR m.expires_at>?4) AND NOT EXISTS(SELECT 1 FROM memories b WHERE b.scope=m.scope AND b.key=m.key AND b.branch=?3 AND b.status='active' AND (b.expires_at IS NULL OR b.expires_at>?4) AND m.branch<>?3) AND (m.scope=?2 OR m.scope='global') AND (m.scope=?2 OR NOT EXISTS(SELECT 1 FROM memories p WHERE p.scope=?2 AND p.key=m.key AND p.status='active' AND p.branch IN ('main',?3))) ORDER BY m.id LIMIT 10000")?;
         let collected = stmt
-            .query_map(params![crate::embeddings::MODEL, scope], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
-                    r.get::<_, String>(3)?,
-                    r.get::<_, i64>(4)?,
-                    r.get::<_, String>(5)?,
-                    r.get::<_, String>(6)?,
-                    r.get::<_, Option<i64>>(7)?,
-                    r.get::<_, Option<Vec<u8>>>(8)?,
-                    r.get::<_, Option<String>>(9)?,
-                    r.get::<_, i64>(10)?,
-                    r.get::<_, i64>(11)?,
-                ))
-            })?
+            .query_map(
+                params![crate::embeddings::MODEL, scope, branch, now_unix],
+                |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, String>(3)?,
+                        r.get::<_, i64>(4)?,
+                        r.get::<_, String>(5)?,
+                        r.get::<_, String>(6)?,
+                        r.get::<_, i64>(7)?,
+                        r.get::<_, Option<i64>>(8)?,
+                        r.get::<_, Option<Vec<u8>>>(9)?,
+                        r.get::<_, Option<String>>(10)?,
+                        r.get::<_, i64>(11)?,
+                        r.get::<_, i64>(12)?,
+                    ))
+                },
+            )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         collected
     };
@@ -100,6 +143,7 @@ pub(crate) fn rank_in_tx(
         revision,
         evidence,
         updated_at,
+        pinned,
         dimensions,
         blob,
         stored_hash,
@@ -140,6 +184,7 @@ pub(crate) fn rank_in_tx(
                 evidence: serde_json::from_str(&evidence).unwrap_or(Value::Null),
             },
             updated_at,
+            pinned: pinned != 0,
             vector,
             recall_count,
             useful_count,
@@ -148,9 +193,11 @@ pub(crate) fn rank_in_tx(
 
     let mut lexical = HashMap::<String, usize>::new();
     if !fts.is_empty() {
-        let mut stmt = tx.prepare("SELECT m.id FROM memory_fts JOIN memories m ON m.rowid=memory_fts.rowid WHERE memory_fts MATCH ?1 AND m.status='active' AND (m.scope=?2 OR m.scope='global') AND (m.scope=?2 OR NOT EXISTS(SELECT 1 FROM memories p WHERE p.scope=?2 AND p.key=m.key AND p.status='active')) ORDER BY bm25(memory_fts),m.updated_at DESC LIMIT 20")?;
+        let mut stmt = tx.prepare("SELECT m.id FROM memory_fts JOIN memories m ON m.rowid=memory_fts.rowid WHERE memory_fts MATCH ?1 AND m.status='active' AND m.branch IN ('main',?3) AND (m.expires_at IS NULL OR m.expires_at>?4) AND NOT EXISTS(SELECT 1 FROM memories b WHERE b.scope=m.scope AND b.key=m.key AND b.branch=?3 AND b.status='active' AND (b.expires_at IS NULL OR b.expires_at>?4) AND m.branch<>?3) AND (m.scope=?2 OR m.scope='global') AND (m.scope=?2 OR NOT EXISTS(SELECT 1 FROM memories p WHERE p.scope=?2 AND p.key=m.key AND p.status='active' AND p.branch IN ('main',?3))) ORDER BY bm25(memory_fts),m.updated_at DESC LIMIT 20")?;
         for (rank, id) in stmt
-            .query_map(params![fts, scope], |r| r.get::<_, String>(0))?
+            .query_map(params![fts, scope, branch, now_unix], |r| {
+                r.get::<_, String>(0)
+            })?
             .enumerate()
         {
             lexical.insert(id?, rank);
@@ -223,9 +270,13 @@ pub(crate) fn rank_in_tx(
             )
         })
         .collect::<Vec<_>>();
+    // Pinned profile entries sort ahead of the scored order and survive the rank cutoff. That
+    // is an eligibility rule, not a hidden score: `total_score` in the receipt must stay the sum
+    // of the parts printed beside it.
     ranked.sort_by(|a, b| {
-        b.0.total
-            .total_cmp(&a.0.total)
+        b.1.pinned
+            .cmp(&a.1.pinned)
+            .then_with(|| b.0.total.total_cmp(&a.0.total))
             .then_with(|| b.1.updated_at.cmp(&a.1.updated_at))
             .then_with(|| a.1.memory.id.cmp(&b.1.memory.id))
     });
@@ -236,10 +287,14 @@ pub(crate) fn rank_in_tx(
         let size = serde_json::to_vec(&row.memory)?.len();
         // Order matters: the rank cutoff is decided before the payload ceiling, which is the
         // order recall itself applies them.
-        let (decision, reason) = if index >= RECALL_RANK_LIMIT {
+        let (decision, reason) = if index >= RECALL_RANK_LIMIT && !row.pinned {
             ("excluded", "rank_cutoff")
         } else if bytes + size > RECALL_BYTE_CEILING {
+            // The byte ceiling still binds a pinned entry. A pin decides priority, not that the
+            // context budget may be exceeded.
             ("excluded", "payload_ceiling")
+        } else if row.pinned {
+            ("included", "pinned_profile")
         } else {
             ("included", "ranked_and_fit")
         };
@@ -275,6 +330,13 @@ pub(crate) fn rank_in_tx(
 
 /// The approval write itself, shared by `resolve` and by the rehearsal preview. The preview runs
 /// it inside a transaction it then rolls back, so the preview cannot approve anything.
+///
+/// P15-T03: an approval lands on the scope's checked-out branch, so reviewing on a branch never
+/// overwrites the value on 'main'. It also writes the decision timeline: the newly chosen value,
+/// and the value it replaced kept beside it as superseded rather than erased.
+// Every parameter here is one column of the approval write, and each one is read by name inside
+// the function; bundling them into a struct would only move the same list one level away.
+#[allow(clippy::too_many_arguments)]
 fn apply_candidate(
     tx: &Transaction<'_>,
     id: &str,
@@ -283,12 +345,13 @@ fn apply_candidate(
     value: &str,
     category: &str,
     expected: i64,
+    branch: &str,
 ) -> Result<&'static str> {
     safety::validate_fact(key, value, category)?;
     let current: Option<(String, i64, String)> = tx
         .query_row(
-            "SELECT id,revision,value FROM memories WHERE scope=?1 AND key=?2",
-            params![scope, key],
+            "SELECT id,revision,value FROM memories WHERE scope=?1 AND key=?2 AND branch=?3",
+            params![scope, key, branch],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .optional()?;
@@ -302,8 +365,27 @@ fn apply_candidate(
     let memory_id = current.as_ref().map(|m| m.0.clone()).unwrap_or_else(uid);
     let old = current.map(|m| m.2);
     let stamp = now();
-    tx.execute("INSERT INTO memories(id,scope,key,value,category,status,revision,candidate_id,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,'active',?6,?7,?8,?8) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value,category=excluded.category,status='active',revision=excluded.revision,candidate_id=excluded.candidate_id,updated_at=excluded.updated_at",params![memory_id,scope,key,value,category,expected+1,id,stamp])?;
+    let group = decision_group(scope, key, branch);
+    tx.execute("INSERT INTO memories(id,scope,key,value,branch,category,status,revision,candidate_id,conflict_group,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,'active',?7,?8,?9,?10,?10) ON CONFLICT(scope,key,branch) DO UPDATE SET value=excluded.value,category=excluded.category,status='active',revision=excluded.revision,candidate_id=excluded.candidate_id,conflict_group=excluded.conflict_group,updated_at=excluded.updated_at",params![memory_id,scope,key,value,branch,category,expected+1,id,group,stamp])?;
     tx.execute("INSERT INTO memory_revisions(id,memory_id,revision,action,old_value,new_value,candidate_id,created_at) VALUES(?1,?2,?3,'approve',?4,?5,?6,?7)",params![uid(),memory_id,expected+1,old,value,id,stamp])?;
+    // A memory approved before this table existed has no timeline yet. Record the value being
+    // replaced once, so a timeline never opens by implying the current value was always chosen.
+    if let Some(previous) = &old {
+        let seen: Option<i64> = tx
+            .query_row(
+                "SELECT 1 FROM memory_decisions WHERE group_id=?1 LIMIT 1",
+                [&group],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if seen.is_none() {
+            tx.execute("INSERT INTO memory_decisions(id,group_id,scope,key,branch,memory_id,candidate_id,value,state,reason,revision,decided_at) VALUES(?1,?2,?3,?4,?5,?6,NULL,?7,'superseded','replaced_by_newer',?8,?9)",
+                params![uid(),group,scope,key,branch,memory_id,previous,expected,stamp])?;
+        }
+    }
+    tx.execute("UPDATE memory_decisions SET state='superseded',reason='replaced_by_newer' WHERE group_id=?1 AND state='chosen'",[&group])?;
+    tx.execute("INSERT INTO memory_decisions(id,group_id,scope,key,branch,memory_id,candidate_id,value,state,reason,revision,decided_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'chosen','approved',?9,?10)",
+        params![uid(),group,scope,key,branch,memory_id,id,value,expected+1,stamp])?;
     tx.execute(
         "UPDATE candidates SET status='approved',resolved_at=?1 WHERE id=?2 AND status='pending'",
         params![stamp, id],
@@ -329,7 +411,10 @@ impl DbStore {
             let stamp=now();
             tx.execute("INSERT INTO sources(id,scope,name,format,fingerprint,parser_version,content,warnings,created_at) VALUES(?1,?2,?3,'compaction',?4,'turn-compaction-v1',?5,'[]',?6) ON CONFLICT(id) DO NOTHING",
                 params![source_id,scope,format!("Turn compaction {request}"),fingerprint,summary,stamp])?;
-            let revision:i64=tx.query_row("SELECT revision FROM memories WHERE scope=?1 AND key='turn_summary'",[&scope],|r|r.get(0)).optional()?.unwrap_or(0);
+            // The expected revision is per branch: a candidate raised while a review branch is
+            // checked out must be compared against that branch's row, not against 'main'.
+            let branch=active_branch(&tx,&scope)?;
+            let revision:i64=tx.query_row("SELECT revision FROM memories WHERE scope=?1 AND key='turn_summary' AND branch=?2",params![scope,branch],|r|r.get(0)).optional()?.unwrap_or(0);
             let candidate=uid();
             let evidence=json!({"source_id":source_id,"request_id":request,"step_id":step,"kind":"compaction","quote":summary});
             tx.execute("INSERT INTO candidates(id,scope,key,value,category,source_id,evidence,expected_revision,status,created_at,expires_at) VALUES(?1,?2,'turn_summary',?3,'episodic',?4,?5,?6,'pending',?7,?8)",
@@ -398,8 +483,17 @@ impl DbStore {
             let Some((key,value,category,expected,status,expiry))=row else{return Ok("not_found".into())};
             if status!="pending" {return Ok("already_resolved".into());}
             if expiry<=Utc::now().timestamp(){tx.execute("UPDATE candidates SET status='expired',resolved_at=?1 WHERE id=?2",params![now(),id])?;tx.commit()?;return Ok("expired".into());}
-            if !confirm {tx.execute("UPDATE candidates SET status='rejected',resolved_at=?1 WHERE id=?2 AND status='pending'",params![now(),id])?;tx.commit()?;return Ok("rejected".into());}
-            let outcome=apply_candidate(&tx,&id,&scope,&key,&value,&category,expected)?;
+            let branch=active_branch(&tx,&scope)?;
+            if !confirm {
+                let stamp=now();
+                tx.execute("UPDATE candidates SET status='rejected',resolved_at=?1 WHERE id=?2 AND status='pending'",params![stamp,id])?;
+                // A rejected value stays on the timeline as considered, so the record shows what
+                // was turned down instead of only what was kept.
+                tx.execute("INSERT INTO memory_decisions(id,group_id,scope,key,branch,memory_id,candidate_id,value,state,reason,revision,decided_at) VALUES(?1,?2,?3,?4,?5,NULL,?6,?7,'considered','rejected',?8,?9)",
+                    params![uid(),decision_group(&scope,&key,&branch),scope,key,branch,id,value,expected,stamp])?;
+                tx.commit()?;return Ok("rejected".into());
+            }
+            let outcome=apply_candidate(&tx,&id,&scope,&key,&value,&category,expected,&branch)?;
             tx.commit()?;Ok(outcome.into())
         }).await
     }
@@ -475,7 +569,10 @@ impl DbStore {
                     Some((_, _, _, _, status, _)) if status != "pending" => "already_resolved",
                     Some((_, _, _, _, _, expiry)) if expiry <= Utc::now().timestamp() => "expired",
                     Some((key, value, category, expected, _, _)) => {
-                        apply_candidate(&tx, id, &scope, &key, &value, &category, expected)?
+                        let branch = active_branch(&tx, &scope)?;
+                        apply_candidate(
+                            &tx, id, &scope, &key, &value, &category, expected, &branch,
+                        )?
                     }
                 };
             }
@@ -590,6 +687,306 @@ impl DbStore {
                 "candidates":rows,
                 "note":"Recorded retrieval evidence for this turn: which memories were ranked, which were sent and why the rest were not. It is not a claim about how the model used them."
             })))
+        })
+        .await
+    }
+
+    /// P15-T03: everything a reviewer needs to govern one scope — branches, pinned and temporary
+    /// entries, conflict groups and duplicate suggestions. Read-only: duplicates are reported as
+    /// suggestions because SQLite `lower()` is ASCII-only, so an automatic merge would be a guess.
+    pub async fn memory_governance(&self, scope: String) -> Result<Value> {
+        self.read(move |c| {
+            let active = active_branch(c, &scope)?;
+            let mut stmt = c.prepare("SELECT m.id,m.key,m.value,m.branch,m.category,m.status,m.revision,m.pinned,m.expires_at,m.conflict_group,m.updated_at,COALESCE(e.recall_count,0),(SELECT count(*) FROM memory_feedback f WHERE f.memory_id=m.id AND f.verdict='useful'),(SELECT count(*) FROM memory_feedback f WHERE f.memory_id=m.id AND f.verdict='not_useful') FROM memories m LEFT JOIN memory_embeddings e ON e.memory_id=m.id WHERE m.scope=?1 ORDER BY m.pinned DESC,m.key,m.branch LIMIT 500")?;
+            let entries = stmt
+                .query_map([&scope], |r| {
+                    Ok(json!({
+                        "id":r.get::<_,String>(0)?,"key":r.get::<_,String>(1)?,"value":r.get::<_,String>(2)?,
+                        "branch":r.get::<_,String>(3)?,"category":r.get::<_,String>(4)?,"status":r.get::<_,String>(5)?,
+                        "revision":r.get::<_,i64>(6)?,"pinned":r.get::<_,i64>(7)?==1,"expires_at":r.get::<_,Option<i64>>(8)?,
+                        "conflict_group":r.get::<_,Option<String>>(9)?,"updated_at":r.get::<_,String>(10)?,
+                        "recall_count":r.get::<_,i64>(11)?,"useful":r.get::<_,i64>(12)?,"not_useful":r.get::<_,i64>(13)?}))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let mut branches = vec![json!({"branch":"main","active":active=="main","note":"reviewed default","created_at":Value::Null})];
+            let mut stmt = c.prepare("SELECT branch,active,note,created_at FROM memory_branches WHERE scope=?1 ORDER BY branch LIMIT 100")?;
+            for row in stmt.query_map([&scope], |r| {
+                Ok(json!({"branch":r.get::<_,String>(0)?,"active":r.get::<_,i64>(1)?==1,"note":r.get::<_,Option<String>>(2)?,"created_at":r.get::<_,String>(3)?}))
+            })? {
+                branches.push(row?);
+            }
+            let mut stmt = c.prepare("SELECT dedup_key,count(*),group_concat(id,' '),group_concat(key,' ') FROM memories WHERE scope=?1 AND status='active' GROUP BY dedup_key HAVING count(*)>1 ORDER BY count(*) DESC LIMIT 50")?;
+            let duplicates = stmt
+                .query_map([&scope], |r| {
+                    Ok(json!({
+                        "dedup_key":r.get::<_,String>(0)?,
+                        "count":r.get::<_,i64>(1)?,
+                        "memory_ids":r.get::<_,String>(2)?.split(' ').map(str::to_string).collect::<Vec<_>>(),
+                        "keys":r.get::<_,String>(3)?.split(' ').map(str::to_string).collect::<Vec<_>>()}))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let temporary = entries
+                .iter()
+                .filter(|row| !row["expires_at"].is_null())
+                .cloned()
+                .collect::<Vec<_>>();
+            let pinned = entries
+                .iter()
+                .filter(|row| row["pinned"] == json!(true))
+                .cloned()
+                .collect::<Vec<_>>();
+            Ok(json!({
+                "format_version":1,
+                "scope":scope,
+                "active_branch":active,
+                "branches":branches,
+                "entries":entries,
+                "pinned":pinned,
+                "temporary":temporary,
+                "duplicate_suggestions":duplicates,
+                "note":"Stored governance state for this scope. Duplicate groups are suggestions for review, never merged automatically."
+            }))
+        })
+        .await
+    }
+
+    /// The review history of one memory: value revisions, the decisions around them and the
+    /// usefulness verdicts recorded against each revision, all as stored.
+    pub async fn memory_timeline(&self, scope: String, memory_id: String) -> Result<Option<Value>> {
+        self.read(move |c| {
+            let head: Option<GovernedMemory> = c
+                .query_row("SELECT key,value,branch,status,revision,pinned,expires_at,conflict_group,created_at,updated_at FROM memories WHERE id=?1 AND scope=?2",
+                    params![memory_id, scope],
+                    |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?,r.get(9)?)))
+                .optional()?;
+            let Some((key,value,branch,status,revision,pinned,expires_at,conflict_group,created_at,updated_at)) = head else {
+                return Ok(None);
+            };
+            let group = conflict_group
+                .clone()
+                .unwrap_or_else(|| decision_group(&scope, &key, &branch));
+            let mut stmt = c.prepare("SELECT revision,action,old_value,new_value,detail,created_at FROM memory_revisions WHERE memory_id=?1 ORDER BY created_at,revision LIMIT 500")?;
+            let revisions = stmt
+                .query_map([&memory_id], |r| {
+                    Ok(json!({"revision":r.get::<_,i64>(0)?,"action":r.get::<_,String>(1)?,"old_value":r.get::<_,Option<String>>(2)?,
+                        "new_value":r.get::<_,String>(3)?,"detail":r.get::<_,Option<String>>(4)?,"created_at":r.get::<_,String>(5)?}))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let mut stmt = c.prepare("SELECT value,state,reason,revision,branch,decided_at FROM memory_decisions WHERE group_id=?1 ORDER BY decided_at,id LIMIT 500")?;
+            let decisions = stmt
+                .query_map([&group], |r| {
+                    Ok(json!({"value":r.get::<_,String>(0)?,"state":r.get::<_,String>(1)?,"reason":r.get::<_,String>(2)?,
+                        "revision":r.get::<_,i64>(3)?,"branch":r.get::<_,String>(4)?,"decided_at":r.get::<_,String>(5)?}))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let mut stmt = c.prepare("SELECT revision,verdict,request_id,note,created_at FROM memory_feedback WHERE memory_id=?1 ORDER BY created_at LIMIT 500")?;
+            let feedback = stmt
+                .query_map([&memory_id], |r| {
+                    Ok(json!({"revision":r.get::<_,i64>(0)?,"verdict":r.get::<_,String>(1)?,"request_id":r.get::<_,Option<String>>(2)?,
+                        "note":r.get::<_,Option<String>>(3)?,"created_at":r.get::<_,String>(4)?}))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(Some(json!({
+                "format_version":1,
+                "id":memory_id,
+                "scope":scope,
+                "key":key,
+                "value":value,
+                "branch":branch,
+                "status":status,
+                "revision":revision,
+                "pinned":pinned==1,
+                "expires_at":expires_at,
+                "conflict_group":group,
+                "created_at":created_at,
+                "updated_at":updated_at,
+                "revisions":revisions,
+                "decisions":decisions,
+                "feedback":feedback,
+                "note":"Stored review history for this memory. Superseded and expired values are retained, not deleted."
+            })))
+        })
+        .await
+    }
+
+    /// One audited governance act on one memory. Every arm writes a `memory_revisions` row, so a
+    /// pin, an expiry, a merge or a usefulness verdict is recoverable history rather than a silent
+    /// state change.
+    // The optional arguments are the per-action inputs (expiry clock, merge target, note, request
+    // id). They stay explicit so a caller cannot silently omit the one its action needs.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn govern_memory(
+        &self,
+        scope: String,
+        memory_id: String,
+        action: String,
+        expires_at: Option<i64>,
+        target: Option<String>,
+        note: Option<String>,
+        request: Option<String>,
+    ) -> Result<String> {
+        self.run(move |c| {
+            let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let row: Option<(String, String, String, String, i64, String)> = tx
+                .query_row("SELECT key,value,branch,status,revision,candidate_id FROM memories WHERE id=?1 AND scope=?2",
+                    params![memory_id, scope],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))
+                .optional()?;
+            let Some((key, value, branch, status, revision, candidate_id)) = row else {
+                return Ok("not_found".to_string());
+            };
+            let feedback_only = action == "useful" || action == "not_useful";
+            if !feedback_only && status != "active" {
+                return Ok("not_active".to_string());
+            }
+            let stamp = now();
+            let group = decision_group(&scope, &key, &branch);
+            let outcome = match action.as_str() {
+                "pin" | "unpin" => {
+                    let pinned = i64::from(action == "pin");
+                    tx.execute("UPDATE memories SET pinned=?1,updated_at=?2 WHERE id=?3", params![pinned, stamp, memory_id])?;
+                    tx.execute("INSERT INTO memory_revisions(id,memory_id,revision,action,old_value,new_value,candidate_id,created_at,detail) VALUES(?1,?2,?3,?4,NULL,?5,?6,?7,?8)",
+                        params![uid(),memory_id,revision,action,value,candidate_id,stamp,note.clone().unwrap_or_else(||"owner decision".to_string())])?;
+                    action.clone()
+                }
+                "expire" => {
+                    tx.execute("UPDATE memories SET expires_at=?1,updated_at=?2 WHERE id=?3", params![expires_at, stamp, memory_id])?;
+                    let detail = match expires_at {
+                        Some(at) => format!("scheduled_at={at}"),
+                        None => "cleared".to_string(),
+                    };
+                    tx.execute("INSERT INTO memory_revisions(id,memory_id,revision,action,old_value,new_value,candidate_id,created_at,detail) VALUES(?1,?2,?3,'expire',NULL,?4,?5,?6,?7)",
+                        params![uid(),memory_id,revision,value,candidate_id,stamp,detail])?;
+                    if expires_at.is_some() { "expiry_scheduled".to_string() } else { "expiry_cleared".to_string() }
+                }
+                "merge" => {
+                    let Some(duplicate) = target.clone() else {
+                        return Ok("missing_target".to_string());
+                    };
+                    if duplicate == memory_id {
+                        return Ok("same_memory".to_string());
+                    }
+                    let other: Option<(String, String, String, i64, String)> = tx
+                        .query_row("SELECT key,value,branch,revision,candidate_id FROM memories WHERE id=?1 AND scope=?2 AND status='active'",
+                            params![duplicate, scope],
+                            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
+                        .optional()?;
+                    let Some((other_key, other_value, other_branch, other_revision, other_candidate)) = other else {
+                        return Ok("target_not_found".to_string());
+                    };
+                    // The absorbed row keeps its value and its revision chain; it stops being
+                    // recalled and says who absorbed it.
+                    tx.execute("UPDATE memories SET status='superseded',conflict_group=?1,updated_at=?2 WHERE id=?3", params![group, stamp, duplicate])?;
+                    tx.execute("UPDATE memories SET conflict_group=?1,updated_at=?2 WHERE id=?3", params![group, stamp, memory_id])?;
+                    tx.execute("INSERT INTO memory_revisions(id,memory_id,revision,action,old_value,new_value,candidate_id,created_at,detail) VALUES(?1,?2,?3,'merge',NULL,?4,?5,?6,?7)",
+                        params![uid(),memory_id,revision,value,candidate_id,stamp,format!("absorbed={duplicate}")])?;
+                    tx.execute("INSERT INTO memory_revisions(id,memory_id,revision,action,old_value,new_value,candidate_id,created_at,detail) VALUES(?1,?2,?3,'merge',NULL,?4,?5,?6,?7)",
+                        params![uid(),duplicate,other_revision,other_value,other_candidate,stamp,format!("merged_into={memory_id}")])?;
+                    tx.execute("INSERT INTO memory_decisions(id,group_id,scope,key,branch,memory_id,candidate_id,value,state,reason,revision,decided_at) VALUES(?1,?2,?3,?4,?5,?6,NULL,?7,'superseded','duplicate_merged',?8,?9)",
+                        params![uid(),group,scope,other_key,other_branch,duplicate,other_value,other_revision,stamp])?;
+                    "merged".to_string()
+                }
+                "useful" | "not_useful" => {
+                    // UNIQUE treats NULL request ids as distinct in SQLite, so the same verdict
+                    // given twice outside a recorded turn would insert twice. `IS` compares NULL
+                    // to NULL as equal, so the check covers both cases.
+                    let already: i64 = tx.query_row("SELECT count(*) FROM memory_feedback WHERE memory_id=?1 AND revision=?2 AND request_id IS ?3 AND verdict=?4",
+                        params![memory_id,revision,request,action],|r|r.get(0))?;
+                    let inserted = if already > 0 {
+                        0
+                    } else {
+                        tx.execute("INSERT INTO memory_feedback(id,memory_id,revision,request_id,verdict,note,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(memory_id,revision,request_id,verdict) DO NOTHING",
+                            params![uid(),memory_id,revision,request,action,note,stamp])?
+                    };
+                    if inserted == 0 {
+                        "duplicate_feedback".to_string()
+                    } else {
+                        if action == "useful" {
+                            // The usefulness ranking term reads memory_embeddings.useful_count, so
+                            // the counter advances from the same act that recorded the verdict.
+                            tx.execute("UPDATE memory_embeddings SET useful_count=useful_count+1 WHERE memory_id=?1", [&memory_id])?;
+                        }
+                        "recorded".to_string()
+                    }
+                }
+                _ => "unsupported_action".to_string(),
+            };
+            tx.commit()?;
+            Ok(outcome)
+        })
+        .await
+    }
+
+    /// Create and/or check out a memory branch for one scope. Approvals then land on that branch
+    /// and recall prefers it over 'main' for the same key, which is what lets a value be revised
+    /// under review without overwriting the reviewed one.
+    pub async fn checkout_memory_branch(
+        &self,
+        scope: String,
+        branch: String,
+        note: Option<String>,
+        activate: bool,
+    ) -> Result<Value> {
+        let branch = branch.trim().to_string();
+        if branch.is_empty() || branch.chars().count() > 60 {
+            bail!("branch must be 1..=60 characters");
+        }
+        self.run(move |c| {
+            let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let stamp = now();
+            if branch != "main" {
+                tx.execute("INSERT INTO memory_branches(scope,branch,active,note,created_at) VALUES(?1,?2,0,?3,?4) ON CONFLICT(scope,branch) DO UPDATE SET note=COALESCE(excluded.note,memory_branches.note)",
+                    params![scope, branch, note, stamp])?;
+            }
+            if activate {
+                // Absence of an active row means 'main', so checking out 'main' clears rather
+                // than records a selection.
+                tx.execute("UPDATE memory_branches SET active=0 WHERE scope=?1", [&scope])?;
+                if branch != "main" {
+                    tx.execute("UPDATE memory_branches SET active=1 WHERE scope=?1 AND branch=?2", params![scope, branch])?;
+                }
+            }
+            let active = active_branch(&tx, &scope)?;
+            tx.commit()?;
+            Ok(json!({"scope":scope,"branch":branch,"active_branch":active}))
+        })
+        .await
+    }
+
+    /// Flip lapsed temporary memories to 'expired' and record why. Recall already filters on
+    /// `expires_at` by clock, so this sweep decides what the review surfaces show, never whether
+    /// a lapsed memory could still be retrieved.
+    pub async fn lapse_expired_memories(&self) -> Result<i64> {
+        self.run(move |c| {
+            let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let stamp = now();
+            let due = {
+                let mut stmt = tx.prepare("SELECT id,scope,key,value,branch,revision,candidate_id FROM memories WHERE status='active' AND expires_at IS NOT NULL AND expires_at<=?1 ORDER BY id LIMIT 500")?;
+                let collected = stmt
+                    .query_map([Utc::now().timestamp()], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, String>(3)?,
+                        r.get::<_, String>(4)?,
+                        r.get::<_, i64>(5)?,
+                        r.get::<_, String>(6)?,
+                    ))
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                collected
+            };
+            for (id, row_scope, key, value, branch, revision, candidate) in &due {
+                tx.execute("UPDATE memories SET status='expired',updated_at=?1 WHERE id=?2", params![stamp, id])?;
+                tx.execute("INSERT INTO memory_revisions(id,memory_id,revision,action,old_value,new_value,candidate_id,created_at,detail) VALUES(?1,?2,?3,'expire',NULL,?4,?5,?6,'lapsed')",
+                    params![uid(), id, revision, value, candidate, stamp])?;
+                tx.execute("INSERT INTO memory_decisions(id,group_id,scope,key,branch,memory_id,candidate_id,value,state,reason,revision,decided_at) VALUES(?1,?2,?3,?4,?5,?6,NULL,?7,'superseded','expired',?8,?9)",
+                    params![uid(),decision_group(row_scope,key,branch),row_scope,key,branch,id,value,revision,stamp])?;
+            }
+            let count = due.len() as i64;
+            tx.commit()?;
+            Ok(count)
         })
         .await
     }

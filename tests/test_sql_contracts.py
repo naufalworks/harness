@@ -18,7 +18,7 @@ sys.path.insert(0,str(ROOT/'scripts'))
 from backup import backup
 from migrate_legacy import migrate
 
-MIGRATIONS=['001_core.sql','002_recording.sql','003_agentic.sql','004_memory_kinds.sql']
+MIGRATIONS=['001_core.sql','002_recording.sql','003_agentic.sql','004_memory_kinds.sql','005_generation_stream.sql','006_provenance_edges.sql','007_privacy_archive.sql','008_provider_spend.sql','009_run_cancellation.sql','010_retention_maintenance.sql','011_retrieval_receipts.sql','012_memory_governance.sql']
 # P12-T02: the storage module was split into src/storage.rs plus src/storage/*.rs, so
 # the shipped SQL now lives across those files. The submodules hold the implementation
 # statements and src/storage.rs keeps its `mod tests` fixtures, some of which share a
@@ -63,11 +63,13 @@ def resolve(c,identifier,scope='global',confirm=True):
         if status!='pending':c.execute('ROLLBACK');return 'already_resolved'
         if not confirm:
             c.execute("UPDATE candidates SET status='rejected' WHERE id=?",(identifier,));c.execute('COMMIT');return 'rejected'
-        current=c.execute('SELECT id,revision,value FROM memories WHERE scope=? AND key=?',(scope,key)).fetchone()
+        branch='main'
+        current=c.execute('SELECT id,revision,value FROM memories WHERE scope=? AND key=? AND branch=?',(scope,key,branch)).fetchone()
         if (current[1] if current else 0)!=expected:
             c.execute("UPDATE candidates SET status='conflict' WHERE id=?",(identifier,));c.execute('COMMIT');return 'conflict'
         memory=current[0] if current else str(uuid.uuid4());old=current[2] if current else None
-        c.execute(UPSERT,(memory,scope,key,value,category,expected+1,identifier,'2026-09-08'))
+        group=f'{scope}\x1f{key}\x1f{branch}'
+        c.execute(UPSERT,(memory,scope,key,value,branch,category,expected+1,identifier,group,'2026-09-08'))
         c.execute(REVISION,(str(uuid.uuid4()),memory,expected+1,old,value,identifier,'2026-09-08'))
         c.execute(APPROVE,('2026-09-08',identifier));c.execute('COMMIT');return 'approved'
     except Exception:c.execute('ROLLBACK');raise
@@ -76,7 +78,7 @@ class Contracts(unittest.TestCase):
     def setUp(self):self.c=connect()
     def tearDown(self):self.c.close()
     def test_schema_version_and_integrity(self):
-        self.assertEqual(self.c.execute('PRAGMA user_version').fetchone()[0],4);self.assertEqual(self.c.execute('PRAGMA integrity_check').fetchone()[0],'ok')
+        self.assertEqual(self.c.execute('PRAGMA user_version').fetchone()[0],12);self.assertEqual(self.c.execute('PRAGMA integrity_check').fetchone()[0],'ok')
     def test_candidates_do_not_become_active(self):
         proposal(self.c);self.assertEqual(self.c.execute('SELECT count(*) FROM memories').fetchone()[0],0)
     def test_sensitive_category_is_rejected_by_schema(self):
@@ -98,10 +100,10 @@ class Contracts(unittest.TestCase):
         proposal(self.c,value='Rust');resolve(self.c,'p1');proposal(self.c,'p2',value='Python',revision=1,source='s2');resolve(self.c,'p2')
         self.assertEqual(self.c.execute("SELECT count(*) FROM memory_fts WHERE memory_fts MATCH 'Rust'").fetchone()[0],0);self.assertEqual(self.c.execute("SELECT count(*) FROM memory_fts WHERE memory_fts MATCH 'Python'").fetchone()[0],1);self.assertEqual(self.c.execute('SELECT count(*) FROM memory_revisions').fetchone()[0],2)
     def test_short_terms_are_indexed(self):
-        proposal(self.c,value='SQL API MCP SSE');resolve(self.c,'p1');self.assertEqual(len(self.c.execute(RECALL,('"sql" OR "api"','global')).fetchall()),1)
+        proposal(self.c,value='SQL API MCP SSE');resolve(self.c,'p1');self.assertEqual(len(self.c.execute(RECALL,('"sql" OR "api"','global','main',int(time.time()))).fetchall()),1)
     def test_scope_and_global_override(self):
         proposal(self.c,'g',value='SQL');resolve(self.c,'g');proposal(self.c,'a',scope='a',value='Rust');resolve(self.c,'a','a');proposal(self.c,'b',scope='b',value='Python');resolve(self.c,'b','b')
-        rows=self.c.execute(RECALL,('"sql" OR "rust" OR "python"','a')).fetchall();self.assertEqual([r[3] for r in rows],['Rust'])
+        rows=self.c.execute(RECALL,('"sql" OR "rust" OR "python"','a','main',int(time.time()))).fetchall();self.assertEqual([r[3] for r in rows],['Rust'])
     def test_candidate_dedup_constraint(self):
         proposal(self.c)
         with self.assertRaises(sqlite3.IntegrityError):proposal(self.c,'p2')
@@ -110,7 +112,7 @@ class Contracts(unittest.TestCase):
         self.c.execute(query,('j1','once'))
         with self.assertRaises(sqlite3.IntegrityError):self.c.execute(query,('j2','once'))
     def test_foreign_key_requires_candidate(self):
-        with self.assertRaises(sqlite3.IntegrityError):self.c.execute(UPSERT,('m','global','language','Rust','preference',1,'missing','now'))
+        with self.assertRaises(sqlite3.IntegrityError):self.c.execute(UPSERT,('m','global','language','Rust','main','preference',1,'missing','global\x1flanguage\x1fmain','now'))
     def test_online_backup_reads_wal_and_refuses_overwrite(self):
         with tempfile.TemporaryDirectory() as d:
             src=Path(d)/'source.db';dst=Path(d)/'backup.db';c=sqlite3.connect(src);c.execute('PRAGMA journal_mode=WAL');c.execute('CREATE TABLE example(value)');c.execute('INSERT INTO example VALUES(42)');c.commit()

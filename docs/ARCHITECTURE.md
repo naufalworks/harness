@@ -60,6 +60,10 @@ existence: an unauthenticated request never learns whether a path exists.
 - `GET /chat/requests/{id}/provenance`
 - `GET /chat/requests/{id}/retrieval`
 - `POST /memory/retrieval/preview`
+- `GET /memory/governance`
+- `GET /memory/entries/{id}/timeline`
+- `POST /memory/entries/{id}/governance`
+- `POST /memory/branches`
 - `POST /sources/{id}/archive`
 - `POST /sources/{id}/privacy`
 - `GET|DELETE /archives/{id}`

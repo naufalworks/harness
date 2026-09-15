@@ -1,5 +1,37 @@
 # PROGRESS — journal
 
+## 2026-09-15T07:40:50Z · P15-T03 — done; governance history stays reviewable
+
+The autonomous continuation found two release-gate mismatches before calling the task complete. The
+SQL contract test still built only migrations 001→004 while extracting the branch-aware approval
+statement from Rust, so every approval failed on the missing `memories.branch` column. I upgraded
+that mirror to the complete 001→012 chain and made its transaction driver pass the checked-out
+branch and decision-group parameters. This preserves the contract test's purpose — execute the
+SQL the service actually ships — instead of weakening the new branch constraint or deleting the
+old approval cases.
+
+The API schema gate also found the four P15-T03 operations absent from the human HTTP inventory.
+I added `GET /memory/governance`, `GET /memory/entries/{id}/timeline`,
+`POST /memory/entries/{id}/governance`, and `POST /memory/branches` to `docs/ARCHITECTURE.md`.
+The OpenAPI document and router already agreed; the inventory now agrees too.
+
+The task's done-when is satisfied by the implementation already in the worktree: branches,
+considered/chosen/superseded decisions, expiry-aware recall and sweeps, conflict/deduplication
+groups, usefulness feedback, and pinned profile entries all retain review/revision history. I did
+not add a speculative governance panel to `static/*`: there is no existing governance workflow
+to extend, and adding a UI without a product contract would be lower priority than finishing the
+durable/API contract. The existing browser suites still pass, including the retrieval and memory
+review coverage.
+
+Evidence from the final gates: migration chain 001→012 with `user_version=12`; SQL contracts 16
+passed; API schema 49 operations plus 16 error codes, 22 receipt fields and 5 request states
+matched; memory tests 29 passed; full Rust suite 256 passed; clippy and formatting clean;
+`verify_local.sh` passed with only environment-only coverage/signature/cross-target/public-smoke
+checks skipped; and both mocked-browser suites passed.
+
+P15-T03 is now marked `done`. The next ledger candidate remains P15-T04, but it is blocked on
+P13-T02, so no follow-on implementation was started in this turn.
+
 ## 2026-09-15T06:45:00Z · P15-T02 — done; explaining retrieval without claiming causation
 
 Selected by the ledger rule, not by preference: after P15-T01 this was the only `high` with all

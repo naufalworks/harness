@@ -999,7 +999,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - result-verify: `cargo test --locked context` (11 passed), `cargo test --locked` (254 passed, from 252), `scripts/verify_browser.sh` (both suites passed; new checks `retrieval_receipt_panel`, `retrieval_receipt_text_inert`, `retrieval_preview_rehearsal`), `python3 tests/test_migrations.py` (001→011, `user_version=11`, data/FTS/FKs preserved), `cargo clippy --locked --all-targets -- -D warnings` (clean), `cargo fmt --all` (clean).
 
 ### P15-T03 · Add memory governance and timelines
-- status: todo
+- status: done
 - priority: medium
 - lane: memory-governance
 - parallel: no
@@ -1008,6 +1008,8 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - files: migrations/*, src/storage.rs, static/*
 - done-when: branches, considered/chosen/superseded decisions, temporary expiry, conflict groups, deduplication, usefulness feedback and pinned profile entries preserve review/revision history.
 - verify: python3 tests/test_migrations.py && cargo test --locked memory && scripts/verify_browser.sh
+- result: migration `012_memory_governance.sql` (`user_version=12`) adds checked-out branches, decision timelines, expiry, conflict groups, usefulness feedback and pinned entries. Recall shadows `main` with the active branch and rejects expired memories by timestamp; governance mutations preserve append-only decision history. The governance overview, entry timeline, mutation and branch APIs are documented in OpenAPI and the architecture inventory. The SQL contract mirror now runs against the complete 001→012 chain, so it tests the current branch-aware approval and recall statements rather than an obsolete pre-branch schema. No speculative static UI was added: the existing browser surface remains green, while the governance behavior is covered by native/API contract tests.
+- result-verify: `python3 tests/test_migrations.py` (001→012, `user_version=12`, data/FTS/FKs preserved), `python3 tests/test_sql_contracts.py` (16 passed), `python3 tests/test_api_schema.py` (49 operations, 16 error codes, 22 receipt fields and 5 request states matched), `cargo test --locked memory` (29 passed), `bash scripts/verify_local.sh` (passed; coverage/signature/cross-target/public-smoke skipped as environment-only release checks), `scripts/verify_browser.sh` (both mocked-browser suites passed), `cargo test --locked` (256 passed), `cargo clippy --locked --all-targets -- -D warnings` (clean), and `cargo fmt --all -- --check` (clean).
 
 ### P15-T04 · Search and port sanitized history
 - status: todo

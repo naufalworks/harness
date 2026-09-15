@@ -222,6 +222,13 @@ components:
       description: Scope name.
       schema:
         type: string
+    ScopeQuery:
+      name: scope
+      in: query
+      required: false
+      description: Scope name; defaults to the global scope when omitted.
+      schema:
+        type: string
 security:
   - bearerAuth: []
 paths:
@@ -506,6 +513,82 @@ paths:
       responses:
         '200':
           description: Rehearsed ranking delta and its no-causal-claim note.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /memory/governance:
+    get:
+      operationId: memoryGovernance
+      summary: Read branch, pin, expiry and duplicate state for one scope.
+      description: >-
+        Reports the reviewed entries of a scope with their branch, pinned flag, expiry clock,
+        conflict group and usefulness counts, plus the scope's branches and its duplicate
+        suggestions. Lapsed temporary memories are swept to 'expired' first, so the state shown
+        is the state recall acts on. Duplicates are suggestions for review, never auto-merges.
+      parameters:
+        - $ref: '#/components/parameters/ScopeQuery'
+      responses:
+        '200':
+          description: Governance overview for the scope.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /memory/entries/{id}/timeline:
+    get:
+      operationId: memoryTimeline
+      summary: Read the review history of one memory.
+      description: >-
+        Value revisions, decisions (chosen, considered, superseded with the reason each carries)
+        and usefulness verdicts for one memory. Superseded, rejected and expired values are kept
+        here rather than deleted. 404 when the memory is not in the scope.
+      parameters:
+        - $ref: '#/components/parameters/OpaqueId'
+        - $ref: '#/components/parameters/ScopeQuery'
+      responses:
+        '200':
+          description: Revisions, decisions and feedback for the memory.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /memory/entries/{id}/governance:
+    post:
+      operationId: governMemory
+      summary: Pin, expire, merge or rate one memory.
+      description: >-
+        One audited act per call: `pin`, `unpin`, `expire` (with `expires_at`), `clear_expiry`,
+        `merge` (with `target_id`, which is retained as superseded), `useful` or `not_useful`.
+        Every accepted act writes a revision row. 409 when the memory cannot take the act, which
+        includes a usefulness verdict already recorded for that revision.
+      parameters:
+        - $ref: '#/components/parameters/OpaqueId'
+      responses:
+        '200':
+          description: The recorded outcome of the act.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /memory/branches:
+    post:
+      operationId: checkoutMemoryBranch
+      summary: Create or check out a review branch for a scope.
+      description: >-
+        A branch holds an alternative reviewed value for a key. While it is checked out, recall
+        prefers the branch value and the value on 'main' is left untouched.
+      responses:
+        '200':
+          description: The scope's branch and which branch is now active.
           content:
             application/json: {}
         '4XX':
