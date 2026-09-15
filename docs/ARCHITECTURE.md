@@ -55,6 +55,8 @@ existence: an unauthenticated request never learns whether a path exists.
 - `POST /permissions/{id}`
 - `GET /chat/requests/{id}/steps`
 - `GET /chat/requests/{id}/incident`
+- `GET /chat/requests/{id}/incident/export`
+- `GET /chat/incidents/compare`
 - `GET /sessions/{id}/plan`
 - `GET /activity`
 - `GET /activity/stream`

@@ -667,6 +667,73 @@ async fn request_incident(
 struct RequestQuery {
     request_id: String,
 }
+/// P16-T02: which runs to compare. A comma-separated list rather than repeated parameters so
+/// one query string names one comparison.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CompareQueryParams {
+    requests: String,
+}
+/// P16-T02: align two or more runs' causal graphs by semantic step identity and report the
+/// first divergence.
+///
+/// Every compared run is read through the same `incident_view` projection this module's
+/// `/incident` route serves, so a reviewer compares exactly the graph they can open.
+async fn incident_compare(
+    State(h): State<Harness>,
+    Query(q): Query<CompareQueryParams>,
+) -> ApiResult<Json<Value>> {
+    let ids: Vec<String> = q
+        .requests
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(str::to_string)
+        .collect();
+    if ids.len() < 2 || ids.len() > storage::MAX_COMPARED_RUNS {
+        return Err(invalid(
+            "Comparison needs between two and eight comma-separated request identifiers",
+        ));
+    }
+    for id in &ids {
+        Uuid::parse_str(id).map_err(|_| invalid("Invalid request identifier"))?;
+    }
+    Ok(Json(
+        h.store.compare_incident_runs(ids).await.map_err(db_error)?,
+    ))
+}
+/// P16-T02: which serialization the exported graph should carry.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExportQueryParams {
+    #[serde(default)]
+    format: Option<String>,
+}
+/// P16-T02: export one run's causal graph as a bounded sanitized artifact.
+///
+/// The artifact is built by the shared P15-T04 sanitizer, citation shape, canonical
+/// serialization and checksum helper — there is no second exporter behind this route.
+async fn incident_export(
+    State(h): State<Harness>,
+    Path(id): Path<String>,
+    Query(q): Query<ExportQueryParams>,
+) -> ApiResult<Json<Value>> {
+    Uuid::parse_str(&id).map_err(|_| invalid("Invalid request identifier"))?;
+    let format = q.format.unwrap_or_else(|| "json".into());
+    if format != "json" && format != "graphviz" {
+        return Err(invalid("Export format must be json or graphviz"));
+    }
+    Ok(Json(
+        h.store
+            .export_incident_graph(id, format)
+            .await
+            .map_err(db_error)?
+            .ok_or(ApiError(
+                StatusCode::NOT_FOUND,
+                "Recording receipt not found",
+            ))?,
+    ))
+}
 async fn request_changes(
     State(h): State<Harness>,
     Query(q): Query<RequestQuery>,
@@ -1652,6 +1719,8 @@ pub(crate) fn router(state: Harness) -> Router {
         .route("/permissions/{id}", post(decide_permission))
         .route("/chat/requests/{id}/steps", get(request_steps))
         .route("/chat/requests/{id}/incident", get(request_incident))
+        .route("/chat/requests/{id}/incident/export", get(incident_export))
+        .route("/chat/incidents/compare", get(incident_compare))
         .route("/sessions/{id}/plan", get(session_plan))
         .route("/activity", get(activity))
         .route("/activity/stream", get(activity_stream))

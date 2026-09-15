@@ -102,13 +102,21 @@ pub struct Job {
 // caller path changes with the file move.
 mod config;
 mod history;
+mod incident_compare;
 mod jobs;
 mod memories;
 mod provenance;
 mod provider;
 mod turns;
+pub use incident_compare::MAX_COMPARED_RUNS;
 #[allow(unused_imports)]
 pub use provenance::{IncidentQuery, PROVENANCE_NODE_KINDS, PROVENANCE_RELATIONS};
+
+/// The projection identity every incident-derived artifact reports, read from the single
+/// P16-T01 projection rather than re-declared per consumer.
+pub(crate) fn provenance_projection() -> &'static str {
+    provenance::PROJECTION
+}
 mod scope;
 pub use history::SearchScope;
 pub use scope::*;
@@ -1341,6 +1349,259 @@ mod tests {
             )
             .await
             .is_err());
+    }
+
+    /// P16-T02: a second run of the same work, with one deliberate difference (the edit step
+    /// succeeds) and one deliberate absence (no bash step at all). That gives the comparison
+    /// one `differs` slot and one `missing_evidence` slot to tell apart.
+    async fn second_run_fixture(db: &DbStore) {
+        db.run(|c| {
+            let stamp = now();
+            c.execute("INSERT INTO messages(id,session_id,role,content,status,created_at) VALUES('request-2','session','user','hi','pending',?1)",[&stamp])?;
+            // `failed` rather than `complete`: migration 001's CHECK requires a complete
+            // receipt to name an answer row, and inventing one would put a message in this
+            // fixture that the comparison does not read.
+            c.execute("INSERT INTO chat_receipts(request_id,session_id,scope,model,signature,redacted,state,captured_at,updated_at) VALUES('request-2','session','global','main','sig',0,'failed',?1,?1)",[&stamp])?;
+            c.execute(crate::agentic_sql::STEP_BEGIN,params!["step-c","request-2",None::<String>,0,"tool_call","edit","call-c","{}",stamp])?;
+            c.execute(crate::agentic_sql::PERMISSION_CREATE,params!["permit-c","request-2","step-c","edit","edit","{}",stamp,stamp])?;
+            c.execute(crate::agentic_sql::PROVENANCE_EDGE_INSERT,params!["edge-c","request-2","step","step-c","depends_on","permission","permit-c",stamp])?;
+            c.execute(crate::agentic_sql::STEP_FINISH,params!["step-c","complete","{}",0,0,None::<i64>,None::<i64>,None::<String>,stamp])?;
+            Ok(())
+        }).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn incident_comparison_aligns_by_semantic_identity_and_separates_absence_from_difference()
+    {
+        let db = incident_fixture().await;
+        second_run_fixture(&db).await;
+        let report = db
+            .compare_incident_runs(vec!["request".into(), "request-2".into()])
+            .await
+            .unwrap();
+        assert_eq!(report["compared"], json!(["request", "request-2"]));
+        assert!(report["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|run| run["found"] == json!(true)));
+        let slots = report["aligned"].as_array().unwrap();
+        let slot = |name: &str| {
+            slots
+                .iter()
+                .find(|slot| slot["slot"] == json!(name))
+                .cloned()
+                .unwrap_or_else(|| panic!("missing slot {name}, got {slots:#?}"))
+        };
+        // The edit step exists in both runs under a different row id, so semantic identity
+        // aligned it rather than reporting two unrelated steps.
+        let edit = slot("step|edit#0");
+        assert_eq!(edit["present_in"], json!(2));
+        assert_eq!(edit["verdict"], "differs");
+        assert_eq!(edit["missing_in"], json!([]));
+        // The bash step is recorded only in the first run. That is an evidence gap, not a
+        // difference, and the run it is missing from is named.
+        let bash = slot("step|bash#0");
+        assert_eq!(bash["verdict"], "missing_evidence");
+        assert_eq!(bash["missing_in"], json!(["request-2"]));
+        assert_eq!(bash["present_in"], json!(1));
+        // The mutation exists only in the first run too.
+        assert_eq!(slot("mutation|src/lib.rs#0")["verdict"], "missing_evidence");
+        // First divergence is reported once, and it names which class of difference it is.
+        let divergence = &report["first_divergence"];
+        assert_eq!(divergence["aligned"], json!(true));
+        assert!(matches!(
+            divergence["difference_kind"].as_str(),
+            Some("recorded_difference") | Some("missing_evidence")
+        ));
+        // Counts add up to the number of slots, so no slot escaped classification.
+        let counts = &report["counts"];
+        assert_eq!(
+            counts["identical"].as_i64().unwrap()
+                + counts["differs"].as_i64().unwrap()
+                + counts["missing_evidence"].as_i64().unwrap(),
+            counts["slots"].as_i64().unwrap()
+        );
+        assert_eq!(counts["slots"].as_u64().unwrap() as usize, slots.len());
+        // The legend defines every verdict the comparator can emit, and says plainly that a
+        // missing slot is not proof the step did not happen.
+        for verdict in ["identical", "differs", "missing_evidence"] {
+            assert!(report["alignment_labels"][verdict].is_string());
+        }
+        assert!(report["alignment_labels"]["missing_evidence"]
+            .as_str()
+            .unwrap()
+            .contains("not proof"));
+        // Never claim a counterfactual.
+        let text = report.to_string();
+        assert!(!text.contains("would have"), "counterfactual claim leaked");
+        no_reasoning_keys(&report);
+    }
+
+    #[tokio::test]
+    async fn incident_comparison_refuses_bad_input_and_excludes_runs_with_no_evidence() {
+        let db = incident_fixture().await;
+        // Fewer than two distinct runs is refused rather than answered with a trivial report.
+        assert!(db
+            .compare_incident_runs(vec!["request".into()])
+            .await
+            .is_err());
+        assert!(db
+            .compare_incident_runs(vec!["request".into(), "request".into()])
+            .await
+            .is_err());
+        assert!(db
+            .compare_incident_runs(
+                (0..MAX_COMPARED_RUNS + 1)
+                    .map(|i| format!("r{i}"))
+                    .collect()
+            )
+            .await
+            .is_err());
+        // A run with no recording receipt contributes no evidence: it is reported as not
+        // found and excluded, instead of being treated as an empty graph that would make
+        // every slot look like a difference.
+        let report = db
+            .compare_incident_runs(vec!["request".into(), "missing-run".into()])
+            .await
+            .unwrap();
+        let absent = report["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|run| run["request_id"] == json!("missing-run"))
+            .unwrap()
+            .clone();
+        assert_eq!(absent["found"], json!(false));
+        assert_eq!(report["aligned"].as_array().unwrap().len(), 0);
+        assert_eq!(report["first_divergence"]["aligned"], json!(false));
+        assert_eq!(report["counts"]["differs"], json!(0));
+    }
+
+    #[tokio::test]
+    async fn incident_export_is_sanitized_checksummed_and_labels_its_evidence() {
+        let db = incident_fixture().await;
+        let artifact = db
+            .export_incident_graph("request".into(), "json".into())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(artifact["format"], "causal-graph-export-v1");
+        assert_eq!(artifact["export_format"], "json");
+        // The exported graph is the P16-T01 projection, not a second query: the node set and
+        // the counts are the ones the incident endpoint returns.
+        let graph = db.incident_graph("request".into()).await.unwrap().unwrap();
+        assert_eq!(artifact["counts"], graph["counts"]);
+        assert_eq!(artifact["bounds"], graph["bounds"]);
+        assert_eq!(
+            artifact["earliest_known_break"],
+            graph["earliest_known_break"]
+        );
+        assert_eq!(
+            artifact["nodes"].as_array().unwrap().len(),
+            graph["nodes"].as_array().unwrap().len()
+        );
+        // Every label that shipped is exactly what the shared sanitizer would emit, so an
+        // export can never be more permissive than the search index.
+        for node in artifact["nodes"].as_array().unwrap() {
+            if node["label_sanitized"] == json!(true) {
+                assert!(crate::export::review::is_sanitized(
+                    node["label"].as_str().unwrap()
+                ));
+            }
+        }
+        // Evidence labels are the four documented ones and nothing else, and each has a legend.
+        for node in artifact["nodes"].as_array().unwrap() {
+            let evidence = node["evidence"].as_str().unwrap();
+            assert!(
+                artifact["evidence_labels"][evidence].is_string(),
+                "{evidence}"
+            );
+        }
+        for edge in artifact["edges"].as_array().unwrap() {
+            let evidence = edge["evidence"].as_str().unwrap();
+            assert!(
+                artifact["evidence_labels"][evidence].is_string(),
+                "{evidence}"
+            );
+        }
+        // A recorded contradiction/invalidation is a distinct class from a dependency: the
+        // design's success criteria require telling contradictory evidence from missing.
+        assert_eq!(
+            crate::storage::incident_compare::evidence_label(Some("contradicts"), None),
+            "contradiction"
+        );
+        // The checksum is over the artifact with the checksum blanked, using the same shared
+        // canonical serialization continuation packets use, so it is verifiable the same way.
+        let mut copy = artifact.clone();
+        let claimed = copy["content_sha256"].as_str().unwrap().to_string();
+        // The digest is taken over the artifact as it stood before the checksum, the export
+        // format and the citation digest were stamped into it, so verification removes
+        // exactly those and nothing else.
+        let object = copy.as_object_mut().unwrap();
+        object.remove("content_sha256");
+        object.remove("export_format");
+        if let Some(citation) = copy["citation"].as_object_mut() {
+            citation.insert("content_sha256".into(), json!(""));
+        }
+        assert_eq!(
+            claimed,
+            crate::export::review::checksum(&crate::export::packet::canonical_json(&copy))
+        );
+        assert_eq!(artifact["citation"]["content_sha256"], json!(claimed));
+        assert_eq!(
+            artifact["citation"]["sanitizer"],
+            crate::export::review::SANITIZER
+        );
+        no_reasoning_keys(&artifact);
+        // Graphviz is a second rendering of the same sanitized artifact, never a second read.
+        let dot = db
+            .export_incident_graph("request".into(), "graphviz".into())
+            .await
+            .unwrap()
+            .unwrap();
+        let text = dot["graphviz"].as_str().unwrap();
+        assert!(text.starts_with("digraph causal_graph {"));
+        for node in dot["nodes"].as_array().unwrap() {
+            assert!(text.contains(node["id"].as_str().unwrap()));
+        }
+        assert!(text.contains("not causation"));
+        no_reasoning_keys(&dot);
+        // An unsupported format is refused rather than silently defaulted, and an unknown
+        // request has no artifact at all.
+        assert!(db
+            .export_incident_graph("request".into(), "svg".into())
+            .await
+            .is_err());
+        assert!(db
+            .export_incident_graph("missing".into(), "json".into())
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    /// The P16-T01 no-chain-of-thought contract, applied recursively to every new response
+    /// shape rather than only to the incident graph it was written for.
+    fn no_reasoning_keys(value: &Value) {
+        fn walk(value: &Value, out: &mut Vec<String>) {
+            match value {
+                Value::Object(map) => {
+                    for (key, child) in map {
+                        out.push(key.clone());
+                        walk(child, out);
+                    }
+                }
+                Value::Array(items) => items.iter().for_each(|item| walk(item, out)),
+                _ => {}
+            }
+        }
+        let mut names = Vec::new();
+        walk(value, &mut names);
+        for name in &names {
+            for banned in ["thought", "reasoning", "rationale", "explanation"] {
+                assert!(!name.contains(banned), "leaked key {name}");
+            }
+        }
     }
 
     #[tokio::test]

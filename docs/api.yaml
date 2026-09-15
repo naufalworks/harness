@@ -534,6 +534,70 @@ paths:
           $ref: '#/components/responses/Error'
         '5XX':
           $ref: '#/components/responses/Error'
+  /chat/requests/{id}/incident/export:
+    get:
+      operationId: incidentExport
+      summary: Export one request's causal graph as a sanitized artifact.
+      description: >-
+        P16-T02. The artifact is rendered from the same bounded `incident_view` projection
+        `/chat/requests/{id}/incident` returns, and it is sanitized, cited and checksummed by
+        the shared P15-T04 export machinery rather than a second exporter. Nodes and edges
+        carry an explicit evidence label: `dependency` for a recorded consuming or supporting
+        edge, `contradiction` for a recorded `contradicts`/`invalidates` edge, `temporal` for
+        same-request co-occurrence with no edge, and `unknown` when neither is available. A
+        label the shared sanitizer refuses is replaced with a `[withheld: <code>]` marker and
+        counted, never shipped and never silently dropped. `format=graphviz` adds a DOT
+        rendering of that same sanitized artifact, so the DOT cannot contain a byte the JSON
+        withheld.
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - name: format
+          in: query
+          required: false
+          schema: {type: string, enum: [json, graphviz]}
+      responses:
+        '200':
+          description: >-
+            Sanitized bounded causal graph with per-node and per-edge evidence labels, the
+            shared citation shape, and a checksum over the canonical serialization.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /chat/incidents/compare:
+    get:
+      operationId: incidentCompare
+      summary: Compare two or more runs' causal graphs.
+      description: >-
+        P16-T02. Each run is read through the same `incident_view` projection the incident
+        endpoint serves, then aligned by semantic step identity — what a node is (kind, tool,
+        action and path) plus its ordinal among identical siblings — deliberately excluding
+        row ids, timestamps and sequence numbers, which differ between runs for reasons that
+        are not differences. Each aligned slot is `identical`, `differs`, or
+        `missing_evidence`; the last is reported separately and names the runs the step is
+        missing from, because an absence of recorded evidence is not a recorded difference and
+        is not proof the step did not occur. `first_divergence` reports the earliest
+        non-identical slot in the leading run's own order. No counterfactual outcome is
+        claimed for any run, and no field carries model reasoning.
+      parameters:
+        - name: requests
+          in: query
+          required: true
+          description: Two to eight comma-separated request identifiers.
+          schema: {type: string, maxLength: 400}
+      responses:
+        '200':
+          description: >-
+            Aligned slots with per-run observations, the first divergence, verdict counts,
+            and the evidence and alignment legends.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
   /chat/requests/{id}/retrieval:
     get:
       operationId: requestRetrieval
