@@ -82,6 +82,12 @@ pub struct SpendLimits {
     pub cost_microusd_per_day: Option<u64>,
     pub input_microusd_per_million: Option<u64>,
     pub output_microusd_per_million: Option<u64>,
+    /// Optional daily ceiling for background roles alone (extraction, compaction,
+    /// verification). `None` leaves them bounded only by the shared daily limit.
+    pub background_requests_per_day: Option<u64>,
+    /// Daily requests held back from background roles so a busy worker cannot consume the
+    /// last of the budget and starve the request a user is waiting on.
+    pub foreground_reserve_per_day: u64,
 }
 impl SpendLimits {
     fn env_u64(name: &str, default: Option<u64>) -> Result<Option<u64>> {
@@ -100,11 +106,25 @@ impl SpendLimits {
         }
     }
     pub fn from_env() -> Result<Self> {
+        let requests_per_day =
+            Self::env_u64("HARNESS_MAX_PROVIDER_REQUESTS_PER_DAY", Some(500))?.unwrap_or(500);
+        // Fairness has to be on by default to mean anything, so a tenth of the daily budget is
+        // reserved for foreground work unless the operator says otherwise. `env_u64` rejects 0,
+        // so the smallest configurable reserve is 1 rather than "disabled".
+        let foreground_reserve_per_day = Self::env_u64(
+            "HARNESS_PROVIDER_FOREGROUND_RESERVE_PER_DAY",
+            Some((requests_per_day / 10).max(1)),
+        )?
+        .unwrap_or(1);
         Ok(Self {
             requests_per_turn: Self::env_u64("HARNESS_MAX_PROVIDER_REQUESTS_PER_TURN", Some(32))?
                 .unwrap_or(32),
-            requests_per_day: Self::env_u64("HARNESS_MAX_PROVIDER_REQUESTS_PER_DAY", Some(500))?
-                .unwrap_or(500),
+            requests_per_day,
+            background_requests_per_day: Self::env_u64(
+                "HARNESS_MAX_PROVIDER_BACKGROUND_REQUESTS_PER_DAY",
+                None,
+            )?,
+            foreground_reserve_per_day,
             tokens_per_turn: Self::env_u64("HARNESS_MAX_PROVIDER_TOKENS_PER_TURN", None)?,
             tokens_per_day: Self::env_u64("HARNESS_MAX_PROVIDER_TOKENS_PER_DAY", None)?,
             cost_microusd_per_turn: Self::env_u64(
@@ -225,6 +245,16 @@ impl ProviderHealth {
 /// Statuses worth backing off from rather than failing permanently.
 pub(crate) fn is_retryable_status(status: u16) -> bool {
     status == 408 || status == 429 || (500..=599).contains(&status)
+}
+
+/// Whether a reservation `kind` is background work rather than a request a user is waiting on.
+///
+/// Foreground is exactly `model_call` (the turn's own generation, including sub-agents).
+/// Everything else — extraction, compaction, verification — is deferrable, so an unknown or
+/// newly added kind is treated as background and yields. That is the safe default: a new
+/// background role added later cannot accidentally outrank the user's own request.
+pub fn is_background_kind(kind: &str) -> bool {
+    kind != "model_call"
 }
 
 /// Classifies an error from the provider paths as retryable or permanent.
@@ -1082,6 +1112,18 @@ pub async fn worker(
 #[cfg(test)]
 mod provider_tests {
     use super::*;
+
+    #[test]
+    fn only_the_user_facing_turn_counts_as_foreground_work() {
+        assert!(!is_background_kind("model_call"));
+        for kind in ["compaction", "verification", "extraction"] {
+            assert!(is_background_kind(kind), "{kind} is deferrable");
+        }
+        assert!(
+            is_background_kind("some_future_role"),
+            "an unrecognised role must yield to the user's turn, not outrank it"
+        );
+    }
 
     /// P14-T04b: a rejected request is not a sick provider. If a 400 could trip the
     /// breaker, one malformed prompt would take the provider offline for every caller.

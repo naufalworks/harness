@@ -23,6 +23,9 @@ impl DbStore {
         let call_id = uid();
         let returned = call_id.clone();
         let day_start = format!("{}T00:00:00+00:00", Utc::now().date_naive());
+        // P14-T04b fairness: classified before the transaction, enforced inside it, so the
+        // decision stays atomic with the counts it is based on and is recorded durably.
+        let background = crate::memory_agents::is_background_kind(&kind);
         let decision = self.run(move |c| {
             let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let totals = |request: Option<&str>| -> Result<(i64,i64,i64,i64)> {
@@ -40,8 +43,21 @@ impl DbStore {
             };
             let day=totals(None)?;
             let turn=if let Some(request)=request_id.as_deref(){totals(Some(request))?}else{(0,0,0,0)};
+            // Background roles get their own daily ceiling and must leave headroom for
+            // foreground work. Counted inside the same transaction as the shared totals.
+            let background_day = if background {
+                tx.query_row(
+                    "SELECT count(*) FROM provider_calls WHERE state IN ('reserved','complete','failed') AND created_at>=?1 AND kind!='model_call'",
+                    params![day_start],
+                    |r| r.get::<_, i64>(0),
+                )?
+            } else {
+                0
+            };
             let reason = if turn.0 >= limits.requests_per_turn as i64 { Some("turn_request_limit") }
                 else if day.0 >= limits.requests_per_day as i64 { Some("daily_request_limit") }
+                else if background && limits.background_requests_per_day.is_some_and(|v| background_day >= v as i64) { Some("background_request_limit") }
+                else if background && day.0.saturating_add(limits.foreground_reserve_per_day as i64) >= limits.requests_per_day as i64 { Some("foreground_reserve") }
                 else if turn.3 > 0 && (limits.tokens_per_turn.is_some() || limits.cost_microusd_per_turn.is_some()) { Some("turn_usage_unavailable") }
                 else if day.3 > 0 && (limits.tokens_per_day.is_some() || limits.cost_microusd_per_day.is_some()) { Some("daily_usage_unavailable") }
                 else if limits.tokens_per_turn.is_some_and(|v| turn.1 >= v as i64) { Some("turn_token_limit") }

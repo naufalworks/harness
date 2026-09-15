@@ -1,5 +1,53 @@
 # PROGRESS — journal
 
+## 2026-09-15T05:25:00Z · P14-T04b step 3 — fairness and role budgets inside the reservation
+
+Recon settled where this belonged. The reservation decision already lives in one atomic
+transaction (`src/storage/provider.rs:16`), which reads per-turn and per-UTC-day totals and writes
+a durable `refused` row plus a `provider_spend_refused` event. Putting fairness anywhere else
+would mean deciding on counts that could change before the insert, so the new checks go inside
+that same transaction and inherit its atomicity and its audit trail for free.
+
+The role vocabulary already existed and did not need inventing: `kind` is persisted on every
+`provider_calls` row, and callers pass `model_call` (the turn itself, including sub-agents),
+`compaction`, `verification`, and `extraction`. So foreground/background is a classification over
+data already recorded, not new plumbing.
+
+Two new refusal reasons, both fail-closed and both durable:
+
+- `foreground_reserve` — background work is refused once the day's usage plus the reserve would
+  reach the shared daily ceiling. The point is that a busy extraction worker must not spend the
+  last request of the day and leave the user's own turn refused.
+- `background_request_limit` — an optional daily ceiling for background roles alone, which binds
+  even when the shared budget is wide open.
+
+Decisions worth defending:
+
+- **Unknown roles are treated as background.** `is_background_kind` is `kind != "model_call"`
+  rather than a whitelist of the three known background kinds. If someone adds a role later and
+  forgets this function, the failure mode is that their new work politely yields; a whitelist
+  would have made the failure mode "new work outranks the user's request", which is worse. A test
+  pins that an unrecognised kind yields.
+- **Fairness is on by default**, reserving a tenth of the daily budget, because a fairness
+  mechanism that ships disabled protects nobody. Note `env_u64` rejects zero, so the smallest
+  configurable reserve is 1 rather than "off" — called out because it is a real limitation of
+  reusing that parser.
+- **The new checks are appended after the existing ones**, so P14-T04a's precedence and its
+  reason strings are untouched; the pre-existing refusal test still passes unchanged.
+- **A background ceiling never blocks foreground work.** Asserted explicitly, since the obvious
+  implementation mistake is to apply the background counter to every call.
+
+Verified: `cargo clippy --locked --all-targets --all-features -- -D warnings` clean;
+`cargo test --locked provider` → `33 passed; 0 failed` (31 before, `filtered out` unchanged at 214,
+so both new tests are inside the gate); full `cargo test --locked` → `247 passed; 0 failed`, which
+I ran because the two new `SpendLimits` fields change defaults for every caller, not just this
+path; `python3 tests/recording_integration.py` → `PASS` (its `budgets` case exercises the
+reservation path).
+
+Remaining on this task: pre-dispatch capability detection. Step 1 made the tools-unsupported
+fallback reactive and universal; the open clause is avoiding the wasted first call, which can
+cache on the shared health state added in step 2.
+
 ## 2026-09-15T05:20:00Z · P14-T04b step 2 — circuit breaker, Retry-After, and jitter
 
 Recon first, because the shape of the fix depended on facts I did not have. Three of them

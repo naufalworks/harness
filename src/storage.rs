@@ -1046,6 +1046,8 @@ mod tests {
     fn spend_limits() -> SpendLimits {
         SpendLimits {
             requests_per_turn: 2,
+            background_requests_per_day: None,
+            foreground_reserve_per_day: 1,
             requests_per_day: 20,
             tokens_per_turn: Some(100),
             tokens_per_day: Some(1000),
@@ -1093,6 +1095,105 @@ mod tests {
         assert!(error.to_string().contains("turn_token_limit"));
         let refused:i64=db.run(|c|Ok(c.query_row("SELECT count(*) FROM provider_calls WHERE state='refused' AND reason='turn_token_limit'",[],|r|r.get(0))?)).await.unwrap();
         assert_eq!(refused, 1);
+    }
+
+    /// Fairness: background roles must leave daily headroom for the request a user is waiting
+    /// on, and may carry a ceiling of their own. Both decisions have to be durable refusals
+    /// recorded in the ledger, exactly like the P14-T04a limits they extend.
+    #[tokio::test]
+    async fn background_provider_roles_yield_daily_headroom_to_foreground_work() {
+        fn limits(background_per_day: Option<u64>, per_day: u64) -> SpendLimits {
+            SpendLimits {
+                requests_per_turn: 100,
+                requests_per_day: per_day,
+                background_requests_per_day: background_per_day,
+                foreground_reserve_per_day: 1,
+                tokens_per_turn: None,
+                tokens_per_day: None,
+                cost_microusd_per_turn: None,
+                cost_microusd_per_day: None,
+                input_microusd_per_million: None,
+                output_microusd_per_million: None,
+            }
+        }
+
+        // Daily budget of 3 with 1 reserved: background may take 2, then must yield.
+        let db = DbStore::init(":memory:").unwrap();
+        for _ in 0..2 {
+            db.reserve_provider_call(
+                Some("request".into()),
+                "compaction".into(),
+                "model".into(),
+                limits(None, 3),
+            )
+            .await
+            .expect("background work is allowed while headroom remains");
+        }
+        let refused = db
+            .reserve_provider_call(
+                Some("request".into()),
+                "extraction".into(),
+                "model".into(),
+                limits(None, 3),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            refused.to_string().contains("foreground_reserve"),
+            "background work must yield the reserved slot, got {refused}"
+        );
+        // The slot it yielded is still available to the user's own turn.
+        db.reserve_provider_call(
+            Some("request".into()),
+            "model_call".into(),
+            "model".into(),
+            limits(None, 3),
+        )
+        .await
+        .expect("foreground work may spend the reserved slot");
+        let logged: i64 = db
+            .run(|c| {
+                Ok(c.query_row(
+                    "SELECT count(*) FROM provider_calls WHERE state='refused' AND reason='foreground_reserve'",
+                    [],
+                    |r| r.get(0),
+                )?)
+            })
+            .await
+            .unwrap();
+        assert_eq!(logged, 1, "the refusal must be durable");
+
+        // A background-only ceiling binds even when the shared budget is wide open.
+        let db = DbStore::init(":memory:").unwrap();
+        db.reserve_provider_call(
+            Some("request".into()),
+            "verification".into(),
+            "model".into(),
+            limits(Some(1), 500),
+        )
+        .await
+        .unwrap();
+        let capped = db
+            .reserve_provider_call(
+                Some("request".into()),
+                "verification".into(),
+                "model".into(),
+                limits(Some(1), 500),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            capped.to_string().contains("background_request_limit"),
+            "the background ceiling must bind independently, got {capped}"
+        );
+        db.reserve_provider_call(
+            Some("request".into()),
+            "model_call".into(),
+            "model".into(),
+            limits(Some(1), 500),
+        )
+        .await
+        .expect("a background ceiling must never block foreground work");
     }
 
     #[tokio::test]
