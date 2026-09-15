@@ -108,7 +108,7 @@ mod provenance;
 mod provider;
 mod turns;
 #[allow(unused_imports)]
-pub use provenance::{PROVENANCE_NODE_KINDS, PROVENANCE_RELATIONS};
+pub use provenance::{IncidentQuery, PROVENANCE_NODE_KINDS, PROVENANCE_RELATIONS};
 mod scope;
 pub use history::SearchScope;
 pub use scope::*;
@@ -1050,6 +1050,297 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// P16-T01. One fixture, four claims: the default query still reproduces the
+    /// pre-P16-T01 shape; filters narrow the same projection instead of a second one;
+    /// the chronological view orders by recorded time and never invents one; and a node
+    /// with no recorded edge is labelled by proximity, never upgraded to a dependency.
+    async fn incident_fixture() -> DbStore {
+        let db = DbStore::init(":memory:").unwrap();
+        db.run(|c| {
+            let stamp = now();
+            c.execute("INSERT INTO sessions(id,scope,created_at) VALUES('session','global',?1)",[&stamp])?;
+            c.execute("INSERT INTO messages(id,session_id,role,content,status,created_at) VALUES('request','session','user','hi','pending',?1)",[&stamp])?;
+            c.execute("INSERT INTO chat_receipts(request_id,session_id,scope,model,signature,redacted,state,captured_at,updated_at) VALUES('request','session','global','main','sig',0,'failed',?1,?1)",[&stamp])?;
+            // Two steps with different tools; only the first is wired to a permission by a
+            // recorded edge, so the second must come back as temporal proximity.
+            c.execute(crate::agentic_sql::STEP_BEGIN,params!["step-a","request",None::<String>,0,"tool_call","edit","call-a","{}",stamp])?;
+            c.execute(crate::agentic_sql::STEP_BEGIN,params!["step-b","request",None::<String>,1,"tool_call","bash","call-b","{}",stamp])?;
+            c.execute(crate::agentic_sql::PERMISSION_CREATE,params!["permit-a","request","step-a","edit","edit","{}",stamp,stamp])?;
+            c.execute(crate::agentic_sql::PROVENANCE_EDGE_INSERT,params!["edge-a","request","step","step-a","depends_on","permission","permit-a",stamp])?;
+            // A real same-scope memory endpoint (migration 006's trigger requires one). It is a
+            // durable row that this projection does not read a timestamp for, so it resolves to
+            // an undated node -- which is what makes the undated-row handling testable.
+            c.execute("INSERT INTO candidates(id,scope,key,value,category,source_id,evidence,expected_revision,status,created_at,expires_at) VALUES('cand-a','global','k','v','fact','src','{}',0,'approved',?1,0)",[&stamp])?;
+            c.execute("INSERT INTO memories(id,scope,key,value,category,status,revision,candidate_id,created_at,updated_at) VALUES('mem-a','global','k','v','fact','active',1,'cand-a',?1,?1)",[&stamp])?;
+            c.execute(crate::agentic_sql::PROVENANCE_EDGE_INSERT,params!["edge-b","request","memory","mem-a","supports","step","step-a",stamp])?;
+            c.execute("INSERT INTO file_changes(id,request_id,step_id,path,action,diff,applied,created_at) VALUES('mut-a','request','step-a','src/lib.rs','modify','--- a\n+++ b\n',1,?1)",[&stamp])?;
+            c.execute(crate::agentic_sql::STEP_FINISH,params!["step-b","failed","{}",0,0,None::<i64>,None::<i64>,"tool_failed",stamp])?;
+            Ok(())
+        }).await.unwrap();
+        db
+    }
+
+    #[tokio::test]
+    async fn incident_confidence_separates_recorded_dependency_from_proximity() {
+        let db = incident_fixture().await;
+        let graph = db.incident_graph("request".into()).await.unwrap().unwrap();
+        let by_id = |id: &str| {
+            graph["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|node| node["id"] == json!(id))
+                .cloned()
+                .unwrap_or_else(|| panic!("missing node {id}"))
+        };
+        // A recorded edge is the ONLY way to earn a dependency label.
+        assert_eq!(by_id("step:step-a")["confidence"], "recorded_dependency");
+        assert_eq!(by_id("step:step-a")["confidence_basis"], "provenance_edge");
+        assert_eq!(
+            by_id("permission:permit-a")["confidence"],
+            "recorded_dependency"
+        );
+        // step-b co-occurs and has a recorded time, but nothing was recorded about it.
+        assert_eq!(by_id("step:step-b")["confidence"], "temporal_proximity");
+        assert_eq!(
+            by_id("step:step-b")["confidence_basis"],
+            "same_request_recorded_time"
+        );
+        assert_eq!(by_id("step:step-b")["provenance"], "unknown");
+        // The legend ships with the response so a client cannot invent a fourth meaning.
+        assert!(graph["confidence_labels"]["temporal_proximity"]
+            .as_str()
+            .unwrap()
+            .contains("not causation"));
+        // No field may carry model reasoning. Checked over keys, recursively: the prose note
+        // legitimately contains the word "reasoning" while promising the absence of the thing.
+        fn keys(value: &Value, out: &mut Vec<String>) {
+            match value {
+                Value::Object(map) => {
+                    for (key, child) in map {
+                        out.push(key.clone());
+                        keys(child, out);
+                    }
+                }
+                Value::Array(items) => items.iter().for_each(|item| keys(item, out)),
+                _ => {}
+            }
+        }
+        let mut names = Vec::new();
+        keys(&graph, &mut names);
+        for name in &names {
+            for banned in ["thought", "reasoning", "rationale", "explanation"] {
+                assert!(!name.contains(banned), "leaked key {name}");
+            }
+        }
+        assert_eq!(graph["earliest_known_break"]["node_id"], "step:step-b");
+    }
+
+    #[tokio::test]
+    async fn incident_filters_and_search_narrow_the_same_projection() {
+        let db = incident_fixture().await;
+        let ids = |graph: &Value| {
+            graph["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|n| n["id"].as_str().unwrap().to_string())
+                .collect::<HashSet<_>>()
+        };
+        // Filter by tool.
+        let bash = db
+            .incident_view(
+                "request".into(),
+                IncidentQuery {
+                    tool: Some("bash".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let bash_ids = ids(&bash);
+        assert!(bash_ids.contains("step:step-b"));
+        assert!(!bash_ids.contains("step:step-a"));
+        assert_eq!(bash["query"]["filtered"], json!(true));
+        // The unfiltered totals are still reported, so a reviewer sees what was excluded.
+        assert!(bash["counts"]["unfiltered"]["nodes"].as_i64().unwrap() > bash_ids.len() as i64);
+
+        // Filter by path: only the mutation carries one.
+        let path = db
+            .incident_view(
+                "request".into(),
+                IncidentQuery {
+                    path: Some("src/lib".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(ids(&path).contains("mutation:mut-a"));
+        assert!(!ids(&path).contains("step:step-a"));
+
+        // Filter by status and by row id.
+        let failed = db
+            .incident_view(
+                "request".into(),
+                IncidentQuery {
+                    status: Some("failed".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(ids(&failed).contains("step:step-b"));
+        let row = db
+            .incident_view(
+                "request".into(),
+                IncidentQuery {
+                    row_id: Some("permit-a".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(ids(&row).contains("permission:permit-a"));
+
+        // Free-text search over labels, tokenised by the shared normaliser.
+        let text = db
+            .incident_view(
+                "request".into(),
+                IncidentQuery {
+                    q: Some("bash".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(ids(&text).contains("step:step-b"));
+        assert!(!ids(&text).contains("step:step-a"));
+
+        // Relation filtering removes the edge and therefore its neighborhood.
+        let relation = db
+            .incident_view(
+                "request".into(),
+                IncidentQuery {
+                    relation: Some("contradicts".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(relation["edges"].as_array().unwrap().is_empty());
+        // With no recorded edge left, nothing may still claim a dependency except the frame.
+        for node in relation["nodes"].as_array().unwrap() {
+            if node["kind"] != json!("request") {
+                assert_ne!(node["confidence"], "recorded_dependency");
+            }
+        }
+
+        // The request frame always survives a filter that matches nothing.
+        let empty = db
+            .incident_view(
+                "request".into(),
+                IncidentQuery {
+                    tool: Some("no-such-tool".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(ids(&empty), HashSet::from(["request:request".to_string()]));
+
+        // Closed graph under every filter: every edge endpoint resolves to a returned node.
+        for graph in [&bash, &path, &failed, &row, &text, &relation, &empty] {
+            let node_ids = ids(graph);
+            for edge in graph["edges"].as_array().unwrap() {
+                assert!(node_ids.contains(edge["source"].as_str().unwrap()));
+                assert!(node_ids.contains(edge["target"].as_str().unwrap()));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn incident_timeline_orders_by_recorded_time_and_marks_undated_rows() {
+        let db = incident_fixture().await;
+        let graph = db
+            .incident_view(
+                "request".into(),
+                IncidentQuery {
+                    view: "chronological".into(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let timeline = graph["timeline"].as_array().unwrap();
+        assert!(!timeline.is_empty());
+        assert_eq!(graph["query"]["view"], "chronological");
+        // Dated entries come first and are non-decreasing; undated entries are counted, not
+        // guessed into an order.
+        let mut last: Option<String> = None;
+        let mut seen_undated = false;
+        for entry in timeline {
+            match entry["at"].as_str() {
+                Some(at) => {
+                    assert!(!seen_undated, "a dated row followed an undated one");
+                    if let Some(previous) = &last {
+                        assert!(previous.as_str() <= at);
+                    }
+                    last = Some(at.to_string());
+                }
+                None => seen_undated = true,
+            }
+        }
+        assert_eq!(
+            graph["timeline_undated"].as_i64().unwrap(),
+            timeline.iter().filter(|e| e["at"].is_null()).count() as i64
+        );
+        // The fixture deliberately contains one, so this suite fails if undated rows are ever
+        // sorted into the dated sequence rather than listed after it.
+        assert!(seen_undated, "the fixture must exercise an undated row");
+        assert!(graph["timeline_undated"].as_i64().unwrap() >= 1);
+        // Every timeline entry resolves to a node in the same response.
+        let node_ids = graph["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| n["id"].as_str().unwrap())
+            .collect::<HashSet<_>>();
+        for entry in timeline {
+            assert!(node_ids.contains(entry["node_id"].as_str().unwrap()));
+        }
+        // A rejected view is refused rather than silently treated as causal.
+        assert!(db
+            .incident_view(
+                "request".into(),
+                IncidentQuery {
+                    view: "guessed".into(),
+                    ..Default::default()
+                }
+            )
+            .await
+            .is_err());
+        // A hand-built anchor is refused: cursors are opaque.
+        assert!(db
+            .incident_view(
+                "request".into(),
+                IncidentQuery {
+                    anchor: Some(json!({"after_node_id": "step:step-a"})),
+                    ..Default::default()
+                }
+            )
+            .await
+            .is_err());
     }
 
     #[tokio::test]

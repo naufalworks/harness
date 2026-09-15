@@ -593,15 +593,67 @@ async fn request_steps(State(h): State<Harness>, Path(id): Path<String>) -> ApiR
         ))?;
     Ok(Json(h.store.turn_steps(id).await.map_err(db_error)?))
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IncidentQueryParams {
+    /// `causal` (default) or `chronological`.
+    #[serde(default)]
+    view: Option<String>,
+    #[serde(default)]
+    relation: Option<String>,
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    tool: Option<String>,
+    #[serde(default)]
+    row_id: Option<String>,
+    #[serde(default)]
+    q: Option<String>,
+    /// An `expansion_cursors` object from a previous response, serialized verbatim. It is
+    /// opaque on purpose: a client that builds one by hand is refused rather than served a
+    /// page computed from offsets it guessed.
+    #[serde(default)]
+    anchor: Option<String>,
+}
 /// P8-T02: bounded causal incident read model. This is diagnostic evidence, not model reasoning.
+///
+/// P16-T01 adds reviewer navigation on the same projection: bounded expansion via the opaque
+/// anchor, filtering by relation/kind/status/path/tool/row, free-text label search, and a
+/// chronological view beside the causal one. Confidence labels distinguish a recorded
+/// dependency from mere temporal proximity, and say `unknown` when neither is available.
 async fn request_incident(
     State(h): State<Harness>,
     Path(id): Path<String>,
+    Query(q): Query<IncidentQueryParams>,
 ) -> ApiResult<Json<Value>> {
     Uuid::parse_str(&id).map_err(|_| invalid("Invalid request identifier"))?;
+    let anchor = match q.anchor.as_deref().map(str::trim).filter(|a| !a.is_empty()) {
+        Some(text) => Some(serde_json::from_str::<Value>(text).map_err(|_| {
+            invalid("Expansion anchor must be the JSON object the previous response returned")
+        })?),
+        None => None,
+    };
+    let query = storage::IncidentQuery {
+        view: q.view.unwrap_or_else(|| "causal".into()),
+        relation: q.relation,
+        kind: q.kind,
+        status: q.status,
+        path: q.path,
+        tool: q.tool,
+        row_id: q.row_id,
+        q: q.q,
+        anchor,
+    };
+    query
+        .validate()
+        .map_err(|_| invalid("Unsupported incident filter, view or expansion anchor"))?;
     Ok(Json(
         h.store
-            .incident_graph(id)
+            .incident_view(id, query)
             .await
             .map_err(db_error)?
             .ok_or(ApiError(

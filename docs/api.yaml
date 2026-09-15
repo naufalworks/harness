@@ -457,11 +457,62 @@ paths:
     get:
       operationId: requestIncident
       summary: Read the incident graph for a request.
+      description: >-
+        Bounded, closed causal projection over recorded rows. P16-T01 adds reviewer
+        navigation on the same projection rather than a second one: filter by relation,
+        node kind, recorded status, mutation path, tool name or durable row id; free-text
+        search over node labels; a chronological view beside the causal one; and bounded
+        expansion by passing an `expansion_cursors` object back unchanged as `anchor`.
+        Every node carries a confidence label — `recorded_dependency` when a provenance
+        edge exists, `temporal_proximity` when the row merely co-occurred with a recorded
+        time, `unknown` when neither. Proximity is never presented as causation, and no
+        field carries model reasoning.
       parameters:
         - $ref: '#/components/parameters/RequestId'
+        - name: view
+          in: query
+          required: false
+          schema: {type: string, enum: [causal, chronological]}
+        - name: relation
+          in: query
+          required: false
+          schema: {type: string, enum: [supports, contradicts, depends_on, authorizes, mutates, invalidates, triggers]}
+        - name: kind
+          in: query
+          required: false
+          schema: {type: string, maxLength: 200}
+        - name: status
+          in: query
+          required: false
+          schema: {type: string, maxLength: 200}
+        - name: path
+          in: query
+          required: false
+          schema: {type: string, maxLength: 200}
+        - name: tool
+          in: query
+          required: false
+          schema: {type: string, maxLength: 200}
+        - name: row_id
+          in: query
+          required: false
+          schema: {type: string, maxLength: 200}
+        - name: q
+          in: query
+          required: false
+          schema: {type: string, maxLength: 200}
+        - name: anchor
+          in: query
+          required: false
+          description: >-
+            An `expansion_cursors` object from a previous response, serialized verbatim. Opaque:
+            an anchor from another projection is refused rather than reinterpreted.
+          schema: {type: string, maxLength: 2000}
       responses:
         '200':
-          description: Incident graph, including the earliest known break.
+          description: >-
+            Incident graph, including the earliest known break, the confidence legend, the
+            chronological timeline and per-collection truncation counts.
           content:
             application/json: {}
         '4XX':
