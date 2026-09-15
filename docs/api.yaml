@@ -566,6 +566,57 @@ paths:
           $ref: '#/components/responses/Error'
         '5XX':
           $ref: '#/components/responses/Error'
+  /chat/requests/{id}/audit-export/preview:
+    post:
+      operationId: auditExportPreview
+      summary: Preview a verifiable sanitized audit bundle for one run.
+      description: >-
+        P13-T04. Builds from the same bounded incident artifact as the causal-graph export,
+        recursively applies the shared sanitizer, and copies only an explicit allow-list. The
+        response is the exact artifact that would leave plus its canonical SHA-256 digest;
+        nothing is released by this operation. Every evidence item has its own checksum. When
+        `hash_chain` is enabled, every item also commits to its predecessor and the bundle
+        carries the resulting chain tip.
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json: {}
+      responses:
+        '200':
+          description: Exact bounded bundle and digest for operator review.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /chat/requests/{id}/audit-export/release:
+    post:
+      operationId: auditExportRelease
+      summary: Release the exact audit bundle whose digest was reviewed.
+      description: >-
+        P13-T04. Rebuilds and verifies the selected run's bounded bundle immediately before
+        release. `audience` and `hash_chain` must match the preview, and `reviewed_sha256` must
+        be the exact digest returned by that preview. Any changed evidence or option produces a
+        conflict instead of exporting against stale review. The artifact contains no unrelated
+        workspace rows and no exact-original archive bytes.
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json: {}
+      responses:
+        '200':
+          description: Reviewed, sanitized and checksummed audit bundle.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
   /chat/incidents/compare:
     get:
       operationId: incidentCompare

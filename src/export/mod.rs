@@ -1,4 +1,4 @@
-//! P15-T04: exporting and importing selected memories and continuation packets.
+//! P15-T04 and P13-T04: reviewed exports for selected memory/history and one-run audit evidence.
 //!
 //! Three rules shape this module.
 //!
@@ -15,5 +15,6 @@
 //!    from "this is older than what I hold", and it is why a round trip is idempotent rather
 //!    than duplicating rows.
 
+pub mod audit;
 pub mod packet;
 pub mod review;

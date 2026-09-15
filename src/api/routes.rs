@@ -7,6 +7,7 @@ use crate::api::dto::{ChangeRow, ReceiptView, UNREADABLE_CHANGE};
 use crate::api::error::{db_error, invalid, ApiError, ApiResult, JsonBody};
 use crate::api::stream::{activity, activity_stream, generation, generation_stream};
 use crate::archive::{ArchiveStore, PrivacyAction};
+use crate::export::audit;
 use crate::{agent_loop, ingest, recording, safety, storage, tools, Harness};
 use anyhow::Result;
 use axum::{
@@ -965,6 +966,79 @@ async fn incident_export(
             ))?,
     ))
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuditExportPreviewRequest {
+    audience: String,
+    #[serde(default)]
+    hash_chain: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuditExportReleaseRequest {
+    audience: String,
+    #[serde(default)]
+    hash_chain: bool,
+    reviewed_sha256: String,
+}
+
+/// Show exactly what a one-run audit export would contain. Nothing leaves in this step.
+async fn audit_export_preview(
+    State(h): State<Harness>,
+    Path(id): Path<String>,
+    JsonBody(req): JsonBody<AuditExportPreviewRequest>,
+) -> ApiResult<Json<Value>> {
+    Uuid::parse_str(&id).map_err(|_| invalid("Invalid request identifier"))?;
+    let artifact = h
+        .store
+        .export_incident_graph(id.clone(), "json".into())
+        .await
+        .map_err(db_error)?
+        .ok_or(ApiError(
+            StatusCode::NOT_FOUND,
+            "Recording receipt not found",
+        ))?;
+    audit::prepare(&id, &req.audience, req.hash_chain, &artifact)
+        .map(Json)
+        .map_err(|_| invalid("Audit audience or selected run evidence was rejected"))
+}
+
+/// Release only the exact bounded artifact whose digest the operator reviewed.
+async fn audit_export_release(
+    State(h): State<Harness>,
+    Path(id): Path<String>,
+    JsonBody(req): JsonBody<AuditExportReleaseRequest>,
+) -> ApiResult<Json<Value>> {
+    Uuid::parse_str(&id).map_err(|_| invalid("Invalid request identifier"))?;
+    if req.reviewed_sha256.len() != 64
+        || !req.reviewed_sha256.chars().all(|c| c.is_ascii_hexdigit())
+    {
+        return Err(invalid(
+            "reviewed_sha256 must be the 64-character digest returned by preview",
+        ));
+    }
+    let artifact = h
+        .store
+        .export_incident_graph(id.clone(), "json".into())
+        .await
+        .map_err(db_error)?
+        .ok_or(ApiError(
+            StatusCode::NOT_FOUND,
+            "Recording receipt not found",
+        ))?;
+    let preview = audit::prepare(&id, &req.audience, req.hash_chain, &artifact)
+        .map_err(|_| invalid("Audit audience or selected run evidence was rejected"))?;
+    audit::release(preview, &req.reviewed_sha256)
+        .map(Json)
+        .map_err(|_| {
+            ApiError(
+                StatusCode::CONFLICT,
+                "The audit export changed after review; preview it again",
+            )
+        })
+}
+
 async fn request_changes(
     State(h): State<Harness>,
     Query(q): Query<RequestQuery>,
@@ -1951,6 +2025,14 @@ pub(crate) fn router(state: Harness) -> Router {
         .route("/chat/requests/{id}/steps", get(request_steps))
         .route("/chat/requests/{id}/incident", get(request_incident))
         .route("/chat/requests/{id}/incident/export", get(incident_export))
+        .route(
+            "/chat/requests/{id}/audit-export/preview",
+            post(audit_export_preview),
+        )
+        .route(
+            "/chat/requests/{id}/audit-export/release",
+            post(audit_export_release),
+        )
         .route("/chat/incidents/compare", get(incident_compare))
         .route("/chat/requests/{id}/coverage", get(incident_coverage))
         .route("/chat/requests/{id}/review", post(incident_review))

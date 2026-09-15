@@ -1,5 +1,22 @@
 # PROGRESS — journal
 
+## 2026-09-15T17:56:01Z · P13-T04 — verifiable one-run audit export completed
+
+Implemented an authenticated preview/release protocol for a single selected run. The preview is
+built only from the existing bounded `causal-neighborhood-v1` incident artifact, copies an explicit
+allow-list, applies the shared sanitizer recursively, and returns the exact canonical SHA-256 digest
+an operator must review. Release rebuilds and verifies the artifact immediately and returns 409 if
+the reviewed digest is missing or stale. Each summary/node/edge record has its own SHA-256; optional
+hash-chain mode commits each ordered record to its predecessor and publishes a verified chain tip.
+
+The task-specific tests prove selected-run isolation, unrelated-field exclusion, sensitive-value
+withholding, per-record and bundle integrity, reorder/removal/chain tamper detection, stale-review
+refusal, and explicit verifiable no-chain mode. The exact task command passed 3 audit-export tests
+and the complete E2E suite. The full 295-test Rust suite, API/SQL/migration/recording contracts, strict
+Clippy, formatting, mocked browser suites, release quality/reproducibility checks, and the strict
+non-deploying release gate also passed. Schema remains 15. No service was restarted and no access,
+Cloudflare, DNS, UpCloud, firewall, relay, TLS, Tailscale, origin or production setting changed.
+
 ## 2026-09-15T17:40:00Z · P13-T04 — selected next dependency-ready audit task
 
 With P13-T02 and P16-T03 complete, P13-T04 is now the highest-priority ready implementation task.

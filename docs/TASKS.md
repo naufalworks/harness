@@ -882,7 +882,11 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - verify: cargo test --locked tools && python3 tests/recording_integration.py
 
 ### P13-T04 · Export verifiable sanitized audit bundles
-- status: doing
+- status: done
+- completed: 2026-09-15T17:56:01Z; added an authenticated two-step preview/release export for one selected run, with a strict allow-list, recursive shared sanitization, per-record and bundle SHA-256 checksums, optional predecessor hash-chain integrity, and stale-review refusal.
+- result: preview returns the exact bounded artifact and digest without releasing it; release rebuilds the same selected-run incident projection and requires the reviewed digest, so changed evidence, audience, chain mode, unrelated workspace fields, unsanitized values, reorder, removal or tampering cannot pass verification.
+- verify: `cargo test --locked audit_export` (3 passed), `scripts/verify_e2e.sh` (all real browser-to-server and failure-path scenarios passed), `cargo test --locked` (295 passed), API/SQL/migration/recording contracts passed, and `scripts/verify_release.sh` exited 0 with the strict non-deploying release gate.
+- publication: implemented on `task/p13-t04-audit-bundles`; no deployment, service restart, access, DNS, Cloudflare, UpCloud, firewall, relay, TLS, Tailscale or origin change.
 - priority: medium
 - lane: audit
 - parallel: yes
