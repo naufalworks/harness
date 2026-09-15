@@ -450,6 +450,24 @@ mod tests {
             "bounded root-keyed stdio pool: 2 sessions maximum, 30s idle expiry"
         );
 
+        std::fs::write(root.join("src/main.cpp"), "int main() { return 0; }\n").unwrap();
+        let cpp = lsp.run(
+            &ctx,
+            json!({ "operation": "discover", "path": "src/main.cpp" }),
+        );
+        assert_eq!(cpp.status, ToolStatus::Complete, "{}", cpp.content);
+        let cpp: Value = serde_json::from_str(&cpp.content).unwrap();
+        assert_eq!(cpp["supported"], true);
+        assert_eq!(cpp["language"], "cpp");
+        assert_eq!(cpp["server"], "clangd");
+
+        let escape = lsp.run(
+            &ctx,
+            json!({ "operation": "discover", "path": "../outside.rs" }),
+        );
+        assert_eq!(escape.status, ToolStatus::Failed);
+        assert_eq!(escape.error_code, Some("invalid_arguments"));
+
         std::fs::write(root.join("README.txt"), "plain text\n").unwrap();
         let text = lsp.run(
             &ctx,

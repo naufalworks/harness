@@ -25,6 +25,8 @@ The accessibility slice is now implemented and covered: the mobile navigation ha
 
 Transfer policy is explicit and fail-closed: browser upload/download operations are not in the schema, and unit coverage confirms both operation names are refused before CDP dispatch. Screenshots remain the only browser artifact transfer surface and are root-relative, generated-name, PNG-capped artifacts.
 
+LSP discovery coverage now also pins the configured C/C++ mapping (`.cpp` → `clangd`/`cpp`) and refuses a discovery path that escapes the project root before any server session is started.
+
 ## 2026-09-15T15:50:00Z · P14-T05 — doing; language, browser, and accessible UI expansion
 
 P14-T03 is complete on commit `43c1b9c`. The documented eligibility rule selects P14-T05 as the
