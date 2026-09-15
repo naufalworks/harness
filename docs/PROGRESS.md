@@ -1,5 +1,40 @@
 # PROGRESS — journal
 
+## 2026-09-15T17:25:00Z · deployment — promote `7708e48` and advance live schema 11 → 13
+
+The live service was serving `a5dadb0` at `user_version=11` while `HEAD` required `012` and `013`,
+so this was a schema-advancing deploy, not a binary swap. That matters because `scripts/deploy.sh`
+only restores the previous binary when the schema is unchanged; once the schema moves, a failed
+candidate lands in `RECOVERY REQUIRED`, leaving the unit stopped with no automatic database restore.
+
+No operational backup existed: `.harness/backups` was absent and `/etc/harness` held only the
+exact-archiving keys (`archive.key`, `archive.key.prev`), which `scripts/backup.py` does not use.
+`.harness/deploy/previous-harness` was present but is only an executable, and is useless once the
+schema has advanced past it. Deploying in that state would have crossed a one-way door with no
+recovery path, so the deploy was paused and the owner chose to create a backup first.
+
+Recovery evidence established before promotion:
+- `python3 scripts/backup.py keygen /etc/harness/backup.key` (owner-only, `0600`).
+- `python3 scripts/backup.py create data/harness_v2.db /var/backups/harness --key-file ... --retain 7`
+  → `harness-20260915T094845Z-cd92c503.hbak` created and verified at schema 11, pre-migration.
+- `python3 scripts/backup.py drill <archive> --key-file ...` → `Restore drill passed`, an
+  independent restore into a clean target that did not touch the live database.
+
+Off-host copy of `/etc/harness/backup.key` and of the archive remains an owner decision and has NOT
+been done; the key and archive currently share this host, so a host loss would lose both.
+
+`bash scripts/deploy.sh` then reported: built `7708e48`, release sha256
+`81b1691395818afe76266ee73cd626f5b08376b333a398d175783985f48e5223`, pid `538093`, schema `13`,
+readiness verified, authenticated API answering, non-object body refused with `400`. Independently
+confirmed afterwards rather than trusting that line: `systemctl is-active harness` → `active`,
+`PRAGMA user_version` → `13`, and `python3 scripts/check_docs.py` → `0 failing check(s)` with
+`[PASS] deployment: live binary matches HEAD (7708e48)`. The two `[WARN]` lines for the P17-T04 and
+P17-T05 verify commands are pre-existing and untouched.
+
+One reporting note: the shell wrapper around the deploy exited non-zero because `${PIPESTATUS[0]}`
+is not valid under `/bin/sh` (`Bad substitution`). That was the wrapper, not the deploy; the
+independent checks above are what establish the result.
+
 ## 2026-09-15T17:10:00Z · integration — fast-forward `main` to `a0ba96b` and repair two stale contract fixtures
 
 `main` was fast-forwarded `a5dadb0..a0ba96b` (`git merge --ff-only p14-t05`, 39 files, +3029/-118).
