@@ -3,6 +3,7 @@ const $ = id => document.getElementById(id);
 const EXPECTED_SERVER_COMMIT = '__HARNESS_BUILD_COMMIT__';
 let token = '';
 let scope = sessionStorage.getItem('harness_scope') || 'global';
+let scopeConfig = null;
 let session = sessionStorage.getItem('harness_session') || crypto.randomUUID();
 let busy = false, epoch = 0, historyCursor = null, sessionsCursor = null;
 let pending = null, pendingPrompt = null;
@@ -588,6 +589,16 @@ for (const tab of document.querySelectorAll('[data-view]')) tab.addEventListener
 // source of truth, while these read-only endpoints make the current turn visible between model
 // calls. No model/tool text is inserted as HTML.
 const agentState = { requestId: null, sessionId: null, scope: null, permission: null, busyDecision: false, steps: [], changes: [], verification: null, incident: null, incidentNode: null };
+function renderProjectOverview(config = scopeConfig || {}) {
+  const currentScope = agentState.scope || scope;
+  const hasRoot = typeof config.root_path === 'string' && config.root_path.length > 0;
+  const mode = { ask: 'Ask', auto_edit: 'Auto-edit', auto_all: 'Auto-all' }[config.permission_mode] || 'Ask';
+  $('project-overview-scope').textContent = currentScope;
+  $('project-overview-tools').textContent = hasRoot ? 'Enabled' : 'Chat only';
+  $('project-overview-mode').textContent = mode;
+  $('project-overview-root').textContent = hasRoot ? config.root_path : 'No project root · file and command tools are off';
+}
+
 
 // P2-T01: the rail's transport is now the SSE feed instead of a 1 s clock. A frame only says
 // that a row was committed — the rail still re-reads the durable endpoints — so the socket can
@@ -941,6 +952,7 @@ async function refreshAgentTurn(receipt) {
   ]);
   if (!token || requestId !== (pending?.request_id || requestId) || sessionId !== session) return;
   agentState.requestId = requestId; agentState.sessionId = sessionId; agentState.scope = turnScope;
+  renderProjectOverview();
   $('agent-turn').hidden = false;
   // P2-T02: the turn record lives in the right rail; auto-open it on wide screens only.
   if (!window.matchMedia('(max-width: 1100px)').matches) $('rail').hidden = false;
@@ -956,7 +968,9 @@ async function refreshAgentTurn(receipt) {
   renderRetrieval(data[5]);
   // P2 context meter placeholder: real tokens-so-far from step receipts; the budget bar lands in P3.
   const tokens = (data[0].steps || []).reduce((sum, s) => sum + (s.tokens_in || 0) + (s.tokens_out || 0), 0);
-  $('context-tokens').textContent = tokens ? `${tokens.toLocaleString()} tokens so far` : 'meter lands in P3';
+  $('context-tokens').textContent = tokens ? `${tokens.toLocaleString()} tokens so far` : 'No recorded usage yet';
+  $('usage-tokens').textContent = tokens ? `${tokens.toLocaleString()} tokens` : 'No usage yet';
+  $('usage-cost').textContent = 'Tokens only · no price configured';
   const match = (data[2].permissions || []).find(item => item.request_id === requestId);
   renderAgentPermission(match || null);
   if (!match && !agentState.steps.length && !(data[1].items || []).length && !agentState.changes.length && !agentState.verification) { $('agent-turn').hidden = true; $('rail').hidden = true; }

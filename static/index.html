@@ -243,6 +243,16 @@
           <div id="incident-nodes" class="incident-nodes" aria-label="Incident nodes"></div>
           <div id="incident-detail" class="incident-detail" hidden></div>
         </section>
+        <section id="agent-overview" class="overview-panel" aria-label="Project and usage overview">
+          <div class="subhead"><strong>Project</strong><span id="project-overview-scope" class="muted">global</span></div>
+          <dl class="overview-grid">
+            <div><dt>Tools</dt><dd id="project-overview-tools">Chat only</dd></div>
+            <div><dt>Permission</dt><dd id="project-overview-mode">Ask</dd></div>
+            <div><dt>Usage</dt><dd id="usage-tokens">No usage yet</dd></div>
+            <div><dt>Cost</dt><dd id="usage-cost">Tokens only</dd></div>
+          </dl>
+          <p id="project-overview-root" class="muted small">No project root · file and command tools are off</p>
+        </section>
         <section class="context-meter">
           <div class="subhead"><strong>Context</strong><span id="context-tokens" class="muted">—</span></div>
           <div class="meter" aria-hidden="true"><span class="meter-fill"></span></div>

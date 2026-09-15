@@ -19,6 +19,8 @@ The bounded LSP session slice is now also implemented: sessions are root/server 
 
 The reconnect slice is now also implemented: API transport failures distinguish offline from timeouts, the connection badge exposes `Offline`, `Connection delayed`, `Reconnecting…`, and `Ready` states, and recovery performs only a read-only status refresh. No ambiguous chat request is resent automatically. The existing keyboard/mobile/dark-mode and no-JavaScript-exception browser checks remain green.
 
+The activity rail now includes a bounded project/usage overview: scope, tool availability, permission mode, recorded token usage, and an explicit tokens-only cost label. Project-root text is rendered with `textContent`, and the mocked UI suite asserts the dashboard without changing the submission or persistence contract.
+
 ## 2026-09-15T15:50:00Z · P14-T05 — doing; language, browser, and accessible UI expansion
 
 P14-T03 is complete on commit `43c1b9c`. The documented eligibility rule selects P14-T05 as the

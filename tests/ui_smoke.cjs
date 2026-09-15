@@ -82,6 +82,7 @@ const root=path.resolve(__dirname,'..');const out=process.env.QA_DIR || path.joi
   await page.goto('http://127.0.0.1:8080');await page.fill('#token','test-token');await page.click('#authform button');await page.waitForFunction(()=>!document.getElementById('workspace').hidden);
   assert.strictEqual(await page.locator('#token').inputValue(),'');assert(!await page.evaluate(()=>JSON.stringify({...localStorage,...sessionStorage}).includes('test-token')));
   await page.fill('#prompt','Help me choose the next implementation step.');await page.click('#send');await page.waitForFunction(()=>document.getElementById('notice').textContent.startsWith('Answer saved'));
+   assert.strictEqual(await page.locator('#project-overview-scope').innerText(),'global');assert.strictEqual(await page.locator('#project-overview-tools').innerText(),'Chat only');assert.strictEqual(await page.locator('#usage-tokens').innerText(),'18 tokens');assert((await page.locator('#usage-cost').innerText()).includes('Tokens only'));
   await page.waitForSelector('.suggestion-tray:not([hidden]) .candidate');
   // P15-T02 adds the rehearsal button between Edit and the destructive Dismiss; the exact list is
   // asserted so a silently reordered or duplicated control fails here.
@@ -161,7 +162,7 @@ const root=path.resolve(__dirname,'..');const out=process.env.QA_DIR || path.joi
   await page.click('#lock');assert(await page.locator('#workspace').isHidden());assert.strictEqual(await page.locator('#candidates').innerText(),'');
   assert.strictEqual(await page.locator('#verificationmodel').inputValue(),'');
   assert.deepStrictEqual(errors,[]);
-  const result={status:'passed',scope:'Mocked API browser checks; Rust server not executed',checks:['connect','token_not_persisted','conversation','inline_suggestion_tray','suggestion_edit','suggestion_dismiss','diff_card_rendered','diff_card_revert','diff_card_create_revert','verification_badge','verification_claim_text_inert','verification_model_setting','retrieval_receipt_panel','retrieval_receipt_text_inert','retrieval_preview_rehearsal','import_inbox_only','memory_evidence','html_injection_rendered_as_text','failed_approval_recoverable','suggestion_save','import','job_retry','model_settings','mobile_overflow','dark_mode','lock','no_javascript_exceptions']};
+  const result={status:'passed',scope:'Mocked API browser checks; Rust server not executed',checks:['connect','token_not_persisted','conversation','inline_suggestion_tray','suggestion_edit','suggestion_dismiss','diff_card_rendered','diff_card_revert','diff_card_create_revert','verification_badge','verification_claim_text_inert','verification_model_setting','retrieval_receipt_panel','retrieval_receipt_text_inert','retrieval_preview_rehearsal','import_inbox_only','memory_evidence','html_injection_rendered_as_text','failed_approval_recoverable','suggestion_save','import','job_retry','model_settings','project_dashboard','mobile_overflow','dark_mode','lock','no_javascript_exceptions']};
   fs.writeFileSync(path.join(out,'ui-results.json'),JSON.stringify(result,null,2));console.log(JSON.stringify(result));
  }finally{await browser.close();}
 })().then(()=>process.exit(0)).catch(e=>{console.error(e);process.exit(1)});

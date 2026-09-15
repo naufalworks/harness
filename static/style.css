@@ -383,6 +383,12 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere}
 .rail-empty{display:none;padding:18px 16px}
 #rail:has(#agent-turn[hidden]) .rail-empty{display:block}
 .context-meter{border-top:1px solid var(--border);padding-top:12px}
+.overview-panel{padding:10px 0;border-bottom:1px solid var(--border)}
+.overview-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0 8px}
+.overview-grid div{min-width:0;padding:7px 8px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.overview-grid dt{font-size:10px;color:var(--text-3);text-transform:uppercase;letter-spacing:.06em}
+.overview-grid dd{margin:2px 0 0;font-size:12px;overflow-wrap:anywhere}
+#project-overview-root{margin:0;overflow-wrap:anywhere}
 .meter{height:5px;border-radius:4px;background:var(--surface);border:1px solid var(--border);overflow:hidden}
 .meter-fill{display:block;height:100%;width:0;background:var(--accent)}
 
