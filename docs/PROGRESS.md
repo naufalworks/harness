@@ -1,5 +1,58 @@
 # PROGRESS — journal
 
+## 2026-09-15T05:20:00Z · P14-T04b step 2 — circuit breaker, Retry-After, and jitter
+
+Recon first, because the shape of the fix depended on facts I did not have. Three of them
+mattered:
+
+1. There is no retry, backoff, jitter, or breaker code anywhere in `src/`, and `memory_agents.rs`
+   contained no `Arc`, `RwLock`, or `Mutex` at all. Genuinely greenfield shared state.
+2. `MemoryAgents` is *cloned* (`main.rs:213`, `main.rs:233`, `recording.rs:832`). A breaker stored
+   as a plain field would therefore be per-clone and would never trip. The state lives behind an
+   `Arc<Mutex<_>>` so every clone observes one decision; a test asserts exactly that, since it is
+   the property most likely to be broken later by someone adding a field.
+3. There are exactly **two** `reserve_spend` call sites (`complete_turn`, `stream_turn`), so every
+   metered provider call funnels through two places rather than the seven public methods. The
+   breaker is gated there and nowhere else.
+
+The gate runs *before* `reserve_spend`, deliberately. A refused call must not consume a request
+from the per-turn or per-day budget; otherwise a sick provider would quietly burn the caller's
+ceiling while doing no work. That keeps the P14-T04a fail-closed limits intact: nothing routes
+around `reserve_spend`/`finish_spend`, and no new provider call is introduced.
+
+Design decisions worth defending:
+
+- **A 400 never trips the breaker.** Only 408/429/5xx and transport faults count. One malformed
+  prompt taking the provider offline for every other caller would be a worse failure than the one
+  being prevented.
+- **Jitter spans [50%, 100%] of the base, not [0%, 100%].** Textbook full jitter can select a
+  near-zero wait, which defeats the purpose of having opened the breaker.
+- **`Retry-After` is honoured only in delta-seconds form, and clamped to the 60s cap.** The
+  HTTP-date form is ignored rather than half-parsed: a misparsed date could stall the provider far
+  longer than any backoff we would choose. A provider asking for an hour gets 60s.
+- **The classifier reads the status back out of the error message** that `response_json` formats,
+  reusing that one contract instead of adding a parallel error type. That coupling is real, so a
+  test pins the message format and will fail loudly if it changes.
+- **A poisoned mutex recovers** instead of panicking, so a breaker cannot permanently wedge the
+  provider.
+
+One structural finding recorded for whoever does step 3: both `response_json` and
+`consume_stream_response` reduce a response to a status plus body, so headers are gone by the time
+a failure is classified. `Retry-After` is therefore captured at the two funnels while the headers
+are still in hand, not downstream.
+
+Clippy earned its keep: it rejected a `health()` accessor I had added that nothing used. Removed
+rather than silenced with an allow — speculative API is not worth a lint exemption.
+
+Verified: `cargo test --locked provider` → `31 passed; 0 failed` (24 before; the seven new tests
+all sit in `provider_tests`, whose module path the gate's filter already matches, and `filtered
+out` stayed at 214 confirming none were skipped). `python3 tests/recording_integration.py` →
+`PASS`. `cargo clippy --locked --all-targets --all-features -- -D warnings` clean.
+
+Remaining for this task: foreground/background fairness and role-specific budgets, plus
+capability detection *before* dispatch, which can now cache on the same shared health state
+instead of needing new plumbing.
+
 ## 2026-09-15T05:10:00Z · P14-T04b step 1 — one discovered capability, applied to every role
 
 Recon for the role-fallback clause found the asymmetry worth fixing first, and it was not a

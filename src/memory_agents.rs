@@ -8,7 +8,14 @@ use anyhow::{bail, Context, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{collections::HashSet, env, future::Future, pin::Pin, time::Duration};
+use std::{
+    collections::HashSet,
+    env,
+    future::Future,
+    pin::Pin,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant, SystemTime},
+};
 
 /// Boxed future returned by the async generation-sink methods. A durable publisher must commit
 /// each chunk *before* the transport can deliver it, which a synchronous sink cannot express.
@@ -62,6 +69,7 @@ pub struct MemoryAgents {
     pub model: String,
     spend_store: Option<DbStore>,
     spend_limits: SpendLimits,
+    health: ProviderHealth,
 }
 
 #[derive(Clone, Debug)]
@@ -125,6 +133,163 @@ impl SpendLimits {
         let output = usage.completion_tokens? as u128 * self.output_microusd_per_million? as u128;
         u64::try_from((input + output).div_ceil(1_000_000)).ok()
     }
+}
+
+/// Consecutive retryable failures tolerated before the breaker opens.
+const BREAKER_THRESHOLD: u32 = 3;
+/// Base cooldown, doubled per consecutive trip and capped by `BREAKER_MAX_COOLDOWN`.
+const BREAKER_COOLDOWN: Duration = Duration::from_secs(2);
+const BREAKER_MAX_COOLDOWN: Duration = Duration::from_secs(60);
+
+/// Provider health shared by every clone of `MemoryAgents`.
+///
+/// P14-T04b: a breaker only means something if it is shared. `MemoryAgents` is cloned per
+/// request (`main.rs` and `recording.rs` both clone it), so this state lives behind an `Arc`
+/// and every clone observes the same open/closed decision.
+#[derive(Clone, Debug)]
+pub struct ProviderHealth {
+    inner: Arc<Mutex<HealthState>>,
+}
+
+#[derive(Debug, Default)]
+struct HealthState {
+    consecutive_failures: u32,
+    trips: u32,
+    open_until: Option<Instant>,
+    last_retry_after: Option<Duration>,
+}
+
+impl Default for ProviderHealth {
+    fn default() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(HealthState::default())),
+        }
+    }
+}
+
+impl ProviderHealth {
+    fn lock(&self) -> std::sync::MutexGuard<'_, HealthState> {
+        // A poisoned breaker must not wedge the provider permanently: recover the state
+        // and keep serving rather than panicking every later call.
+        self.inner.lock().unwrap_or_else(|error| error.into_inner())
+    }
+
+    /// Remaining cooldown, or `None` when calls may proceed.
+    pub fn blocked_for(&self) -> Option<Duration> {
+        let mut state = self.lock();
+        let open_until = state.open_until?;
+        let now = Instant::now();
+        if now >= open_until {
+            state.open_until = None;
+            return None;
+        }
+        Some(open_until.saturating_duration_since(now))
+    }
+
+    fn note_retry_after(&self, retry_after: Option<Duration>) {
+        self.lock().last_retry_after = retry_after;
+    }
+
+    fn record_success(&self) {
+        let mut state = self.lock();
+        state.consecutive_failures = 0;
+        state.trips = 0;
+        state.open_until = None;
+        state.last_retry_after = None;
+    }
+
+    /// Records a failure, opening the breaker once the threshold is reached. Returns the
+    /// cooldown when this failure tripped it.
+    fn record_failure(&self, retryable: bool, jitter_ratio: f64) -> Option<Duration> {
+        let mut state = self.lock();
+        if !retryable {
+            // A rejected request is not a sick provider. Letting a 400 trip the breaker
+            // would take the provider down for every other caller over one bad prompt.
+            state.consecutive_failures = 0;
+            return None;
+        }
+        state.consecutive_failures = state.consecutive_failures.saturating_add(1);
+        if state.consecutive_failures < BREAKER_THRESHOLD {
+            return None;
+        }
+        let retry_after = state.last_retry_after.take();
+        let trip = state.trips;
+        state.trips = state.trips.saturating_add(1);
+        let cooldown = breaker_cooldown(trip, retry_after, jitter_ratio);
+        state.open_until = Some(Instant::now() + cooldown);
+        state.consecutive_failures = 0;
+        Some(cooldown)
+    }
+}
+
+/// Statuses worth backing off from rather than failing permanently.
+pub(crate) fn is_retryable_status(status: u16) -> bool {
+    status == 408 || status == 429 || (500..=599).contains(&status)
+}
+
+/// Classifies an error from the provider paths as retryable or permanent.
+///
+/// The status is recovered from the message because `response_json` reports failures as
+/// `provider returned HTTP <code>`; this reuses that single formatting contract instead of
+/// introducing a parallel error type.
+pub(crate) fn is_retryable_error(error: &anyhow::Error) -> bool {
+    let text = error.to_string().to_lowercase();
+    match text.split("provider returned http ").nth(1) {
+        Some(rest) => rest
+            .split(|c: char| !c.is_ascii_digit())
+            .find(|d| !d.is_empty())
+            .and_then(|digits| digits.parse::<u16>().ok())
+            .is_some_and(is_retryable_status),
+        // Transport faults never reach a status. Treat those as retryable and everything
+        // else (decode errors, limit violations, refusals) as permanent.
+        None => {
+            text.contains("timed out")
+                || text.contains("error sending request")
+                || text.contains("connection")
+        }
+    }
+}
+
+/// Parses `Retry-After` in delta-seconds form, clamped to the maximum cooldown.
+///
+/// The HTTP-date form is deliberately ignored rather than half-supported: a misparsed date
+/// could stall the provider far longer than any backoff we would choose ourselves.
+pub(crate) fn parse_retry_after(value: &str) -> Option<Duration> {
+    let seconds: u64 = value.trim().parse().ok()?;
+    Some(Duration::from_secs(
+        seconds.min(BREAKER_MAX_COOLDOWN.as_secs()),
+    ))
+}
+
+/// Cooldown for a trip: honour `Retry-After` when the provider sent one, otherwise an
+/// exponential base with jitter so concurrent callers do not retry in lockstep.
+pub(crate) fn breaker_cooldown(
+    trip: u32,
+    retry_after: Option<Duration>,
+    jitter_ratio: f64,
+) -> Duration {
+    if let Some(after) = retry_after {
+        return after.min(BREAKER_MAX_COOLDOWN);
+    }
+    let base = BREAKER_COOLDOWN
+        .saturating_mul(1u32 << trip.min(5))
+        .min(BREAKER_MAX_COOLDOWN);
+    // Jitter spans [50%, 100%] of the base rather than [0%, 100%]: full jitter can pick a
+    // near-zero wait, which defeats the point of opening the breaker at all.
+    let ratio = if jitter_ratio.is_finite() {
+        jitter_ratio.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let scaled = base.as_millis() as f64 * (0.5 + 0.5 * ratio);
+    Duration::from_millis(scaled as u64).min(BREAKER_MAX_COOLDOWN)
+}
+
+fn jitter_ratio() -> f64 {
+    let nanos = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos());
+    f64::from(nanos % 1_000_000) / 1_000_000.0
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -250,11 +415,45 @@ impl MemoryAgents {
             model: model.into(),
             spend_store: None,
             spend_limits: SpendLimits::from_env()?,
+            health: ProviderHealth::default(),
         })
     }
     pub fn with_spend_store(mut self, store: DbStore) -> Self {
         self.spend_store = Some(store);
         self
+    }
+    /// Fails closed while the breaker is open.
+    ///
+    /// Called *before* `reserve_spend` on purpose: a refused call must not consume a
+    /// request from the per-turn or per-day budget, or a sick provider would silently
+    /// burn the caller's ceiling while never doing any work.
+    fn guard_breaker(&self) -> Result<()> {
+        if let Some(remaining) = self.health.blocked_for() {
+            bail!(
+                "provider circuit open, retry in {}s",
+                remaining.as_secs().max(1)
+            );
+        }
+        Ok(())
+    }
+    /// Captures `Retry-After` while the headers are still in hand. `response_json` and
+    /// `consume_stream_response` both reduce the response to a status and a body, so the
+    /// header is unavailable by the time a failure is classified.
+    fn observe_retry_after(&self, headers: &reqwest::header::HeaderMap) {
+        let retry_after = headers
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(parse_retry_after);
+        self.health.note_retry_after(retry_after);
+    }
+    fn record_health<T>(&self, result: &Result<T>) {
+        match result {
+            Ok(_) => self.health.record_success(),
+            Err(error) => {
+                self.health
+                    .record_failure(is_retryable_error(error), jitter_ratio());
+            }
+        }
     }
     pub async fn within_spend_request<F: Future>(
         &self,
@@ -489,6 +688,7 @@ impl MemoryAgents {
         if model.trim().is_empty() || model.len() > 128 || model.chars().any(char::is_control) {
             bail!("invalid model identifier");
         }
+        self.guard_breaker()?;
         let reservation = self.reserve_spend(kind, model).await?;
         let request = completion_request(model, messages, tools);
         let response_result: Result<ModelTurn> = async {
@@ -500,6 +700,7 @@ impl MemoryAgents {
                 .json(&request)
                 .send()
                 .await?;
+            self.observe_retry_after(response.headers());
             let body: Completion = serde_json::from_value(self.response_json(response).await?)
                 .context("invalid completion shape")?;
             let choice = body
@@ -518,6 +719,7 @@ impl MemoryAgents {
             .as_ref()
             .err()
             .map(|error| safety::redact(&error.to_string()));
+        self.record_health(&response_result);
         self.finish_spend(reservation, usage, error).await?;
         response_result
     }
@@ -531,6 +733,7 @@ impl MemoryAgents {
         if model.trim().is_empty() || model.len() > 128 || model.chars().any(char::is_control) {
             bail!("invalid model identifier");
         }
+        self.guard_breaker()?;
         let reservation = self.reserve_spend("model_call", model).await?;
         let result: Result<()> = async {
             let request = completion_stream_request(model, messages);
@@ -542,6 +745,7 @@ impl MemoryAgents {
                 .json(&request)
                 .send()
                 .await?;
+            self.observe_retry_after(response.headers());
             if !response
                 .headers()
                 .get(reqwest::header::CONTENT_TYPE)
@@ -575,6 +779,7 @@ impl MemoryAgents {
             .as_ref()
             .err()
             .map(|error| safety::redact(&error.to_string()));
+        self.record_health(&result);
         self.finish_spend(reservation, usage, error).await?;
         result
     }
@@ -877,6 +1082,139 @@ pub async fn worker(
 #[cfg(test)]
 mod provider_tests {
     use super::*;
+
+    /// P14-T04b: a rejected request is not a sick provider. If a 400 could trip the
+    /// breaker, one malformed prompt would take the provider offline for every caller.
+    #[test]
+    fn only_retryable_failures_trip_the_breaker() {
+        for status in [408u16, 429, 500, 503, 599] {
+            assert!(is_retryable_status(status), "{status} should be retryable");
+        }
+        for status in [200u16, 400, 401, 403, 404, 422] {
+            assert!(!is_retryable_status(status), "{status} must be permanent");
+        }
+
+        let health = ProviderHealth::default();
+        for _ in 0..10 {
+            assert!(health.record_failure(false, 0.0).is_none());
+        }
+        assert!(
+            health.blocked_for().is_none(),
+            "permanent failures must never open the breaker"
+        );
+    }
+
+    #[test]
+    fn the_breaker_opens_on_the_third_consecutive_retryable_failure() {
+        let health = ProviderHealth::default();
+        assert!(health.record_failure(true, 0.0).is_none());
+        assert!(health.record_failure(true, 0.0).is_none());
+        assert!(
+            health.record_failure(true, 0.0).is_some(),
+            "the breaker should open once the threshold is reached"
+        );
+        assert!(health.blocked_for().is_some());
+
+        // A success must close it again, otherwise a recovered provider stays fenced off.
+        health.record_success();
+        assert!(health.blocked_for().is_none());
+    }
+
+    /// An intermittent provider that fails, succeeds, then fails must not accumulate its way
+    /// to an open breaker: the counter tracks *consecutive* failures.
+    #[test]
+    fn a_success_resets_the_consecutive_failure_count() {
+        let health = ProviderHealth::default();
+        health.record_failure(true, 0.0);
+        health.record_failure(true, 0.0);
+        health.record_success();
+        health.record_failure(true, 0.0);
+        health.record_failure(true, 0.0);
+        assert!(health.blocked_for().is_none());
+    }
+
+    #[test]
+    fn retry_after_is_honoured_and_clamped_but_a_date_is_ignored() {
+        assert_eq!(parse_retry_after("5"), Some(Duration::from_secs(5)));
+        assert_eq!(parse_retry_after("  7 "), Some(Duration::from_secs(7)));
+        // Clamped: a provider asking for an hour must not stall the breaker for an hour.
+        assert_eq!(parse_retry_after("3600"), Some(BREAKER_MAX_COOLDOWN));
+        // The HTTP-date form is deliberately unsupported rather than half-parsed.
+        assert_eq!(parse_retry_after("Wed, 21 Oct 2026 07:28:00 GMT"), None);
+        assert_eq!(parse_retry_after(""), None);
+        assert_eq!(parse_retry_after("-5"), None);
+
+        // An explicit Retry-After wins over our own backoff, at any trip count.
+        let honoured = breaker_cooldown(4, Some(Duration::from_secs(3)), 1.0);
+        assert_eq!(honoured, Duration::from_secs(3));
+    }
+
+    #[test]
+    fn jittered_backoff_grows_stays_bounded_and_is_never_near_zero() {
+        for trip in 0u32..8 {
+            for ratio in [0.0f64, 0.5, 1.0, f64::NAN, -3.0, 9.0] {
+                let cooldown = breaker_cooldown(trip, None, ratio);
+                assert!(
+                    cooldown >= BREAKER_COOLDOWN / 2,
+                    "trip {trip} ratio {ratio} waited {cooldown:?}, which defeats the breaker"
+                );
+                assert!(
+                    cooldown <= BREAKER_MAX_COOLDOWN,
+                    "trip {trip} ratio {ratio} waited {cooldown:?}, past the cap"
+                );
+            }
+        }
+        // Jitter must actually spread retries, or concurrent callers retry in lockstep.
+        assert!(breaker_cooldown(2, None, 0.0) < breaker_cooldown(2, None, 1.0));
+        // And backoff must grow with repeated trips.
+        assert!(breaker_cooldown(0, None, 0.0) < breaker_cooldown(3, None, 0.0));
+    }
+
+    /// The classifier reads the status back out of the message that `response_json` formats,
+    /// so this pins that coupling: if the message format changes, this test fails loudly.
+    #[test]
+    fn error_classification_matches_the_reported_message_format() {
+        assert!(is_retryable_error(&anyhow::anyhow!(
+            "provider returned HTTP 429: slow down"
+        )));
+        assert!(is_retryable_error(&anyhow::anyhow!(
+            "provider returned HTTP 503"
+        )));
+        assert!(!is_retryable_error(&anyhow::anyhow!(
+            "provider returned HTTP 400: bad request"
+        )));
+        assert!(!is_retryable_error(&anyhow::anyhow!(
+            "provider returned invalid JSON"
+        )));
+        assert!(!is_retryable_error(&anyhow::anyhow!(
+            "provider response exceeds limit"
+        )));
+        // Transport faults carry no status but are worth backing off from.
+        assert!(is_retryable_error(&anyhow::anyhow!(
+            "error sending request for url"
+        )));
+        assert!(is_retryable_error(&anyhow::anyhow!("operation timed out")));
+    }
+
+    /// Every clone of `MemoryAgents` must see one breaker; this is why the state is in an `Arc`.
+    #[test]
+    fn breaker_state_is_shared_by_every_clone_of_the_provider() {
+        let agents = MemoryAgents::new("http://127.0.0.1:9", "k", "m").unwrap();
+        let clone = agents.clone();
+        for _ in 0..BREAKER_THRESHOLD {
+            clone.health.record_failure(true, 0.0);
+        }
+        assert!(
+            agents.health.blocked_for().is_some(),
+            "a clone's failures must be visible to the original"
+        );
+        assert!(
+            agents.guard_breaker().is_err(),
+            "an open breaker must fail closed before any spend is reserved"
+        );
+        agents.health.record_success();
+        assert!(clone.guard_breaker().is_ok());
+    }
 
     #[test]
     fn decodes_tool_calls_and_usage_without_losing_assistant_message() {
