@@ -703,6 +703,237 @@ async fn incident_compare(
     ))
 }
 /// P16-T02: which serialization the exported graph should carry.
+/// P16-T03: causal coverage for one request.
+///
+/// Every figure is measured through the same `incident_view` projection the incident endpoint
+/// serves, so a coverage number can never describe a graph the reviewer cannot open.
+async fn incident_coverage(
+    State(h): State<Harness>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    Uuid::parse_str(&id).map_err(|_| invalid("Invalid request identifier"))?;
+    Ok(Json(
+        h.store
+            .causal_coverage(id)
+            .await
+            .map_err(db_error)?
+            .ok_or(ApiError(
+                StatusCode::NOT_FOUND,
+                "Recording receipt not found",
+            ))?,
+    ))
+}
+/// P16-T03: which requests to summarise coverage over.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CoverageQueryParams {
+    requests: String,
+}
+/// P16-T03: aggregate causal coverage, shaped to be citable as audit evidence.
+///
+/// Per-request figures are retained beside the aggregate on purpose: a bundle that could only
+/// cite a rolled-up number would give a reader nothing to trace back to a recorded run.
+async fn incident_coverage_summary(
+    State(h): State<Harness>,
+    Query(q): Query<CoverageQueryParams>,
+) -> ApiResult<Json<Value>> {
+    let ids: Vec<String> = q
+        .requests
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(str::to_string)
+        .collect();
+    if ids.is_empty() || ids.len() > storage::MAX_COVERAGE_REQUESTS {
+        return Err(invalid(
+            "Coverage needs between one and fifty comma-separated request identifiers",
+        ));
+    }
+    for id in &ids {
+        Uuid::parse_str(id).map_err(|_| invalid("Invalid request identifier"))?;
+    }
+    Ok(Json(
+        h.store
+            .causal_coverage_summary(ids)
+            .await
+            .map_err(db_error)?,
+    ))
+}
+/// P16-T03: which deployment's recorded trail to read.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeploymentQueryParams {
+    #[serde(default)]
+    deployment_id: Option<String>,
+}
+/// P16-T03: read recorded deployment/build/restart/smoke provenance and its anomaly flags.
+async fn deployment_provenance(
+    State(h): State<Harness>,
+    Query(q): Query<DeploymentQueryParams>,
+) -> ApiResult<Json<Value>> {
+    if let Some(id) = q.deployment_id.as_deref() {
+        if id.is_empty() || id.len() > 128 {
+            return Err(invalid("Deployment identifier must contain 1..128 bytes"));
+        }
+    }
+    Ok(Json(
+        h.store
+            .deployment_provenance(q.deployment_id)
+            .await
+            .map_err(db_error)?,
+    ))
+}
+/// P16-T03: open or close a measured reviewer session over one incident.
+/// P16-T03: record one phase of a deployment, or complete a phase already recorded.
+///
+/// `scripts/deploy.sh` is the caller: a deployment is an event that happens to this machine,
+/// and nothing in the database can reconstruct after the fact which commit was promoted at
+/// which second by which binary hash. `parent_id` is the phase this one actually followed and
+/// is never inferred here — a caller that does not know passes nothing rather than guessing.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeploymentEventRequest {
+    #[serde(default)]
+    deployment_id: Option<String>,
+    #[serde(default)]
+    parent_id: Option<String>,
+    #[serde(default)]
+    phase: Option<String>,
+    status: String,
+    #[serde(default)]
+    commit: Option<String>,
+    #[serde(default)]
+    binary_sha256: Option<String>,
+    #[serde(default)]
+    schema_version: Option<i64>,
+    #[serde(default)]
+    detail: Option<String>,
+    /// Present when completing a phase that was recorded as `started`.
+    #[serde(default)]
+    event_id: Option<String>,
+    /// Anomaly flags. Absent leaves the question unasked, which is deliberately distinct from
+    /// answering it `false`.
+    #[serde(default)]
+    anomaly_identity_mismatch: Option<bool>,
+    #[serde(default)]
+    anomaly_unready: Option<bool>,
+    #[serde(default)]
+    anomaly_smoke_failed: Option<bool>,
+    #[serde(default)]
+    anomaly_schema_regressed: Option<bool>,
+}
+async fn record_deployment(
+    State(h): State<Harness>,
+    Json(req): Json<DeploymentEventRequest>,
+) -> ApiResult<Json<Value>> {
+    if let Some(event_id) = req.event_id {
+        let finished = h
+            .store
+            .finish_deployment_event(
+                event_id,
+                req.status,
+                req.detail,
+                storage::DeploymentAnomalies {
+                    identity_mismatch: req.anomaly_identity_mismatch,
+                    unready: req.anomaly_unready,
+                    smoke_failed: req.anomaly_smoke_failed,
+                    schema_regressed: req.anomaly_schema_regressed,
+                },
+            )
+            .await
+            .map_err(|_| invalid("A finished phase must be succeeded, failed or unknown"))?;
+        return if finished {
+            Ok(Json(json!({"status":"finished"})))
+        } else {
+            Err(ApiError(
+                StatusCode::CONFLICT,
+                "Deployment phase is unknown or already finished",
+            ))
+        };
+    }
+    let deployment_id = req
+        .deployment_id
+        .filter(|id| !id.is_empty() && id.len() <= 128)
+        .ok_or_else(|| invalid("A new deployment phase needs a deployment_id of 1..128 bytes"))?;
+    let phase = req
+        .phase
+        .ok_or_else(|| invalid("A new deployment phase needs a phase"))?;
+    let id = h
+        .store
+        .record_deployment_event(
+            deployment_id,
+            req.parent_id,
+            phase,
+            req.status,
+            req.commit,
+            req.binary_sha256,
+            req.schema_version,
+            req.detail,
+        )
+        .await
+        .map_err(|_| invalid("Unsupported deployment phase or status"))?;
+    Ok(Json(json!({"status":"recorded","event_id":id})))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReviewRequest {
+    #[serde(default)]
+    view: Option<String>,
+    #[serde(default)]
+    node_count: Option<i64>,
+    #[serde(default)]
+    edge_count: Option<i64>,
+    /// Present when closing a review that was already opened.
+    #[serde(default)]
+    review_id: Option<String>,
+    #[serde(default)]
+    duration_ms: Option<i64>,
+    #[serde(default)]
+    outcome: Option<String>,
+}
+/// Reviewer time is measured rather than estimated: a session is opened when a reviewer starts
+/// and closed with a real duration and a recorded outcome. `unknown` is an accepted outcome so
+/// a reviewer who found no cause can say so instead of picking one.
+async fn incident_review(
+    State(h): State<Harness>,
+    Path(id): Path<String>,
+    Json(req): Json<ReviewRequest>,
+) -> ApiResult<Json<Value>> {
+    Uuid::parse_str(&id).map_err(|_| invalid("Invalid request identifier"))?;
+    match (req.review_id, req.duration_ms, req.outcome) {
+        (Some(review_id), Some(duration_ms), Some(outcome)) => {
+            let closed = h
+                .store
+                .close_incident_review(review_id, duration_ms, outcome)
+                .await
+                .map_err(|_| invalid("Unsupported review outcome or duration"))?;
+            if closed {
+                Ok(Json(json!({"status":"closed"})))
+            } else {
+                Err(ApiError(
+                    StatusCode::CONFLICT,
+                    "Review is unknown or already closed",
+                ))
+            }
+        }
+        (None, None, None) => {
+            let review_id = h
+                .store
+                .open_incident_review(
+                    id,
+                    req.view.unwrap_or_else(|| "causal".into()),
+                    req.node_count.unwrap_or_default(),
+                    req.edge_count.unwrap_or_default(),
+                )
+                .await
+                .map_err(|_| invalid("Unsupported review view or graph size"))?;
+            Ok(Json(json!({"status":"opened","review_id":review_id})))
+        }
+        _ => Err(invalid(
+            "Closing a review needs review_id, duration_ms and outcome together",
+        )),
+    }
+}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ExportQueryParams {
@@ -1721,6 +1952,13 @@ pub(crate) fn router(state: Harness) -> Router {
         .route("/chat/requests/{id}/incident", get(request_incident))
         .route("/chat/requests/{id}/incident/export", get(incident_export))
         .route("/chat/incidents/compare", get(incident_compare))
+        .route("/chat/requests/{id}/coverage", get(incident_coverage))
+        .route("/chat/requests/{id}/review", post(incident_review))
+        .route("/chat/incidents/coverage", get(incident_coverage_summary))
+        .route(
+            "/deployments",
+            get(deployment_provenance).post(record_deployment),
+        )
         .route("/sessions/{id}/plan", get(session_plan))
         .route("/activity", get(activity))
         .route("/activity/stream", get(activity_stream))

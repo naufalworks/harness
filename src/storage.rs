@@ -100,6 +100,7 @@ pub struct Job {
 // P12-T02: the provenance writer/reader and the bounded incident projection now live in
 // `storage/provenance.rs`. The constants stay re-exported from `crate::storage` so no
 // caller path changes with the file move.
+mod causal_coverage;
 mod config;
 mod history;
 mod incident_compare;
@@ -108,6 +109,7 @@ mod memories;
 mod provenance;
 mod provider;
 mod turns;
+pub use causal_coverage::{DeploymentAnomalies, MAX_COVERAGE_REQUESTS};
 pub use incident_compare::MAX_COMPARED_RUNS;
 #[allow(unused_imports)]
 pub use provenance::{IncidentQuery, PROVENANCE_NODE_KINDS, PROVENANCE_RELATIONS};
@@ -136,7 +138,7 @@ impl DbStore {
                     "legacy or unknown database: use scripts/migrate_legacy.py into a NEW database"
                 );
             }
-        } else if !(1..=14).contains(&version) {
+        } else if !(1..=15).contains(&version) {
             bail!("unsupported schema version {version}");
         }
         conn.execute_batch(
@@ -183,6 +185,9 @@ impl DbStore {
         }
         if version < 14 {
             conn.execute_batch(include_str!("../migrations/014_history_search.sql"))?;
+        }
+        if version < 15 {
+            conn.execute_batch(include_str!("../migrations/015_causal_coverage.sql"))?;
         }
         conn.execute(
             "UPDATE provider_calls SET state='failed',usage_status='unavailable',reason='process_restarted_with_call_reserved',finished_at=?1 WHERE state='reserved'",
@@ -298,7 +303,7 @@ impl DbStore {
             let last_checkpoint:Option<String>=c.query_row("SELECT finished_at FROM maintenance_runs WHERE action='wal_checkpoint' ORDER BY id DESC LIMIT 1",[],|r|r.get(0)).optional()?;
             let last_retention:Option<String>=c.query_row("SELECT finished_at FROM maintenance_runs WHERE action='retention' ORDER BY id DESC LIMIT 1",[],|r|r.get(0)).optional()?;
             let last_compaction:Option<String>=c.query_row("SELECT finished_at FROM maintenance_runs WHERE action='compaction' ORDER BY id DESC LIMIT 1",[],|r|r.get(0)).optional()?;
-            Ok(json!({"ready":schema_version==14&&quick_check=="ok","schema_version":schema_version,
+            Ok(json!({"ready":schema_version==15&&quick_check=="ok","schema_version":schema_version,
                 "quick_check":quick_check,"queue":{"jobs_pending":pending_jobs,"jobs_running":running_jobs,
                 "jobs_failed":failed_jobs,"turns_waiting":waiting_turns,"turns_running":running_turns},
                 "maintenance":{"journal_mode":journal_mode,"last_wal_checkpoint_at":last_checkpoint,
@@ -378,7 +383,7 @@ mod tests {
         let db = DbStore::init(":memory:").unwrap();
         seed_retention_fixture(&db).await;
         let readiness = db.readiness().await.unwrap();
-        assert_eq!(readiness["schema_version"], 14);
+        assert_eq!(readiness["schema_version"], 15);
         assert_eq!(readiness["ready"], true);
         assert!(
             readiness["maintenance"]["last_retention_at"].is_null(),
@@ -1580,7 +1585,509 @@ mod tests {
             .is_none());
     }
 
+    #[tokio::test]
+    async fn incident_coverage_counts_missing_edges_without_claiming_they_had_no_cause() {
+        let db = incident_fixture().await;
+        let report = db.causal_coverage("request".into()).await.unwrap().unwrap();
+        assert_eq!(report["format"], "causal-coverage-v1");
+        // Coverage is measured over the same projection a reviewer opens, so the graph size it
+        // reports is the projection's own count rather than a second tally.
+        let graph = db.incident_graph("request".into()).await.unwrap().unwrap();
+        assert_eq!(report["graph_size"]["nodes"], graph["counts"]["nodes"]);
+        assert_eq!(report["graph_size"]["edges"], graph["counts"]["edges"]);
+        // Only a recorded edge counts toward coverage: proximity must not inflate it, or the
+        // metric would report a level of recorded provenance that does not exist.
+        let breakdown = &report["evidence_breakdown"];
+        let nodes = graph["nodes"].as_array().unwrap();
+        let recorded = nodes
+            .iter()
+            .filter(|n| n["confidence"] == json!("recorded_dependency"))
+            .count() as i64;
+        let proximity = nodes
+            .iter()
+            .filter(|n| n["confidence"] == json!("temporal_proximity"))
+            .count() as i64;
+        assert_eq!(breakdown["recorded_dependency"], json!(recorded));
+        assert_eq!(breakdown["temporal_proximity"], json!(proximity));
+        assert!(proximity > 0, "fixture must exercise a proximity-only row");
+        assert_eq!(
+            report["missing_edges"],
+            json!(nodes.len() as i64 - recorded)
+        );
+        // The three classes partition the node set: nothing escaped measurement.
+        assert_eq!(
+            breakdown["recorded_dependency"].as_i64().unwrap()
+                + breakdown["temporal_proximity"].as_i64().unwrap()
+                + breakdown["unknown"].as_i64().unwrap(),
+            nodes.len() as i64
+        );
+        // A missing edge is described as an evidence gap, never as a row proven causeless.
+        assert!(report["metric_labels"]["missing_edges"]
+            .as_str()
+            .unwrap()
+            .contains("not a claim"));
+        // The fixture has a recorded break, and it is the same node the projection names.
+        assert_eq!(report["earliest_break"]["recorded"], json!(true));
+        assert_eq!(
+            report["earliest_break"]["node_id"],
+            graph["earliest_known_break"]["node_id"]
+        );
+        // Reviewer time is null-not-zero before anything has been measured.
+        assert_eq!(report["reviewer_time"]["measured"], json!(false));
+        assert_eq!(report["reviewer_time"]["mean_ms"], Value::Null);
+        no_reasoning_keys(&report);
+        assert!(db.causal_coverage("nope".into()).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn coverage_with_no_recorded_break_says_unknown_rather_than_success() {
+        let db = DbStore::init(":memory:").unwrap();
+        db.run(|c| {
+            let stamp = now();
+            c.execute("INSERT INTO sessions(id,scope,created_at) VALUES('s','global',?1)",[&stamp])?;
+            c.execute("INSERT INTO messages(id,session_id,role,content,status,created_at) VALUES('r','s','user','hi','pending',?1)",[&stamp])?;
+            c.execute("INSERT INTO chat_receipts(request_id,session_id,scope,model,signature,redacted,state,captured_at,updated_at) VALUES('r','s','global','m','sig',0,'generating',?1,?1)",[&stamp])?;
+            Ok(())
+        }).await.unwrap();
+        let report = db.causal_coverage("r".into()).await.unwrap().unwrap();
+        assert_eq!(report["earliest_break"]["recorded"], json!(false));
+        assert_eq!(report["earliest_break"]["kind"], "unknown");
+        // The wording must not let an absence read as a success.
+        let reason = report["earliest_break"]["reason"].as_str().unwrap();
+        assert!(reason.contains("absence of evidence"));
+        assert!(reason.contains("not evidence the run succeeded"));
+    }
+
+    #[tokio::test]
+    async fn reviewer_time_is_measured_and_never_assumed() {
+        let db = incident_fixture().await;
+        let open = db
+            .open_incident_review("request".into(), "causal".into(), 6, 2)
+            .await
+            .unwrap();
+        // An open review contributes no duration: it is counted, not estimated.
+        let during = db.reviewer_time("request".into()).await.unwrap();
+        assert_eq!(during["open_reviews"], json!(1));
+        assert_eq!(during["closed_reviews"], json!(0));
+        assert_eq!(during["mean_ms"], Value::Null);
+        assert_eq!(during["measured"], json!(false));
+        assert!(db
+            .close_incident_review(open.clone(), 2500, "cause_identified".into())
+            .await
+            .unwrap());
+        // Closing twice is refused rather than silently re-measuring the same session.
+        assert!(!db
+            .close_incident_review(open, 999, "unknown".into())
+            .await
+            .unwrap());
+        let after = db.reviewer_time("request".into()).await.unwrap();
+        assert_eq!(after["closed_reviews"], json!(1));
+        assert_eq!(after["open_reviews"], json!(0));
+        assert_eq!(after["mean_ms"], json!(2500));
+        assert_eq!(after["max_ms"], json!(2500));
+        assert_eq!(after["cause_identified_reviews"], json!(1));
+        assert_eq!(after["measured"], json!(true));
+        // An abandoned review is a real recorded outcome, counted separately from a solve.
+        let abandoned = db
+            .open_incident_review("request".into(), "comparison".into(), 6, 2)
+            .await
+            .unwrap();
+        assert!(db
+            .close_incident_review(abandoned, 100, "abandoned".into())
+            .await
+            .unwrap());
+        let final_time = db.reviewer_time("request".into()).await.unwrap();
+        assert_eq!(final_time["abandoned_reviews"], json!(1));
+        assert_eq!(final_time["cause_identified_reviews"], json!(1));
+        // Unsupported views, outcomes and negative durations are refused, not coerced.
+        assert!(db
+            .open_incident_review("request".into(), "guessed".into(), 1, 1)
+            .await
+            .is_err());
+        assert!(db
+            .close_incident_review("x".into(), 1, "solved".into())
+            .await
+            .is_err());
+        assert!(db
+            .close_incident_review("x".into(), -1, "unknown".into())
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn deployment_provenance_records_a_causal_trail_and_flags_anomalies() {
+        let db = DbStore::init(":memory:").unwrap();
+        let build = db
+            .record_deployment_event(
+                "deploy-1".into(),
+                None,
+                "build".into(),
+                "started".into(),
+                Some("abc1234".into()),
+                Some("f".repeat(64)),
+                Some(15),
+                Some("cargo build --locked --release".into()),
+            )
+            .await
+            .unwrap();
+        // A phase's result is the one thing that may be filled in later.
+        assert!(db
+            .finish_deployment_event(
+                build.clone(),
+                "succeeded".into(),
+                None,
+                DeploymentAnomalies::default(),
+            )
+            .await
+            .unwrap());
+        // Finishing twice is refused: recorded provenance is not rewritable.
+        assert!(!db
+            .finish_deployment_event(
+                build.clone(),
+                "failed".into(),
+                None,
+                DeploymentAnomalies::default(),
+            )
+            .await
+            .unwrap());
+        // The restart phase records which build it actually followed, rather than being
+        // inferred from whichever row happens to be adjacent.
+        let restart = db
+            .record_deployment_event(
+                "deploy-1".into(),
+                Some(build.clone()),
+                "restart".into(),
+                "succeeded".into(),
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let smoke = db
+            .record_deployment_event(
+                "deploy-1".into(),
+                Some(restart.clone()),
+                "smoke".into(),
+                "started".into(),
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(db
+            .finish_deployment_event(
+                smoke,
+                "failed".into(),
+                Some("authenticated API smoke failed".into()),
+                DeploymentAnomalies {
+                    smoke_failed: Some(true),
+                    unready: Some(false),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap());
+        let trail = db
+            .deployment_provenance(Some("deploy-1".into()))
+            .await
+            .unwrap();
+        let events = trail["events"].as_array().unwrap();
+        assert_eq!(events.len(), 3);
+        // The trail is a recorded chain, not a guessed one.
+        assert_eq!(events[0]["parent_id"], Value::Null);
+        assert_eq!(events[1]["parent_id"], json!(build));
+        assert_eq!(events[2]["parent_id"], json!(restart));
+        assert_eq!(events[0]["schema_version"], json!(15));
+        // An anomaly that was answered `false` is distinct from one never asked, which is null.
+        let flags = &events[2]["anomalies"];
+        assert_eq!(flags["smoke_failed"], json!(true));
+        assert_eq!(flags["unready"], json!(false));
+        assert_eq!(flags["identity_mismatch"], Value::Null);
+        assert_eq!(flags["schema_regressed"], Value::Null);
+        // The flagged phase is surfaced so an operator does not have to scan the trail.
+        assert_eq!(trail["counts"]["anomalies"], json!(1));
+        assert_eq!(trail["anomaly_flags"][0]["phase"], "smoke");
+        assert!(trail["note"].as_str().unwrap().contains("never inferred"));
+        no_reasoning_keys(&trail);
+        // Unsupported phases and statuses are refused rather than coerced into the vocabulary.
+        assert!(db
+            .record_deployment_event(
+                "deploy-1".into(),
+                None,
+                "guessed".into(),
+                "started".into(),
+                None,
+                None,
+                None,
+                None
+            )
+            .await
+            .is_err());
+        assert!(db
+            .record_deployment_event(
+                "deploy-1".into(),
+                None,
+                "build".into(),
+                "probably".into(),
+                None,
+                None,
+                None,
+                None
+            )
+            .await
+            .is_err());
+        // A phase whose result was never observed is recordable as `unknown`, never as a
+        // success or a failure.
+        let unknown = db
+            .record_deployment_event(
+                "deploy-2".into(),
+                None,
+                "outcome".into(),
+                "unknown".into(),
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(!unknown.is_empty());
+        let recent = db.deployment_provenance(None).await.unwrap();
+        assert_eq!(recent["counts"]["events"], json!(4));
+        assert_eq!(recent["counts"]["unresolved_or_unknown"], json!(1));
+    }
+
+    #[tokio::test]
+    async fn coverage_summary_excludes_unrecorded_requests_instead_of_averaging_them_in() {
+        let db = incident_fixture().await;
+        assert!(db.causal_coverage_summary(vec![]).await.is_err());
+        assert!(db
+            .causal_coverage_summary(
+                (0..MAX_COVERAGE_REQUESTS + 1)
+                    .map(|i| format!("r{i}"))
+                    .collect()
+            )
+            .await
+            .is_err());
+        let summary = db
+            .causal_coverage_summary(vec!["request".into(), "not-recorded".into()])
+            .await
+            .unwrap();
+        assert_eq!(summary["counts"]["requested"], json!(2));
+        assert_eq!(summary["counts"]["measured"], json!(1));
+        assert_eq!(summary["counts"]["not_recorded"], json!(1));
+        // Per-request figures survive beside the aggregate, so an audit bundle can cite the
+        // individual measurement rather than only a rolled-up number.
+        let measured = summary["requests"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["request_id"] == json!("request"))
+            .unwrap()
+            .clone();
+        assert_eq!(measured["format"], "causal-coverage-v1");
+        assert!(
+            measured["graph_size"]["nodes"]["returned"]
+                .as_i64()
+                .unwrap()
+                > 0
+        );
+        // The aggregate is over measured requests only, and says so.
+        assert_eq!(
+            summary["aggregate"]["nodes"],
+            measured["graph_size"]["nodes"]["returned"]
+        );
+        assert!(summary["note"].as_str().unwrap().contains("not measured"));
+        no_reasoning_keys(&summary);
+    }
+
     /// The P16-T01 no-chain-of-thought contract, applied recursively to every new response
+    /// P16-T03: run the REAL coverage path over the declared fixtures and write the metrics the
+    /// `tests/coverage_eval/run.py --check` gate validates.
+    ///
+    /// The measurement lives here rather than in Python for the reason P15-T01 recorded for the
+    /// recall gate: a Python reimplementation would measure the reimplementation. This produces
+    /// the evidence; the script refuses to accept evidence that is missing, stale relative to
+    /// the fixtures, internally inconsistent, or outside a declared budget.
+    #[tokio::test]
+    async fn causal_coverage_metrics_meet_declared_budgets() {
+        use std::io::Write;
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/coverage_eval");
+        let fixture_bytes = std::fs::read(root.join("fixtures.json")).unwrap();
+        let fixtures: Value = serde_json::from_slice(&fixture_bytes).unwrap();
+        let fixture_sha256 = crate::safety::fingerprint(&String::from_utf8_lossy(&fixture_bytes));
+
+        // Case 1 is the P16-T01 fixture: recorded edges plus a genuinely edge-less row.
+        let db = incident_fixture().await;
+        // Case 2 is a turn with nothing broken recorded at all.
+        db.run(|c| {
+            let stamp = now();
+            c.execute("INSERT INTO messages(id,session_id,role,content,status,created_at) VALUES('quiet','session','user','hi','pending',?1)",[&stamp])?;
+            c.execute("INSERT INTO chat_receipts(request_id,session_id,scope,model,signature,redacted,state,captured_at,updated_at) VALUES('quiet','session','global','main','sig',0,'generating',?1,?1)",[&stamp])?;
+            Ok(())
+        }).await.unwrap();
+
+        let mut cases = Vec::<Value>::new();
+        for (id, request) in [
+            ("stale-anchor-with-recorded-edges", "request"),
+            ("no-recorded-break", "quiet"),
+        ] {
+            let report = db
+                .causal_coverage(request.into())
+                .await
+                .unwrap()
+                .expect("fixture request must be recorded");
+            cases.push(json!({
+                "id": id,
+                "request_id": request,
+                "nodes": report["graph_size"]["nodes"]["returned"],
+                "edges": report["graph_size"]["edges"]["returned"],
+                "recorded_dependency": report["evidence_breakdown"]["recorded_dependency"],
+                "temporal_proximity": report["evidence_breakdown"]["temporal_proximity"],
+                "unknown": report["evidence_breakdown"]["unknown"],
+                "missing_edges": report["missing_edges"],
+                "edge_coverage": report["edge_coverage"],
+                "break_recorded": report["earliest_break"]["recorded"],
+                "break_kind": report["earliest_break"]["kind"],
+            }));
+        }
+
+        // Reviewer time has to be measured from a real opened-and-closed session, not asserted.
+        let review = db
+            .open_incident_review("request".into(), "causal".into(), 7, 2)
+            .await
+            .unwrap();
+        assert!(db
+            .close_incident_review(review, 1800, "cause_identified".into())
+            .await
+            .unwrap());
+        let reviewer_time = db.reviewer_time("request".into()).await.unwrap();
+
+        // A recorded deployment trail, built the way scripts/deploy.sh builds one.
+        let build = db
+            .record_deployment_event(
+                "deploy-fixture".into(),
+                None,
+                "build".into(),
+                "started".into(),
+                Some("abc1234".into()),
+                Some("a".repeat(64)),
+                Some(15),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(db
+            .finish_deployment_event(
+                build.clone(),
+                "succeeded".into(),
+                None,
+                DeploymentAnomalies {
+                    identity_mismatch: Some(false),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap());
+        let restart = db
+            .record_deployment_event(
+                "deploy-fixture".into(),
+                Some(build),
+                "restart".into(),
+                "succeeded".into(),
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        db.record_deployment_event(
+            "deploy-fixture".into(),
+            Some(restart),
+            "smoke".into(),
+            "succeeded".into(),
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let trail = db
+            .deployment_provenance(Some("deploy-fixture".into()))
+            .await
+            .unwrap();
+        let phases: Vec<Value> = trail["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|event| {
+                json!({
+                    "id": event["id"],
+                    "parent_id": event["parent_id"],
+                    "phase": event["phase"],
+                    "status": event["status"],
+                    "anomalies": event["anomalies"],
+                })
+            })
+            .collect();
+
+        let metrics = json!({
+            "fixture_sha256": fixture_sha256,
+            "projection": provenance_projection(),
+            "cases": cases,
+            "reviewer_time": {
+                "closed_reviews": reviewer_time["closed_reviews"],
+                "open_reviews": reviewer_time["open_reviews"],
+                "abandoned_reviews": reviewer_time["abandoned_reviews"],
+                "mean_ms": reviewer_time["mean_ms"],
+                "max_ms": reviewer_time["max_ms"],
+            },
+            "deployment": {
+                "phases": phases,
+                "anomalies_flagged": trail["counts"]["anomalies"],
+                "unresolved_or_unknown": trail["counts"]["unresolved_or_unknown"],
+            },
+        });
+        let mut file = std::fs::File::create(root.join("metrics.json")).unwrap();
+        writeln!(file, "{}", serde_json::to_string_pretty(&metrics).unwrap()).unwrap();
+
+        // Assert the fixture's own declarations here too, so the Rust test fails on a real
+        // regression even if someone runs it without the Python gate.
+        for declared in fixtures["cases"].as_array().unwrap() {
+            let id = declared["id"].as_str().unwrap();
+            let got = cases
+                .iter()
+                .find(|case| case["id"] == json!(id))
+                .unwrap_or_else(|| panic!("case {id} was not measured"));
+            assert_eq!(
+                got["break_recorded"], declared["expect_break_recorded"],
+                "case {id} break"
+            );
+            assert_eq!(
+                got["recorded_dependency"], declared["expect_recorded_dependency"],
+                "case {id} recorded dependencies"
+            );
+            assert_eq!(
+                got["temporal_proximity"], declared["expect_temporal_proximity"],
+                "case {id} proximity"
+            );
+            // The partition invariant the gate checks, asserted at the source of the numbers.
+            assert_eq!(
+                got["recorded_dependency"].as_i64().unwrap()
+                    + got["temporal_proximity"].as_i64().unwrap()
+                    + got["unknown"].as_i64().unwrap(),
+                got["nodes"].as_i64().unwrap(),
+                "case {id} evidence classes must partition its nodes"
+            );
+        }
+    }
+
     /// shape rather than only to the incident graph it was written for.
     fn no_reasoning_keys(value: &Value) {
         fn walk(value: &Value, out: &mut Vec<String>) {

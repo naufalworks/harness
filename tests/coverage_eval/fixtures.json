@@ -1,0 +1,24 @@
+{
+  "projection": "causal-neighborhood-v1",
+  "budgets": {
+    "max_graph_nodes": 400,
+    "min_measured_reviews": 1,
+    "min_deployment_phases": 3
+  },
+  "cases": [
+    {
+      "id": "stale-anchor-with-recorded-edges",
+      "description": "A failed coding turn where two provenance edges were recorded (a step depending on its permission, and a memory supporting that step) and one step co-occurred with no edge at all. Coverage must count the edge-backed nodes and report the co-occurring one as a missing edge rather than as covered.",
+      "expect_break_recorded": true,
+      "expect_recorded_dependency": 4,
+      "expect_temporal_proximity": 2
+    },
+    {
+      "id": "no-recorded-break",
+      "description": "A generating turn with no failure, denial or recovery recorded. The earliest break must report unknown rather than implying the run succeeded.",
+      "expect_break_recorded": false,
+      "expect_recorded_dependency": 1,
+      "expect_temporal_proximity": 0
+    }
+  ]
+}

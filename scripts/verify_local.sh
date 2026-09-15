@@ -65,6 +65,10 @@ run_python_suite integration-smoke tests/integration_smoke.py
 run_python_suite recording-integration tests/recording_integration.py
 run_suite shell-syntax bash -n scripts/deploy.sh scripts/release.sh scripts/setup_browser_tests.sh scripts/verify_browser.sh scripts/verify_e2e.sh scripts/verify_local.sh scripts/verify_release.sh
 run_suite supply-chain python3 scripts/check_supply_chain.py
+# P16-T03. Runs after rust-tests, which is what writes tests/coverage_eval/metrics.json: this
+# gate validates that evidence and refuses it when it is missing, stale relative to the
+# fixtures, internally inconsistent, or outside a declared budget.
+run_suite causal-coverage python3 tests/coverage_eval/run.py --check
 run_suite release-quality python3 scripts/check_release_quality.py
 run_suite javascript-syntax node --check static/api.js static/app.js
 

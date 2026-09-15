@@ -18,7 +18,7 @@ sys.path.insert(0,str(ROOT/'scripts'))
 from backup import backup
 from migrate_legacy import migrate
 
-MIGRATIONS=['001_core.sql','002_recording.sql','003_agentic.sql','004_memory_kinds.sql','005_generation_stream.sql','006_provenance_edges.sql','007_privacy_archive.sql','008_provider_spend.sql','009_run_cancellation.sql','010_retention_maintenance.sql','011_retrieval_receipts.sql','012_memory_governance.sql','013_session_workflows.sql','014_history_search.sql']
+MIGRATIONS=['001_core.sql','002_recording.sql','003_agentic.sql','004_memory_kinds.sql','005_generation_stream.sql','006_provenance_edges.sql','007_privacy_archive.sql','008_provider_spend.sql','009_run_cancellation.sql','010_retention_maintenance.sql','011_retrieval_receipts.sql','012_memory_governance.sql','013_session_workflows.sql','014_history_search.sql','015_causal_coverage.sql']
 # P12-T02: the storage module was split into src/storage.rs plus src/storage/*.rs, so
 # the shipped SQL now lives across those files. The submodules hold the implementation
 # statements and src/storage.rs keeps its `mod tests` fixtures, some of which share a
@@ -90,7 +90,7 @@ class Contracts(unittest.TestCase):
     def setUp(self):self.c=connect()
     def tearDown(self):self.c.close()
     def test_schema_version_and_integrity(self):
-        self.assertEqual(self.c.execute('PRAGMA user_version').fetchone()[0],14);self.assertEqual(self.c.execute('PRAGMA integrity_check').fetchone()[0],'ok')
+        self.assertEqual(self.c.execute('PRAGMA user_version').fetchone()[0],15);self.assertEqual(self.c.execute('PRAGMA integrity_check').fetchone()[0],'ok')
     def test_candidates_do_not_become_active(self):
         proposal(self.c);self.assertEqual(self.c.execute('SELECT count(*) FROM memories').fetchone()[0],0)
     def test_sensitive_category_is_rejected_by_schema(self):

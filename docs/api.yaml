@@ -598,6 +598,134 @@ paths:
           $ref: '#/components/responses/Error'
         '5XX':
           $ref: '#/components/responses/Error'
+  /chat/requests/{id}/coverage:
+    get:
+      operationId: incidentCoverage
+      summary: Measure causal coverage for one request.
+      description: >-
+        P16-T03. Missing-edge, earliest-break, graph-size and reviewer-time metrics, all
+        measured through the same bounded `incident_view` projection the incident endpoint
+        serves, so a coverage figure can never describe a graph the reviewer cannot open. Only
+        a recorded provenance edge counts toward coverage: a `temporal_proximity` row is an
+        evidence gap, never folded in as covered. A node with no recorded edge is reported as
+        unmeasured evidence, not as a row proven to have no cause, and an unrecorded
+        earliest-break is reported as `unknown` rather than as a run that succeeded. Reviewer
+        time is measured from closed review sessions only; open and abandoned reviews are
+        counted separately and never assigned an assumed duration.
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: >-
+            Coverage report with graph size, edge coverage, the evidence breakdown, the
+            earliest recorded break, measured reviewer time and the metric legend.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /chat/incidents/coverage:
+    get:
+      operationId: incidentCoverageSummary
+      summary: Aggregate causal coverage across requests.
+      description: >-
+        P16-T03. Per-request figures are retained beside the aggregate so the output is citable
+        as audit evidence: a reader can trace a rolled-up number back to the individual
+        recorded run it came from. A request with no recording is reported as not measured
+        rather than folded in as zero coverage, because averaging in an absence would
+        understate coverage of what was actually recorded.
+      parameters:
+        - name: requests
+          in: query
+          required: true
+          description: One to fifty comma-separated request identifiers.
+          schema: {type: string, maxLength: 2000}
+      responses:
+        '200':
+          description: Per-request coverage reports plus the aggregate over measured requests.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /chat/requests/{id}/review:
+    post:
+      operationId: incidentReview
+      summary: Open or close a measured reviewer session over one incident.
+      description: >-
+        P16-T03. Reviewer time is measured, not estimated: a session is opened when a reviewer
+        starts and closed with a real duration and a recorded outcome. The graph size served to
+        the reviewer is recorded with the session, because a duration is only interpretable
+        next to how much graph the reviewer was shown. `unknown` is an accepted outcome so a
+        reviewer who identified no cause can say so instead of picking one, and `abandoned` is
+        a real reportable outcome rather than a missing row.
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json: {}
+      responses:
+        '200':
+          description: The opened review identifier, or confirmation that a review was closed.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /deployments:
+    get:
+      operationId: deploymentProvenance
+      summary: Read recorded deployment, build, restart and smoke provenance.
+      description: >-
+        P16-T03. A deployment is a first-class recorded event: nothing in the database can
+        reconstruct after the fact which commit was promoted at which second by which binary
+        hash, so `scripts/deploy.sh` records each phase as it happens. `parent_id` is the phase
+        a phase actually followed — a recorded dependency, never inferred from adjacent
+        timestamps. An anomaly flag of `null` means the question was never asked, which is
+        deliberately distinct from `false`, meaning it was asked and the answer was no.
+      parameters:
+        - name: deployment_id
+          in: query
+          required: false
+          description: Omit to read the most recent recorded phases across deployments.
+          schema: {type: string, maxLength: 128}
+      responses:
+        '200':
+          description: >-
+            Recorded deployment phases with their parent links, build identity, anomaly flags
+            and the count of phases whose result is still unresolved or unknown.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+    post:
+      operationId: recordDeployment
+      summary: Record or complete one phase of a deployment.
+      description: >-
+        P16-T03. Called by `scripts/deploy.sh`. A new phase needs a `deployment_id` and a
+        `phase`; completing a phase recorded as `started` needs its `event_id` and the result.
+        Migration 015 makes recorded provenance append-only: only the fields genuinely unknown
+        at insert time (the phase's result and its anomaly flags) may be filled in later, and
+        no recorded phase can be deleted or rewritten.
+      requestBody:
+        required: true
+        content:
+          application/json: {}
+      responses:
+        '200':
+          description: The recorded phase identifier, or confirmation that a phase was finished.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
   /chat/requests/{id}/retrieval:
     get:
       operationId: requestRetrieval

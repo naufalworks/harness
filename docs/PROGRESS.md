@@ -1,5 +1,42 @@
 # PROGRESS — journal
 
+## 2026-09-15T17:20:00Z · P16-T03 — recovered interrupted work without changing access
+
+An autonomous turn stopped at its configured 900-second wall-clock budget and left the P16-T03
+implementation uncommitted directly on `main`. The work was not lost. Before changing branch state,
+the tracked diff and all untracked P16-T03 files were archived with SHA-256 checksums under
+`/root/development/scratch/p16-t03-recovery-20260915T171956Z`. The dirty tree was then moved intact
+onto branch `recovery/p16-t03` at base `a2b5474`; `main` itself was not rewritten, reset or cleaned.
+
+Infrastructure was read and checked before continuing. The documented public path is Cloudflare
+DNS-only `harness.keizerfps.store` -> UpCloud load balancer `213.163.192.209` -> private relay
+`10.0.0.2:8081` -> loopback Harness `127.0.0.1:8080`. The public page and authenticated `/health`
+both returned 200; the live binary reports commit `4cd8ec7`, schema 14 and ready=true. The relay is
+enabled and active, the private firewall rule for 8081 exists, both required origins are configured,
+and the served certificate has a three-certificate chain covering harness, MCP and monitor through
+2026-12-14. These were read-only checks. No DNS, Cloudflare, UpCloud load-balancer, firewall, relay,
+certificate, Tailscale, origin, systemd or deployment setting was changed, and no service restarted.
+
+Fresh evidence already run against the recovered dirty tree: migration chain 001->015 passed with
+data/FTS/foreign keys preserved; `cargo test --locked incident` passed 12 tests; and
+`scripts/verify_e2e.sh` passed the browser-to-Axum-to-SQLite/filesystem/provider path plus denial,
+crash recovery, cancellation/safe retry and unsafe-retry refusal. P16-T03 is now truthfully `doing`.
+The implementation and deploy-script changes still require review, the coverage evidence gate, the
+full Rust/clippy/format/API/SQL/browser gates and the strict non-deploying release gate before any
+commit or deployment claim. Production remains deliberately untouched on schema 14.
+
+Recovery review then exposed two real fixture/lint gaps in the interrupted tree. The offline SQL
+contract expected schema 15 but still applied only migrations 001->014; adding migration 015 to its
+fixture made all 16 SQL contracts pass. Ruff also found that the new coverage gate had a shebang
+without executable mode and used an avoidable explicit string conversion; both were corrected and
+the Python lint became clean. Format, strict clippy, all 292 Rust tests, migration/API/SQL/Python
+contracts, causal-coverage evidence, supply-chain scanners, mocked browser suites and real
+browser-to-service E2E then passed. The strict non-deploying release gate reached its final
+documentation check and reported exactly one failure: live `4cd8ec7` trails repository HEAD
+`a2b5474`. That mismatch is retained as an honest failure because deployment and schema advancement
+were explicitly withheld. The public domain, authenticated health endpoint, relay and service all
+still returned healthy after the gates. P16-T03 remains `doing` pending explicit deployment handling.
+
 ## 2026-09-15T17:25:00Z · deployment — promote `7708e48` and advance live schema 11 → 13
 
 The live service was serving `a5dadb0` at `user_version=11` while `HEAD` required `012` and `013`,

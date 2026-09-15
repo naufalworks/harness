@@ -12,7 +12,7 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MIG = ROOT / "migrations"
-CHAIN = ["001_core.sql", "002_recording.sql", "003_agentic.sql", "004_memory_kinds.sql", "005_generation_stream.sql", "006_provenance_edges.sql", "007_privacy_archive.sql", "008_provider_spend.sql", "009_run_cancellation.sql", "010_retention_maintenance.sql", "011_retrieval_receipts.sql", "012_memory_governance.sql", "013_session_workflows.sql", "014_history_search.sql"]
+CHAIN = ["001_core.sql", "002_recording.sql", "003_agentic.sql", "004_memory_kinds.sql", "005_generation_stream.sql", "006_provenance_edges.sql", "007_privacy_archive.sql", "008_provider_spend.sql", "009_run_cancellation.sql", "010_retention_maintenance.sql", "011_retrieval_receipts.sql", "012_memory_governance.sql", "013_session_workflows.sql", "014_history_search.sql", "015_causal_coverage.sql"]
 VERSIONS = [name.split("_", 1)[0] for name in CHAIN]
 LATEST_VERSION = int(VERSIONS[-1])
 OPEN_CONNECTIONS = []
@@ -32,6 +32,7 @@ EXPECTED_TABLES = {
     12: {"memory_branches", "memory_decisions", "memory_feedback"},
     13: set(),
     14: {"history_documents", "history_privacy_events", "export_bundles", "export_items", "import_receipts", "import_decisions"},
+    15: {"deployment_events", "incident_reviews"},
 }
 
 
@@ -320,6 +321,113 @@ def test_010_retention_maintenance_constraints():
             raise AssertionError(f"maintenance constraint was not enforced: {statement}")
 
 
+def test_015_causal_coverage_constraints():
+    """P16-T03. The invariants migration 015 exists to hold:
+
+    recorded deployment provenance is append-only and undeletable, with only the fields that
+    are genuinely unknown at insert time (the phase's result) allowed to change later;
+    a phase cannot claim an outcome without finishing or finish while still 'started';
+    a deployment phase cannot be its own parent, and a parent reference must resolve;
+    anomaly flags accept NULL ('never asked') distinctly from 0 ('asked, answer no');
+    and a reviewer-time row cannot carry a duration without a close, or a close without one.
+    """
+    c = fresh()
+    apply(c, len(CHAIN))
+    now = "2026-01-01T00:00:00Z"
+    later = "2026-01-01T00:05:00Z"
+    created = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    missing = {"deployment_events", "incident_reviews"} - created
+    assert not missing, f"migration 015 did not create: {missing}"
+
+    # A build phase with its result still unknown. anomaly flags left NULL: not asked yet.
+    c.execute(
+        "INSERT INTO deployment_events(id,deployment_id,phase,status,commit_sha,binary_sha256,schema_version,started_at)"
+        " VALUES('b1','d1','build','started','abc1234',?,15,?)",
+        ("f" * 64, now),
+    )
+    # Completing the phase is allowed: that is the one thing that was unknown at insert.
+    c.execute(
+        "UPDATE deployment_events SET status='succeeded',finished_at=?,anomaly_identity_mismatch=0 WHERE id='b1'",
+        (later,),
+    )
+    assert c.execute("SELECT status FROM deployment_events WHERE id='b1'").fetchone()[0] == "succeeded"
+    # Rewriting recorded history is refused, phase by phase.
+    for statement, args in [
+        ("UPDATE deployment_events SET phase='smoke' WHERE id='b1'", ()),
+        ("UPDATE deployment_events SET commit_sha='deadbee' , started_at=? WHERE id='b1'", (later,)),
+        ("UPDATE deployment_events SET status='failed' WHERE id='b1'", ()),
+        ("UPDATE deployment_events SET finished_at=? WHERE id='b1'", (now,)),
+        ("UPDATE deployment_events SET deployment_id='d2' WHERE id='b1'", ()),
+        ("DELETE FROM deployment_events WHERE id='b1'", ()),
+    ]:
+        try:
+            c.execute(statement, args)
+        except sqlite3.IntegrityError:
+            continue
+        except sqlite3.DatabaseError:
+            continue
+        raise AssertionError(f"deployment provenance was rewritable: {statement}")
+
+    # A restart phase records which build it actually followed.
+    c.execute(
+        "INSERT INTO deployment_events(id,deployment_id,parent_id,phase,status,started_at,finished_at)"
+        " VALUES('r1','d1','b1','restart','succeeded',?,?)",
+        (now, later),
+    )
+    # A phase cannot be its own parent, and a parent must resolve to a recorded phase.
+    for statement, args in [
+        ("INSERT INTO deployment_events(id,deployment_id,parent_id,phase,status,started_at) VALUES('x1','d1','x1','smoke','started',?)", (now,)),
+        ("INSERT INTO deployment_events(id,deployment_id,parent_id,phase,status,started_at) VALUES('x2','d1','nope','smoke','started',?)", (now,)),
+        # An unfinished phase cannot claim an outcome, and a finished one cannot stay 'started'.
+        ("INSERT INTO deployment_events(id,deployment_id,phase,status,started_at) VALUES('x3','d1','smoke','succeeded',?)", (now,)),
+        ("INSERT INTO deployment_events(id,deployment_id,phase,status,started_at,finished_at) VALUES('x4','d1','smoke','started',?,?)", (now, later)),
+        # Unknown phases and statuses are refused rather than coerced.
+        ("INSERT INTO deployment_events(id,deployment_id,phase,status,started_at) VALUES('x5','d1','guessed','started',?)", (now,)),
+        ("INSERT INTO deployment_events(id,deployment_id,phase,status,started_at) VALUES('x6','d1','smoke','probably',?)", (now,)),
+        # An anomaly flag is a recorded observation, not a free-form value.
+        ("INSERT INTO deployment_events(id,deployment_id,phase,status,started_at,anomaly_unready) VALUES('x7','d1','smoke','started',?,7)", (now,)),
+    ]:
+        try:
+            c.execute(statement, args)
+        except sqlite3.IntegrityError:
+            continue
+        raise AssertionError(f"deployment constraint was not enforced: {statement}")
+    # `unknown` is a first-class recorded status: a phase whose result was never observed must
+    # be recordable as exactly that, rather than as a success or a failure.
+    c.execute(
+        "INSERT INTO deployment_events(id,deployment_id,phase,status,started_at,finished_at) VALUES('u1','d1','smoke','unknown',?,?)",
+        (now, later),
+    )
+
+    # Reviewer time: an open review carries no duration, and a closed one must carry both.
+    c.execute(
+        "INSERT INTO incident_reviews(id,request_id,view,node_count,edge_count,opened_at) VALUES('v1','req','causal',12,4,?)",
+        (now,),
+    )
+    c.execute(
+        "UPDATE incident_reviews SET closed_at=?,duration_ms=1500,outcome='cause_identified' WHERE id='v1'",
+        (later,),
+    )
+    for statement, args in [
+        ("INSERT INTO incident_reviews(id,request_id,view,node_count,edge_count,opened_at,duration_ms) VALUES('v2','req','causal',1,1,?,10)", (now,)),
+        ("INSERT INTO incident_reviews(id,request_id,view,node_count,edge_count,opened_at,closed_at) VALUES('v3','req','causal',1,1,?,?)", (now, later)),
+        ("INSERT INTO incident_reviews(id,request_id,view,node_count,edge_count,opened_at) VALUES('v4','req','guessed',1,1,?)", (now,)),
+        ("INSERT INTO incident_reviews(id,request_id,view,node_count,edge_count,opened_at,closed_at,duration_ms,outcome) VALUES('v5','req','causal',1,1,?,?,5,'solved')", (now, later)),
+        ("INSERT INTO incident_reviews(id,request_id,view,node_count,edge_count,opened_at) VALUES('v6','req','causal',-1,1,?)", (now,)),
+    ]:
+        try:
+            c.execute(statement, args)
+        except sqlite3.IntegrityError:
+            continue
+        raise AssertionError(f"reviewer-time constraint was not enforced: {statement}")
+    # An abandoned review is a real reportable outcome, recordable without a fabricated cause.
+    c.execute(
+        "INSERT INTO incident_reviews(id,request_id,view,node_count,edge_count,opened_at,closed_at,duration_ms,outcome)"
+        " VALUES('v7','req','comparison',3,1,?,?,20,'abandoned')",
+        (now, later),
+    )
+
+
 def test_014_history_search_constraints():
     """P15-T04. The four invariants migration 014 exists to hold:
 
@@ -437,6 +545,7 @@ def main():
         test_009_run_cancellation_constraints()
         test_010_retention_maintenance_constraints()
         test_014_history_search_constraints()
+        test_015_causal_coverage_constraints()
         print(
             f"migrations OK: {' -> '.join(VERSIONS)}, "
             f"user_version={LATEST_VERSION}, data/FTS/FKs preserved"

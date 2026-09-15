@@ -1,0 +1,81 @@
+{
+  "cases": [
+    {
+      "break_kind": "step",
+      "break_recorded": true,
+      "edge_coverage": 0.667,
+      "edges": 2,
+      "id": "stale-anchor-with-recorded-edges",
+      "missing_edges": 2,
+      "nodes": 6,
+      "recorded_dependency": 4,
+      "request_id": "request",
+      "temporal_proximity": 2,
+      "unknown": 0
+    },
+    {
+      "break_kind": "unknown",
+      "break_recorded": false,
+      "edge_coverage": 1.0,
+      "edges": 0,
+      "id": "no-recorded-break",
+      "missing_edges": 0,
+      "nodes": 1,
+      "recorded_dependency": 1,
+      "request_id": "quiet",
+      "temporal_proximity": 0,
+      "unknown": 0
+    }
+  ],
+  "deployment": {
+    "anomalies_flagged": 0,
+    "phases": [
+      {
+        "anomalies": {
+          "identity_mismatch": false,
+          "schema_regressed": null,
+          "smoke_failed": null,
+          "unready": null
+        },
+        "id": "61a279b4-56ac-48d1-8339-a42f6f23a3ea",
+        "parent_id": null,
+        "phase": "build",
+        "status": "succeeded"
+      },
+      {
+        "anomalies": {
+          "identity_mismatch": null,
+          "schema_regressed": null,
+          "smoke_failed": null,
+          "unready": null
+        },
+        "id": "45ac9569-c52b-434d-88c7-19e9e6c54014",
+        "parent_id": "61a279b4-56ac-48d1-8339-a42f6f23a3ea",
+        "phase": "restart",
+        "status": "succeeded"
+      },
+      {
+        "anomalies": {
+          "identity_mismatch": null,
+          "schema_regressed": null,
+          "smoke_failed": null,
+          "unready": null
+        },
+        "id": "d5e19c1b-4d6a-4dbb-a3e6-73daa144df63",
+        "parent_id": "45ac9569-c52b-434d-88c7-19e9e6c54014",
+        "phase": "smoke",
+        "status": "succeeded"
+      }
+    ],
+    "unresolved_or_unknown": 0
+  },
+  "fixture_sha256": "53d644bee7dac3ab1ab8a9964b0a6e442e252ed14acd4def901c2c1efc31f594",
+  "projection": "causal-neighborhood-v1",
+  "reviewer_time": {
+    "abandoned_reviews": 0,
+    "closed_reviews": 1,
+    "max_ms": 1800,
+    "mean_ms": 1800,
+    "open_reviews": 0
+  }
+}
