@@ -1125,7 +1125,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - result-verify: Exact task gate passed: 2 treatment tests plus the complete browser-to-Rust-to-SQLite-to-filesystem E2E and all failure-path lanes. The full 300-test Rust suite, strict Clippy, formatting, Python lint/compile, capsule-script freeze smoke test, migration chain 001->016, 16 SQL contracts, API schema, and diff checks also passed. This task was not deployed.
 
 ### P17-T03 · Implement strict replay and first-divergence reports
-- status: doing
+- status: done
 - priority: research
 - lane: experiment-replay
 - parallel: yes
@@ -1134,6 +1134,8 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - files: src/experiments/*, static/*, tests/capsules/*
 - done-when: strict replay makes zero live provider/tool calls and validates deterministic pipeline integrity. Recorded responses are matched to the actual request boundary; changed context or request stops at the first divergence and marks downstream behavioral evidence unavailable instead of reusing the original response as a counterfactual outcome.
 - verify: cargo test --locked replay && scripts/verify_e2e.sh
+- result: Added content-addressed strict replay tapes and replay reports linked to one validated strict capsule and isolated treatment. Provider transcripts are bound to the capsule provider-boundary digest, and every recorded tool result is matched to its exact ordered tool name, request digest and result digest. Exact context/request matches replay recorded results offline; the first changed, missing or extra boundary withholds that old result and marks every downstream step unavailable. The replay core exposes no provider, tool-registry, shell, network or filesystem-write client and reports structurally zero live calls. A checked-in request fixture proves deterministic report bytes and identity.
+- result-verify: Exact task gate passed with 7 replay-matching tests and the full browser-to-Rust-to-SQLite-to-filesystem E2E/failure-path suite. The full 305-test Rust suite, strict Clippy, formatting, migration chain 001->016, all 16 SQL contracts, API schema and diff checks also passed. This task was not deployed.
 
 ### P17-T04 · Add live treatments, budgets and statistics
 - status: todo

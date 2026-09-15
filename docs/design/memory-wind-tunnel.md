@@ -197,6 +197,20 @@ Exit: two strict replays differ only when the treatment memory differs; source D
 - Align traces by step identity and show first divergence.
 - Add deterministic tests for memory inclusion/exclusion, context receipts, tool calls, permissions, diffs, and acceptance results.
 
+The strict replay core uses a content-addressed `harness-strict-replay-v1` tape linked to one strict
+capsule and one isolated treatment. Every provider, tool, permission, diff, and acceptance step has
+a stable identity, contiguous sequence, canonical request/result bytes, and SHA-256 digests. The
+provider transcript digest must equal the capsule's frozen provider boundary; every tool name,
+request digest, and result digest must also match the ordered tool references in the capsule.
+
+Replay accepts the context digest and requests actually produced by the deterministic pipeline. It
+returns a recorded result only for an exact context, identity, boundary, tool name, and request-byte
+match. The first missing, changed, or extra request produces a content-addressed
+`harness-replay-report-v1`; that step is `diverged`, every later expected step is `unavailable`, and
+none of their old results are exposed as counterfactual evidence. The replay core has no provider,
+tool-registry, shell, network, or filesystem-write client, so its live-call counts are structurally
+zero. A checked-in request fixture must reproduce byte-identical report JSON and report identity.
+
 Exit: a captured run becomes a checked-in regression fixture with a reproducible comparison report and zero live model calls.
 
 ### M3: real E2E browser lane

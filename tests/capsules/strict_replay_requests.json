@@ -1,0 +1,35 @@
+{
+  "format": "harness-strict-replay-fixture-v1",
+  "context": "context with memory-1",
+  "requests": [
+    {
+      "identity": "provider:0",
+      "boundary": "provider",
+      "tool_name": null,
+      "request": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "fix it"
+          }
+        ]
+      }
+    },
+    {
+      "identity": "tool:0",
+      "boundary": "tool",
+      "tool_name": "read",
+      "request": {
+        "path": "main.rs"
+      }
+    },
+    {
+      "identity": "acceptance:0",
+      "boundary": "acceptance",
+      "tool_name": null,
+      "request": {
+        "command": "cargo test"
+      }
+    }
+  ]
+}

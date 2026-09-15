@@ -1,5 +1,22 @@
 # PROGRESS — journal
 
+## 2026-09-15T18:48:52Z · P17-T03 — strict replay and divergence reporting completed
+
+Implemented offline, content-addressed strict replay tapes and deterministic reports. A tape is
+accepted only when it links the same validated strict capsule and isolated treatment, its frozen
+provider transcript matches the capsule boundary digest, and every tool result matches the exact
+ordered tool name/request/result digests. Replay exposes a recorded result only while context and
+actual canonical requests remain identical. At the first changed, missing or extra request, the old
+result is withheld and all downstream behavioral evidence is explicitly `unavailable`.
+
+The replay core has no provider, tool-registry, shell, network or filesystem-write client, and its
+reports record zero live calls. A checked-in request fixture reproduces byte-identical report JSON
+and content address. The exact replay plus real E2E gate passed; the full 305-test Rust suite, strict
+Clippy, formatting, migration 001->016, all 16 SQL contracts, API schema and diff checks also passed.
+No deployment, service restart, provider/tool call, approved-memory mutation, live project write,
+access, Cloudflare, DNS, UpCloud, firewall, relay, TLS, Tailscale, origin or infrastructure setting
+changed.
+
 ## 2026-09-15T18:42:35Z · P17-T03 — strict replay and divergence reporting started
 
 P17-T02 was fast-forwarded into `main` and pushed at `eee2704`; it remains undeployed. P17-T03 is
