@@ -150,3 +150,11 @@ Args: `{ description?: string (≤ 80 chars), prompt: string (≤ 2000 chars) }`
 ## Later tools (contracts to be written when scheduled)
 
 `web_fetch` (P5, opt-in per scope).
+
+## Git and process controls (P14-T03)
+
+The `git` tool is a mixed-capability tool. `status`, `diff`, `log`, and `propose_commit` return bounded read-only evidence. `checkpoint_create`, `checkpoint_restore`, `commit`, and `push` are side-effecting operations and always enter the normal approval gate, including `auto_edit` and `auto_all` modes.
+
+Checkpoints are stored below `.harness/checkpoints/` as a tracked-file patch plus JSON metadata. Untracked files are never included. Restore validates the checkpoint identifier, metadata, repository `HEAD`, and current tracked diff before applying; stale or inconsistent state fails closed. A failed `git apply` is a failed tool result, never an apparently successful no-op.
+
+Detached Bash commands register their PID, scope, request ID, summary, log path, and start time. The registry is in-memory, bounded, purges dead entries, removes a record before signalling, and never replays entries after restart. If capacity prevents registration, the newly detached process is stopped rather than orphaned.

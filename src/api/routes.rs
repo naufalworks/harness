@@ -1213,6 +1213,72 @@ async fn checkout_memory_branch(
     ))
 }
 
+async fn active_processes() -> ApiResult<Json<Value>> {
+    Ok(Json(json!({
+        "processes": crate::processes::active(),
+        "durability": "in_memory_only; processes are never replayed after restart"
+    })))
+}
+
+async fn stop_process(Path(pid): Path<u32>) -> ApiResult<Json<Value>> {
+    if pid <= 1 {
+        return Err(invalid("Invalid process identifier"));
+    }
+    match crate::processes::terminate_background(pid) {
+        Some(process) => Ok(Json(json!({"stopped":true,"process":process}))),
+        None => Err(ApiError(
+            StatusCode::NOT_FOUND,
+            "That process is not registered by this harness; nothing was stopped",
+        )),
+    }
+}
+
+async fn git_state(
+    State(h): State<Harness>,
+    Query(q): Query<ScopeQuery>,
+) -> ApiResult<Json<Value>> {
+    safety::scope(&q.scope).map_err(|_| invalid("Invalid scope"))?;
+    let root = h
+        .store
+        .scope_config(q.scope.clone())
+        .await
+        .map_err(db_error)?
+        .and_then(|config| config.root_path)
+        .ok_or(ApiError(
+            StatusCode::CONFLICT,
+            "This scope has no project root, so Git state is unavailable",
+        ))?;
+    let scope = q.scope;
+    let output = tokio::task::spawn_blocking(move || {
+        fn command(root: &str, args: &[&str]) -> Value {
+            match std::process::Command::new("git")
+                .arg("-C")
+                .arg(root)
+                .args(args)
+                .env_remove("GIT_CONFIG_GLOBAL")
+                .env_remove("GIT_CONFIG_SYSTEM")
+                .output()
+            {
+                Ok(result) => json!({
+                    "exit_code": result.status.code(),
+                    "output": crate::tools::truncate_chars(&format!("{}{}", String::from_utf8_lossy(&result.stdout), String::from_utf8_lossy(&result.stderr)), 8192)
+                }),
+                Err(error) => json!({"exit_code":Value::Null,"output":error.to_string()}),
+            }
+        }
+        json!({
+            "scope": scope,
+            "root": root,
+            "status": command(&root, &["status", "--short", "--branch"]),
+            "diff_stat": command(&root, &["diff", "--stat", "--no-ext-diff", "--"]),
+            "trusted": true
+        })
+    })
+    .await
+    .map_err(|_| ApiError(StatusCode::INTERNAL_SERVER_ERROR, "Git state could not be inspected"))?;
+    Ok(Json(output))
+}
+
 pub(crate) fn router(state: Harness) -> Router {
     let api = Router::new()
         .route("/chat", post(chat))
@@ -1238,6 +1304,9 @@ pub(crate) fn router(state: Harness) -> Router {
         .route("/sessions/{id}/messages", get(history))
         .route("/jobs", get(jobs))
         .route("/jobs/{id}/retry", post(retry_job))
+        .route("/processes", get(active_processes))
+        .route("/processes/{pid}/stop", post(stop_process))
+        .route("/git/state", get(git_state))
         .route("/scopes", get(list_scopes))
         .route("/scopes/{scope}", get(get_scope).post(set_scope))
         .route("/permissions", get(permissions))

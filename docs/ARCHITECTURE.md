@@ -46,6 +46,9 @@ existence: an unauthenticated request never learns whether a path exists.
 - `GET /sessions/{id}/messages`
 - `GET /jobs`
 - `POST /jobs/{id}/retry`
+- `GET /processes`
+- `POST /processes/{pid}/stop`
+- `GET /git/state`
 - `GET /scopes`
 - `GET|POST /scopes/{scope}`
 - `GET /permissions`

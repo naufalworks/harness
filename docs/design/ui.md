@@ -84,3 +84,9 @@ proposal stays pending and approvable afterwards. Memory keys and notes are plac
 - State labels stay honest: "Saved · answer failed" not "Error". "Awaiting your approval" not "Blocked".
 - Never claim a file was changed until `applied=1`.
 - Show costs as tokens, not currency, unless the user configures a price.
+
+## Process and Git controls (P14-T03)
+
+The Imports view includes two read-side panels. **Active project processes** lists only detached processes registered by this Harness instance and shows the scope, request, summary, log path, and PID. Stop requires an explicit confirmation and targets only a registered PID; the UI states that records are in-memory and are not replayed after restart.
+
+**Git state** displays trusted, scoped `status` and bounded diff statistics. It is explicitly read-only: the panel never implies that a commit, checkpoint restore, or push occurred. Git mutations are represented as approval requests with the exact operation and focused paths before dispatch. Reloading the UI only refreshes evidence; it never restores checkpoints, commits, pushes, or replays detached processes.

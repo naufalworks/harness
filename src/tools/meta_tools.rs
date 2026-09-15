@@ -278,6 +278,7 @@ mod tests {
                 "lsp",
                 "browser",
                 "bash",
+                "git",
                 "think",
                 "todo_write",
                 "skill",

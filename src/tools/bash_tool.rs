@@ -188,12 +188,28 @@ fn background(ctx: &ToolCtx, call: &Call, summary: String) -> ToolResult {
         .last()
         .and_then(|t| t.parse::<u32>().ok());
     match pid {
-        Some(pid) => ToolResult::ok(summary, json!({
-            "pid": pid,
-            "log": display,
-            "note": format!("started detached; read it with `bash tail -n 50 {display}` and stop it with `bash kill {pid}`"),
-        }).to_string()),
-        None => ToolResult::err("spawn_failed", format!("could not start the command in the background ({}): {}", spawn.label(), spawn.output)),
+        Some(pid) => {
+            crate::processes::register_background(
+                &ctx.scope,
+                &ctx.request_id,
+                pid,
+                &summary,
+                &display,
+            );
+            ToolResult::ok(summary, json!({
+                "pid": pid,
+                "log": display,
+                "note": format!("started detached; read it with `bash tail -n 50 {display}` and stop it from the registered jobs view"),
+            }).to_string())
+        }
+        None => ToolResult::err(
+            "spawn_failed",
+            format!(
+                "could not start the command in the background ({}): {}",
+                spawn.label(),
+                spawn.output
+            ),
+        ),
     }
 }
 

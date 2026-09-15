@@ -507,6 +507,31 @@ async function refreshInlineSuggestions() {
     if (candidates.length) { tray.append(node('strong', 'Suggested memories from this turn')); for (const candidate of candidates) tray.append(candidateCard(candidate)); }
   }
 }
+async function loadProcesses() {
+  const myEpoch = epoch; const data = await api('/processes'); if (!token || myEpoch !== epoch) return;
+  const list = $('processes'); list.replaceChildren();
+  if (!data.processes?.length) { list.append(node('p', 'No registered processes.', 'empty')); return; }
+  for (const process of data.processes) {
+    const card = node('div', undefined, 'job');
+    card.append(node('strong', `${process.summary || 'Detached process'} · PID ${process.pid}`));
+    card.append(node('p', `${process.scope} · request ${process.request_id}`, 'muted'));
+    if (process.log) card.append(node('p', `Log: ${process.log}`, 'mono small'));
+    const stop = node('button', 'Stop registered process', 'secondary'); stop.type = 'button';
+    stop.addEventListener('click', async () => {
+      if (!window.confirm(`Stop PID ${process.pid}? Only this registered process will be targeted.`)) return;
+      stop.disabled = true;
+      try { await api(`/processes/${encodeURIComponent(process.pid)}/stop`, {}); notice(`Stopped registered process ${process.pid}.`); await loadProcesses(); }
+      catch (error) { notice(error.message, true); stop.disabled = false; }
+    });
+    card.append(stop); list.append(card);
+  }
+}
+async function loadGitState() {
+  const myEpoch = epoch; const data = await api(`/git/state?scope=${encodeURIComponent(scope)}`); if (!token || myEpoch !== epoch) return;
+  const status = data.status || {}; const diff = data.diff_stat || {};
+  $('git-trust').textContent = data.trusted ? `Read-only Git evidence for ${data.scope}; no commit, restore, or push was performed.` : 'Git state could not be trusted.';
+  $('git-status').textContent = `STATUS\n${status.output || '(no status output)'}\n\nDIFF STAT\n${diff.output || '(no diff stat)'}`;
+}
 async function loadJobs() {
   const myEpoch = epoch; const data = await api('/jobs'); if (!token || myEpoch !== epoch) return;
   $('jobs').replaceChildren(); if (!data.jobs.length) $('jobs').append(node('p', 'No processing jobs yet.', 'empty'));
@@ -527,9 +552,11 @@ $('settingsform').addEventListener('submit', async event => { event.preventDefau
 $('loadmodels').addEventListener('click', async () => { try { const data = await api('/models'); $('modelnames').textContent = data.data.map(m => String(m.id)).join('\n'); } catch (error) { notice(error.message, true); } });
 $('refreshmemory').addEventListener('click', () => loadCandidates().catch(e => notice(e.message, true)));
 $('refreshjobs').addEventListener('click', () => loadJobs().catch(e => notice(e.message, true)));
+$('refreshprocesses').addEventListener('click', () => loadProcesses().catch(e => notice(e.message, true)));
+$('refreshgit').addEventListener('click', () => loadGitState().catch(e => notice(e.message, true)));
 for (const tab of document.querySelectorAll('[data-view]')) tab.addEventListener('click', async () => {
   for (const t of document.querySelectorAll('[data-view]')) { const active = t === tab; t.classList.toggle('active', active); t.setAttribute('aria-pressed', String(active)); $(`view-${t.dataset.view}`).hidden = !active; }
-  try { if (tab.dataset.view === 'memory') await loadCandidates(); if (tab.dataset.view === 'imports') await loadJobs(); if (tab.dataset.view === 'settings') { const data = await api('/config'); $('mainmodel').value = data.main || ''; $('extractmodel').value = data.extraction || ''; $('verificationmodel').value = data.verification || ''; } } catch (error) { notice(error.message, true); }
+  try { if (tab.dataset.view === 'memory') await loadCandidates(); if (tab.dataset.view === 'imports') { await loadJobs(); await loadProcesses(); await loadGitState(); } if (tab.dataset.view === 'settings') { const data = await api('/config'); $('mainmodel').value = data.main || ''; $('extractmodel').value = data.extraction || ''; $('verificationmodel').value = data.verification || ''; } } catch (error) { notice(error.message, true); }
 });
 // P11-T05: the two always-on clocks are now one tick, installed at the end of this file.
 

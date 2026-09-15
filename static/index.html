@@ -149,6 +149,18 @@
             <button id="refreshjobs" class="secondary" type="button">Refresh jobs</button>
           </div>
           <div id="jobs"><p class="empty">No processing jobs yet.</p></div>
+          <div class="sectionhead">
+            <h2>Active project processes</h2>
+            <button id="refreshprocesses" class="secondary" type="button">Refresh processes</button>
+          </div>
+          <p class="muted small">Only detached processes registered by this Harness instance appear here. Stopping a process removes its registration before signalling it; old PIDs are never replayed after restart.</p>
+          <div id="processes"><p class="empty">No registered processes.</p></div>
+          <div class="sectionhead">
+            <h2>Git state</h2>
+            <button id="refreshgit" class="secondary" type="button">Refresh Git</button>
+          </div>
+          <p id="git-trust" class="muted small">Git state is read-only evidence from the configured project scope.</p>
+          <pre id="git-status" class="git-output"></pre>
         </div>
       </section>
 

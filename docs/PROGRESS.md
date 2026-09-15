@@ -1,5 +1,23 @@
 # PROGRESS — journal
 
+## 2026-09-15T15:45:00Z · P14-T03 — done; process, Git and checkpoint controls
+
+P14-T03 finished on branch `p14-t03` in `/root/development/harness-p14-t03`. The Git tool now
+provides bounded read-only status/diff/log evidence and focused commit proposals. Checkpoints store
+tracked patches plus metadata, explicitly exclude untracked files, and refuse restore when HEAD,
+tracked worktree state, or checkpoint metadata is stale/inconsistent. Restore, commit, and push are
+approval-gated mutations even under automatic permission modes.
+
+Detached Bash processes are registered with scope, request, summary, log, and start time. The
+in-memory registry purges dead entries, bounds its size, removes a record before signalling, and
+never replays old PIDs after restart. Authenticated API routes and the Imports UI expose read-only
+Git state plus safe process inspection and stop controls.
+
+Final evidence: full Rust tests passed 260 tests; strict clippy and formatting passed; migrations
+001→013 passed; API schema matched 54 operations; mocked browser suites and browser-to-service E2E
+passed approval/denial, crash recovery, cancellation/retry, unsafe-retry refusal, and no-JavaScript-
+exception coverage. The next roadmap task remains deferred until this branch is committed cleanly.
+
 ## 2026-09-15T07:59:00Z · P14-T02 — done; session and approval workflow
 
 The autonomous continuation completed the earliest eligible medium-priority task after P15-T03.

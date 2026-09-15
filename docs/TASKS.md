@@ -923,7 +923,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - verify: `cargo test --locked` (256 passed), `cargo clippy --locked --all-targets -- -D warnings` (clean), `python3 tests/test_migrations.py` (001→013), `python3 tests/test_api_schema.py` (51 operations), `scripts/verify_browser.sh` (passed), `scripts/verify_e2e.sh` (passed: approval, denial, recovery, cancellation/retry and unsafe-retry refusal).
 
 ### P14-T03 · Add process, Git and checkpoint controls
-- status: todo
+- status: done
 - priority: medium
 - lane: developer-workflow
 - parallel: yes
@@ -931,7 +931,8 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - design: docs/ROADMAP.md#p14-workflow-tools-providers-and-ux
 - files: src/tools/*, tools/schemas/*, static/*
 - done-when: active jobs are inspectable/cancellable; changes show Git state; checkpoint/restore and focused commit proposals are recorded and require approval before mutation/push.
-- verify: cargo test --locked tools && scripts/verify_e2e.sh
+- result: Added the Git tool and schema with bounded read operations, recorded focused commit proposals, tracked-only checkpoints, stale/inconsistent checkpoint refusal, and approval-gated checkpoint restore, commit, and push. Detached Bash processes are registered, bounded, purged when dead, and removable through authenticated API/UI controls. Git state is exposed as read-only scoped evidence.
+- verify: `cargo test --locked` (260 passed), `cargo clippy --locked --all-targets -- -D warnings` (clean), `python3 tests/test_migrations.py` (001→013), `python3 tests/test_api_schema.py` (54 operations), `scripts/verify_browser.sh` (passed), `scripts/verify_e2e.sh` (passed: approval, denial, recovery, cancellation/retry and unsafe-retry refusal).
 
 ### P14-T04a · Enforce minimal fail-closed spend limits
 - status: done

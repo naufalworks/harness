@@ -1,0 +1,33 @@
+{
+  "type": "function",
+  "function": {
+    "name": "git",
+    "description": "Inspect Git state or prepare a narrowly scoped repository control. status, diff, log, and propose_commit are read-only. checkpoint_create, checkpoint_restore, commit, and push change repository state and always require explicit approval before they run.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "operation": {
+          "type": "string",
+          "enum": ["status", "diff", "log", "propose_commit", "checkpoint_create", "checkpoint_restore", "commit", "push"]
+        },
+        "checkpoint_id": {
+          "type": "string",
+          "description": "Short checkpoint identifier using letters, digits, dash, underscore, or dot."
+        },
+        "message": {
+          "type": "string",
+          "description": "Focused commit message, at most 120 characters."
+        },
+        "paths": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Explicit project-relative paths for a focused commit."
+        },
+        "remote": {"type": "string", "description": "Simple Git remote name; defaults to origin."},
+        "branch": {"type": "string", "description": "Simple Git branch/ref; defaults to HEAD."}
+      },
+      "required": ["operation"],
+      "additionalProperties": false
+    }
+  }
+}

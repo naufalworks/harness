@@ -13,13 +13,27 @@
 //! spawned and registered after the one-shot terminate ran — the spawn->register race in
 //! `run_capped_for` — is killed on sight instead of being quietly remembered. The seal is bounded
 //! and in-memory like the rest of this module.
+use serde::Serialize;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Mutex, OnceLock};
+
+const MAX_BACKGROUND: usize = 256;
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ActiveProcess {
+    pub pid: u32,
+    pub scope: String,
+    pub request_id: String,
+    pub summary: String,
+    pub log: String,
+    pub started_at: String,
+}
 
 /// One lock guards both what is live and which requests are already cancelled, so a cancellation
 /// and a late registration can never interleave into a surviving group.
 struct Registry {
     live: HashMap<String, Vec<i32>>,
+    background: HashMap<u32, ActiveProcess>,
     /// Requests whose cancellation already ran. A group spawned after that point must be killed on
     /// sight, because the one-shot `terminate` it missed will never run again.
     sealed: HashSet<String>,
@@ -36,6 +50,7 @@ fn registry() -> &'static Mutex<Registry> {
     REGISTRY.get_or_init(|| {
         Mutex::new(Registry {
             live: HashMap::new(),
+            background: HashMap::new(),
             sealed: HashSet::new(),
             sealed_order: VecDeque::new(),
         })
@@ -138,6 +153,97 @@ fn signal_group(pgid: i32) {
 #[cfg(not(unix))]
 fn signal_group(_pgid: i32) {}
 
+#[cfg(unix)]
+fn signal_process(pid: u32) {
+    let pid = pid as i32;
+    if pid <= 1 {
+        return;
+    }
+    unsafe {
+        libc::kill(pid, libc::SIGTERM);
+        libc::kill(-pid, libc::SIGTERM);
+        libc::kill(pid, libc::SIGKILL);
+        libc::kill(-pid, libc::SIGKILL);
+    }
+}
+
+#[cfg(not(unix))]
+fn signal_process(_pid: u32) {}
+
+#[cfg(unix)]
+fn process_exists(pid: u32) -> bool {
+    if pid <= 1 {
+        return false;
+    }
+    let result = unsafe { libc::kill(pid as i32, 0) };
+    result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(not(unix))]
+fn process_exists(_pid: u32) -> bool {
+    true
+}
+
+pub fn register_background(
+    scope: &str,
+    request_id: &str,
+    pid: u32,
+    summary: &str,
+    log: &str,
+) -> bool {
+    if pid <= 1 {
+        return false;
+    }
+    let process = ActiveProcess {
+        pid,
+        scope: scope.to_string(),
+        request_id: request_id.to_string(),
+        summary: summary.to_string(),
+        log: log.to_string(),
+        started_at: chrono::Utc::now().to_rfc3339(),
+    };
+    let accepted = {
+        let mut reg = registry()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        reg.background
+            .retain(|known_pid, _| process_exists(*known_pid));
+        if reg.background.len() >= MAX_BACKGROUND || reg.background.contains_key(&pid) {
+            false
+        } else {
+            reg.background.insert(pid, process);
+            true
+        }
+    };
+    if !accepted {
+        // Never leave a detached child running without a registry record that can stop it.
+        signal_process(pid);
+    }
+    accepted
+}
+
+pub fn active() -> Vec<ActiveProcess> {
+    let mut reg = registry()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    reg.background.retain(|pid, _| process_exists(*pid));
+    let mut values: Vec<_> = reg.background.values().cloned().collect();
+    values.sort_by(|a, b| a.started_at.cmp(&b.started_at).then(a.pid.cmp(&b.pid)));
+    values
+}
+
+pub fn terminate_background(pid: u32) -> Option<ActiveProcess> {
+    let process = registry()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .background
+        .remove(&pid);
+    if process.is_some() {
+        signal_process(pid);
+    }
+    process
+}
+
 /// Terminate every live process group registered for `request` and forget them, so a cancel never
 /// signals a pid the OS has since reused. Returns how many groups were signalled. The request is
 /// sealed first, so a group that registers only after this returns is still stopped.
@@ -189,6 +295,43 @@ mod tests {
     fn a_non_positive_group_is_never_registered() {
         let _guard = register("zero", 0);
         assert!(live("zero").is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn active_purges_a_dead_background_record() {
+        use std::process::Command;
+
+        let mut child = Command::new("true").spawn().unwrap();
+        let pid = child.id();
+        assert!(child.wait().unwrap().success());
+        assert!(register_background("test", "dead", pid, "dead child", ""));
+        assert!(!active().iter().any(|process| process.pid == pid));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stopping_a_background_process_is_idempotent_and_removes_before_signal() {
+        use std::process::Command;
+        use std::time::{Duration, Instant};
+
+        let mut child = Command::new("sleep").arg("10").spawn().unwrap();
+        let pid = child.id();
+        assert!(register_background("test", "stop", pid, "sleep", ""));
+        assert!(active().iter().any(|process| process.pid == pid));
+        assert!(terminate_background(pid).is_some());
+        assert!(terminate_background(pid).is_none());
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            if child.try_wait().unwrap().is_some() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("registered background process was not stopped");
     }
 
     /// P14-REVIEW-02: a group spawned after the cancel path ran must still die. The one-shot

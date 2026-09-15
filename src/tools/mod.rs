@@ -11,6 +11,7 @@ pub mod bash_tool;
 pub mod browser_tool;
 pub mod edit_tools;
 pub mod fs_tools;
+pub mod git_tool;
 pub mod lsp_tool;
 pub mod meta_tools;
 pub mod paths;
@@ -274,6 +275,7 @@ impl Registry {
                 Box::new(lsp_tool::Lsp),
                 Box::new(browser_tool::Browser::default()),
                 Box::new(bash_tool::Bash),
+                Box::new(git_tool::Git),
                 Box::new(meta_tools::Think),
                 Box::new(meta_tools::TodoWrite),
                 Box::new(skill_tool::Skill),
@@ -318,6 +320,7 @@ impl Registry {
             ("bash", PermissionMode::AutoAll) => {
                 is_dangerous_command(args.get("command").and_then(Value::as_str).unwrap_or(""))
             }
+            ("git", PermissionMode::AutoEdit | PermissionMode::AutoAll) => true,
             (_, PermissionMode::AutoEdit | PermissionMode::AutoAll) => false,
         }
     }
