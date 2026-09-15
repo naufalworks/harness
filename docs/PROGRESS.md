@@ -2481,3 +2481,56 @@ no UI for search, forget or export; `purge_index` from migration 007 has no hist
 (the projection *is* the derived index, and source-delete already empties it); and importing a
 memory stops at a recorded decision, so a receiving operator still has to approve it through
 the existing candidate flow.
+
+## 2026-09-15 · P15-T04 deploy — advancing the live service from schema 13 to 14
+
+The previous entry closed with "not deployed": the code was at `ca4f058` and the live unit was
+still serving `7708e48` at `user_version=13`. This entry is that deployment, done through
+`scripts/deploy.sh` with nothing hand-edited around it, because the script is the only path
+that checks the things a schema-advancing promotion has to check.
+
+**Snapshot before the switch.** `scripts/deploy.sh` refused-then-passed its own preconditions in
+order: tree clean, `ExecStart` naming `target/release/harness`, current `/health` reachable and
+ready, and the on-disk executable's sha256 equal to the served `binary_sha256` — that last check
+is what makes the snapshot an attestation rather than a copy of whatever happened to be on disk.
+It then captured `.harness/deploy/previous-harness` with manifest `{captured_at
+2026-09-15T14:36:43Z, commit 7708e485893c47aa60890a65fa82f3b09b5c2314, binary_sha256
+81b1691395818afe76266ee73cd626f5b08376b333a398d175783985f48e5223, schema_version 13}`. Because
+migration 014 is not reversible, a binary snapshot alone would only cover the
+schema-compatible failure branch, so a verified `sqlite3` backup of the live database was taken
+first at `.harness/deploy/pre-p15t04-schema13.db` (`user_version=13`, `quick_check ok`, 699
+memories). Nothing needed either of them; both are kept.
+
+**Verified independently of the script.** The script printed `deployed ca4f058 to harness: pid
+565341, release sha256 6f5f00bc..., schema 14`, and that claim was then re-derived from the
+outside rather than believed. `systemctl is-active harness` -> `active` (relay too). Served
+`/health` reports `commit ca4f058b7621d29c63edc8697fc762b813b3bb5c`, equal to `git rev-parse
+HEAD`; `binary_sha256
+6f5f00bc97c715b25883951084d1f92fec167a836eed63077f505838116c435a`, equal to both `sha256sum
+target/release/harness` and `sha256sum /proc/565341/exe`, so the file, the running process and
+the served identity are one artifact; `schema_version 14` at both the top level and under
+`database`; `ready true`; `quick_check ok`; `workers.recording` and `workers.extraction` both
+true; no `error`. The schema value matters specifically here: P15-T04 fixed four sites that
+hard-coded `13`, and a miss in the readiness projection would have produced a server reporting
+itself unready. The served `14` is that fix observed in production, not in a test.
+
+**The live database migrated cleanly.** `PRAGMA user_version` on `data/harness_v2.db` is `14`,
+`quick_check ok`, and migration 014's six tables (`history_documents`,
+`history_privacy_events`, `export_bundles`, `export_items`, `import_receipts`,
+`import_decisions`) are all present in `sqlite_master`. Pre-existing data survived unchanged
+across the migration: memories 699, memory_revisions 700, messages 68, sessions 12, scopes 2,
+turn_steps 132, recording_events 170, candidates 760, activity_events 352, chat_receipts 34,
+provenance_edges 20 — identical to the counts read immediately before the restart.
+
+**Every hop still answers.** `http://127.0.0.1:8080/` 200 (origin), `http://10.0.0.2:8081/` 200
+(relay on the private network, and `/health` through it also 200), and
+`https://harness.keizerfps.store/` 200 through the UpCloud load balancer with the real
+document, not an error page. Authenticated `GET /scopes` 200; a `[]` body to `/chat/submit` is
+still refused with 400 and `request_body_rejected` in the journal. The old process logged
+`graceful_shutdown_complete` before systemd replaced it, so the swap was not a kill.
+`agent-monitor` saw the ~1s restart, which is expected and was left alone.
+
+**Nothing was rolled back.** No branch of `rollback_or_stop` ran, so the schema-advanced
+recovery path — the one that stops the unit and demands owner approval rather than quietly
+restoring a database — remains untested against a real failure, which is worth naming rather
+than counting as verified.
