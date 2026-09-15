@@ -2388,3 +2388,96 @@ sha256 f615c826…, schema 10) and confirmed `/health` `commit` and
 
 P12-T04 stays `doing`: three clauses remain — shared limits for magic values,
 checked numeric casts, and explicit nested patch-option semantics.
+
+## 2026-09-15 · P15-T04 — sanitized history search, a real forget/delete boundary, and a packet that actually exists
+
+Four clauses, and the interesting part of each was deciding what *not* to build.
+
+**Search.** The obvious move was an FTS5 external-content index straight over `messages`
+and `sources`, the way `memory_fts` sits over `memories`. It is wrong here. The clause says
+only sanitized content may be indexed, and sanitization is `safety::redact` +
+`safety::sensitive` — Rust, not something a SQLite trigger can call. An external-content
+index over the raw column would index the raw column and *hope* the writer had cleaned it
+first. So `history_documents` is an explicitly maintained projection: the indexer writes a
+row only after the shared sanitizer accepted the text, and stores which sanitizer version
+accepted it plus the checksum of exactly what was indexed. `history_fts` then sits over
+*that*, with the same three triggers 001 and 012 use, so the FTS-sync pattern is unchanged
+where it applies and the new decision is only about what is allowed into the projection.
+
+Three gates keep a leak out, and the overlap is deliberate: only sanitized text is indexed;
+forgotten and source-deleted rows are excluded in SQL; and every body is re-checked against
+the shared sanitizer *at read time*. The third exists because the first two trust the
+writer, and a row written by an older sanitizer, or edited out of band, would otherwise be
+served on the strength of a checksum it also carries. `a_tampered_index_row_is_suppressed`
+proves it by writing a secret directly into the projection and asserting search suppresses
+rather than returns it.
+
+**forget vs delete.** Migration 007 already established this vocabulary for sources
+(`forget`, `delete_source`, `purge_index`, `delete_archive`, "no one operation silently
+implies another"), so the same shape was extended to conversation turns rather than
+inventing a second one. Forget is a suppression: content, citation and revision trail all
+survive, which is exactly why `restore` can exist — nothing was destroyed, so lifting it is
+not a resurrection. Source delete empties the indexed body, removes the source row, and
+keeps the append-only audit, so the fact that an entry existed and was deleted stays
+provable. Two honest edges: a turn still referenced by a receipt or provenance edge cannot
+have its row removed (migration 006's trigger would refuse, and rightly), so its content is
+emptied and the outcome says `content_removed_source_retained` instead of claiming a removal
+it did not perform; and a source-deleted document is terminal — re-indexing must not
+resurrect it, which the test asserts by running the sweep again afterwards.
+
+**The packet.** `docs/ROADMAP.md`, `docs/PLAN.md` and the TASKS parking lot all promise
+"portable continuation packets" and `docs/design/causal-observability.md` speaks of an opaque
+continuation anchor a client passes back unchanged. None of it was ever implemented, so this
+task had to make the shape concrete without inventing promises: one self-describing JSON
+document, `format_version`, stable ids and revisions, per-item and bundle checksums over a
+*canonical* (key-sorted) serialization — `serde_json::Map` preserves insertion order, so
+without that two identical packets could hash differently purely by field order — the
+audience it was reviewed for, and `anchor` carried opaquely and never parsed.
+
+Export is three states because "audience review" has to mean something. A `draft` bundle is
+assembled and reviewed; the review pins the exact contents by digest; release recomputes that
+digest and refuses if the contents moved. Import merges by stable id plus revision, so a
+re-import is `unchanged` rather than a duplicate, and a lower revision is `skipped_stale`
+rather than an overwrite of newer local work.
+
+**Two things deliberately not done.** A ported memory is recorded as `skipped_unreviewed`,
+not written into `memories`: `docs/ARCHITECTURE.md` makes approval an owner act and an import
+is not one. And a packet carries reviewed sanitized evidence only — never exact original
+bytes (`src/archive/` owns those, encrypted) and no claim that importing it reproduces any
+past answer. `static/*` was listed in the task's files and left alone, the same call P15-T03
+made: no speculative UI for a surface nobody has asked to look at yet.
+
+**Two latent defects, both found by gates rather than by reading.** First, the schema
+assertion for `13` was in four places, not one — the version guard, the readiness
+projection, its test, and the `/health` test — which is the exact trap P15-T02's result note
+warned about. Second, and more interesting: `tests/test_sql_contracts.py` scrapes the SQL the
+Rust actually ships by reading `src/storage/*.rs` in sorted order, on a comment-documented
+assumption that implementation SQL sorts before `storage.rs`'s `mod tests`. That held only
+while every fixture lived in `storage.rs`. `storage/history.rs` has its own `mod tests` and
+sorts before `memories.rs`, so its fixture `INSERT INTO memories(...)` became the first match
+and the whole contract suite started executing a fixture with the wrong bindings — seven
+errors, all in tests that had nothing to do with this change. The fix cuts each file at its
+`#[cfg(test)]` marker: "test-only SQL is not shipped SQL" is a property of the source, so a
+new module cannot silently break it again the way a new filename just did.
+
+**Tampering, and why the tests changed.** Seven probes. Five failed immediately as intended.
+Two did not: disabling the reviewed-digest comparison at release still passed, because no test
+mutated a bundle *after* review, and deleting a table name from the migration test's expected
+set still passed, because `EXPECTED_TABLES` is a subset check that gets weaker when you remove
+from it. Both were replaced —
+`contents_changed_after_review_are_refused_at_release` swaps a reviewed payload for one the
+operator never saw, and the v14 table check now names its tables positively. Re-probed: 101
+and 1. A gate that passes when you break it was never a gate.
+
+Verification: 276 tests (from 256), `test_migrations.py` 001→014 at `user_version=14`, 16 SQL
+contracts, 62 documented API operations matching the router and the inventory, clippy
+`--all-targets --all-features -D warnings` clean, `cargo fmt --check` clean, `check_docs.py`
+0 failing, `verify_e2e.sh` exit 0. Not deployed — the live service still runs the previous
+binary at schema 13, and advancing it is a deployment decision with a rollback policy
+attached, not a side effect of a test run.
+
+Remaining in P15: nothing. P15-T01 through T04 are done. What this task leaves open by choice:
+no UI for search, forget or export; `purge_index` from migration 007 has no history analogue
+(the projection *is* the derived index, and source-delete already empties it); and importing a
+memory stops at a recorded decision, so a receiving operator still has to approve it through
+the existing candidate flow.
