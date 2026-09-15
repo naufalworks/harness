@@ -60,6 +60,12 @@ For each `file_changes` row: header `path · +A −B · applied 12:42`, body uni
 
 ## Keyboard and commands (P2+)
 
+The connection badge is an evidence state, not a retry control. A fetch/network failure changes it
+to `Offline · retrying` or `Connection delayed`; the notice says that ambiguous submissions are not
+resent automatically. A browser `online` event changes it to `Reconnecting…` and performs only a
+read-only health refresh. A successful health response restores `Ready · <commit>`. Locking clears
+the badge to `Locked`; no token, prompt, or pending side effect is persisted for reconnection.
+
 ## Memory retrieval panel (P15-T02)
 
 The rail gains a “Memory retrieval” panel under Steps, fed by

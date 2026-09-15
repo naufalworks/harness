@@ -20,6 +20,30 @@ if (pending && typeof pending === 'object') {
 if (pending && (typeof pending.request_id !== 'string' || pending.session_id !== session || pending.scope !== scope)) { pending = null; sessionStorage.removeItem('harness_pending'); }
 $('scope').value = scope;
 function notice(text, error = false) { $('notice').textContent = text; $('notice').classList.toggle('error', error); }
+function setConnectionState(state, label) {
+  const badge = $('connection');
+  badge.dataset.state = state;
+  badge.textContent = label;
+}
+window.addEventListener('harness:connection', event => {
+  const state = event.detail?.state;
+  if (state === 'offline') {
+    setConnectionState('offline', 'Offline · retrying');
+    notice('Connection lost. Requests are not retried automatically; reconnecting…', true);
+  } else if (state === 'degraded') {
+    setConnectionState('degraded', 'Connection delayed');
+    notice('The server did not respond in time. Check status before retrying.', true);
+  }
+});
+window.addEventListener('offline', () => {
+  if (token) setConnectionState('offline', 'Offline · retrying');
+});
+window.addEventListener('online', () => {
+  if (!token) return;
+  setConnectionState('reconnecting', 'Reconnecting…');
+  notice('Connection restored. Checking status without resending anything.');
+  refreshStatus().catch(() => {});
+});
 function captureLabel(text) { $('capturestatus').textContent = text; }
 function rememberPending(value) {
   pending = value;
@@ -128,7 +152,7 @@ async function refreshStatus() {
   if (!health.ready) throw new Error('Harness is not ready');
   if (health.commit !== EXPECTED_SERVER_COMMIT) throw new Error(`Stale UI detected (${EXPECTED_SERVER_COMMIT.slice(0, 7)} != ${String(health.commit).slice(0, 7)}); reload this page`);
   $('pending').textContent = String(data.pending_confirmations);
-  $('connection').textContent = `Ready · ${health.commit.slice(0, 7)}`;
+  setConnectionState('ready', `Ready · ${health.commit.slice(0, 7)}`);
   $('stats').textContent = `${data.active_memories} memories remembered${data.queued_jobs ? ` · ${data.queued_jobs} jobs queued` : ''}${data.failed_jobs ? ` · ${data.failed_jobs} failed` : ''} · build ${health.commit.slice(0, 7)}`;
 }
 async function loadHistory(older = false) {
@@ -408,7 +432,7 @@ $('authform').addEventListener('submit', async event => {
     const health = await api('/health'); if (myEpoch !== epoch) return;
     if (!health.ready) throw new Error('Harness is not ready');
     if (health.commit !== EXPECTED_SERVER_COMMIT) throw new Error('This page is stale; reload before connecting');
-    $('auth').hidden = true; $('workspace').hidden = false; $('connection').textContent = 'Connected';
+    $('auth').hidden = true; $('workspace').hidden = false; setConnectionState('connected', 'Connected');
     notice('Connected — pick up where you left off.'); persistSession(); await loadHistory(); await loadSessions(); await refreshStatus(); await refreshScopeSetup();
     rememberPending(pending); if (pending) await resumeRecording();
   } catch (error) { token = ''; $('workspace').hidden = true; $('auth').hidden = false; notice(error.message, true); }
@@ -416,7 +440,7 @@ $('authform').addEventListener('submit', async event => {
 });
 $('lock').addEventListener('click', () => {
   token = ''; epoch++; setBusy(false); pendingPrompt = null; closeGenerationStream(); closeActivityStream();
-  $('workspace').hidden = true; $('auth').hidden = false; $('connection').textContent = 'Locked';
+  $('workspace').hidden = true; $('auth').hidden = false; setConnectionState('locked', 'Locked');
   for (const id of ['log','candidates','jobs','recalled','sessionlist','retrieval-list']) $(id).replaceChildren();
   $('modelnames').textContent = ''; $('stats').textContent = ''; $('mainmodel').value = ''; $('extractmodel').value = ''; $('verificationmodel').value = ''; $('prompt').value = ''; $('file').value = ''; $('consent').checked = false;
   $('setup-banner').hidden = true; $('scopelist').replaceChildren();

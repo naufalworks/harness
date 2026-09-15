@@ -102,6 +102,9 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere}
 .verification-badge.unverified{color:var(--orange);border-color:var(--orange);background:var(--orange-soft)}
 .verification-badge.skipped,.verification-badge.unavailable{color:var(--text-3)}
 #connection::before{content:'';width:7px;height:7px;border-radius:50%;background:var(--green);flex-shrink:0}
+#connection[data-state="offline"]::before{background:var(--red)}
+#connection[data-state="degraded"],#connection[data-state="reconnecting"]{color:var(--orange)}
+#connection[data-state="degraded"]::before,#connection[data-state="reconnecting"]::before{background:var(--orange)}
 .mark{
   width:40px;height:40px;border-radius:11px;
   background:linear-gradient(135deg,var(--accent),#8e6fe8);

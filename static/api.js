@@ -80,6 +80,14 @@ class ApiError extends Error {
   get notAdmitted() { return this.is(...NOT_ADMITTED_CODES); }
 }
 
+// Network loss is a UI state, never a retry instruction. The event carries no request body or
+// token; app.js uses it to show reconnecting without replaying an ambiguous submission.
+function signalApiConnection(state) {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('harness:connection', { detail: { state } }));
+  }
+}
+
 // Read the envelope without trusting it. A failure body can be missing, truncated, or not JSON at
 // all - an intermediary can answer for the server - so each field is taken only when it has the
 // documented type, and the sentence falls back to something that still names the status.
@@ -115,7 +123,11 @@ async function apiRequest(path, { token, body, method, timeoutMs = 20000 } = {})
     });
     const payload = await apiReadBody(response);
     if (!response.ok) throw apiError(response.status, payload);
+    signalApiConnection('reachable');
     return payload;
+  } catch (error) {
+    if (!(error instanceof ApiError)) signalApiConnection(error?.name === 'AbortError' ? 'degraded' : 'offline');
+    throw error;
   } finally { clearTimeout(timer); }
 }
 

@@ -15,6 +15,8 @@ pass. Remaining P14-T05 work is bounded LSP session reuse, safe transfer policy 
 the existing contract, and the modular UI/reconnect/dashboard/accessibility pass; optional voice is
 deferred until a safe product contract exists.
 
+The reconnect slice is now also implemented: API transport failures distinguish offline from timeouts, the connection badge exposes `Offline`, `Connection delayed`, `Reconnecting…`, and `Ready` states, and recovery performs only a read-only status refresh. No ambiguous chat request is resent automatically. The existing keyboard/mobile/dark-mode and no-JavaScript-exception browser checks remain green.
+
 ## 2026-09-15T15:50:00Z · P14-T05 — doing; language, browser, and accessible UI expansion
 
 P14-T03 is complete on commit `43c1b9c`. The documented eligibility rule selects P14-T05 as the
