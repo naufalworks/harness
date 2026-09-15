@@ -1,5 +1,34 @@
 # PROGRESS — journal
 
+## 2026-09-15T05:30:00Z · P14-T04b — done; capability detection moved before dispatch
+
+The last open clause was capability detection. Step 1 had already made the tools-unsupported
+fallback reactive and universal, but every turn still paid one rejected call to rediscover the
+same fact. The fix caches the discovery on the shared health state from step 2:
+`tools_supported(model)` / `note_tools_unsupported(model)`.
+
+It is centralised in `complete_with_tools` rather than at the two call sites in `agent_loop.rs`.
+Both the parent loop and delegated sub-agents route through that one method, so a single
+implementation cannot drift between roles — the exact defect step 1 existed to fix. Detection is
+per model rather than global, and optimistic: a capability is assumed present until the provider
+actually rejects it, so a healthy provider is never downgraded on a guess. Because `MemoryAgents`
+is cloned per request, the cache had to live behind the shared `Arc`; a per-clone cache would
+rediscover the rejection on every turn and the clause would be unmet in practice. A test asserts
+the cross-clone visibility for that reason.
+
+The reactive fallback from step 1 is deliberately left in place. Pre-dispatch detection cannot
+know about a model it has never called, so the first call still needs somewhere to land.
+
+All six done-when clauses are now covered: capability detection (this step), role fallback
+(step 1), circuit breakers and Retry-After/jitter (step 2), foreground/background fairness and
+role-specific budgets (step 3). The fail-closed limits from P14-T04a are preserved throughout:
+every new refusal path is enforced inside the existing reservation transaction or ahead of
+`reserve_spend`, and no new code path reaches the provider without a reservation.
+
+Verified at the end state, not just per step: `cargo test --locked provider` → `34 passed; 0
+failed` (23 at the start of this task), full `cargo test --locked` → `248 passed; 0 failed`,
+`python3 tests/recording_integration.py` → `PASS`, clippy `-D warnings` clean.
+
 ## 2026-09-15T05:25:00Z · P14-T04b step 3 — fairness and role budgets inside the reservation
 
 Recon settled where this belonged. The reservation decision already lives in one atomic

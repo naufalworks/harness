@@ -177,6 +177,9 @@ struct HealthState {
     trips: u32,
     open_until: Option<Instant>,
     last_retry_after: Option<Duration>,
+    /// Models observed to reject `tools`. Shared with every clone, so the discovery costs one
+    /// rejected call per model per process rather than one per turn.
+    tools_unsupported: std::collections::HashSet<String>,
 }
 
 impl Default for ProviderHealth {
@@ -192,6 +195,18 @@ impl ProviderHealth {
         // A poisoned breaker must not wedge the provider permanently: recover the state
         // and keep serving rather than panicking every later call.
         self.inner.lock().unwrap_or_else(|error| error.into_inner())
+    }
+
+    /// Whether `tools` may still be sent to this model. Defaults to true: a capability is
+    /// assumed present until the provider actually rejects it, so a working provider is never
+    /// downgraded on a guess.
+    pub fn tools_supported(&self, model: &str) -> bool {
+        !self.lock().tools_unsupported.contains(model)
+    }
+
+    /// Record that this model rejected `tools`, so later calls skip them before dispatch.
+    pub fn note_tools_unsupported(&self, model: &str) {
+        self.lock().tools_unsupported.insert(model.to_string());
     }
 
     /// Remaining cooldown, or `None` when calls may proceed.
@@ -819,11 +834,26 @@ impl MemoryAgents {
         messages: Vec<Value>,
         tools: Vec<Value>,
     ) -> Result<ModelTurn> {
-        let definitions = if tools.is_empty() { None } else { Some(tools) };
+        // Capability detection, applied before dispatch. Once a model has rejected `tools`,
+        // every later call for that model omits them instead of spending a request to
+        // rediscover the same rejection. Detection is centralised here so the parent loop and
+        // sub-agents share one cache and cannot drift apart.
+        let definitions = if tools.is_empty() || !self.health.tools_supported(model) {
+            None
+        } else {
+            Some(tools)
+        };
         match definitions {
             Some(tools) => {
-                self.complete_turn(model, messages, Some(&tools), 90, "model_call")
-                    .await
+                let result = self
+                    .complete_turn(model, messages, Some(&tools), 90, "model_call")
+                    .await;
+                if let Err(error) = &result {
+                    if is_tools_unsupported(error) {
+                        self.health.note_tools_unsupported(model);
+                    }
+                }
+                result
             }
             None => {
                 self.complete_turn(model, messages, None, 90, "model_call")
@@ -1122,6 +1152,34 @@ mod provider_tests {
         assert!(
             is_background_kind("some_future_role"),
             "an unrecognised role must yield to the user's turn, not outrank it"
+        );
+    }
+
+    #[test]
+    fn a_rejected_tools_capability_is_remembered_before_the_next_dispatch() {
+        let health = ProviderHealth::default();
+        // Optimistic by default: a capability is assumed present until the provider rejects
+        // it, so a working provider is never downgraded on a guess.
+        assert!(health.tools_supported("model-a"));
+
+        health.note_tools_unsupported("model-a");
+        assert!(
+            !health.tools_supported("model-a"),
+            "the rejection must be remembered so the next call omits tools before dispatch"
+        );
+        assert!(
+            health.tools_supported("model-b"),
+            "detection is per model, not a global downgrade"
+        );
+
+        // The cache is only useful if it is shared: MemoryAgents is cloned per request, and a
+        // per-clone cache would rediscover the same rejection on every turn.
+        let agents = MemoryAgents::new("http://127.0.0.1:9", "k", "m").unwrap();
+        let clone = agents.clone();
+        clone.health.note_tools_unsupported("shared-model");
+        assert!(
+            !agents.health.tools_supported("shared-model"),
+            "a discovery made on one clone must be visible to the others"
         );
     }
 

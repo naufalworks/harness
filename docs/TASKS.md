@@ -945,7 +945,9 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - verify: cargo test --locked provider && python3 tests/recording_integration.py
 
 ### P14-T04b · Improve provider scheduling and resilience
-- status: doing
+- status: done
+- result: all six clauses landed in four commits. Role fallback now applies to delegated calls as well as the parent loop (c081387); a shared circuit breaker with Retry-After and jittered backoff gates both reserve_spend funnels (3099c93); background roles yield daily headroom to foreground work and can carry their own ceiling (69df89a); capability detection moved before dispatch, cached per model on the shared health state. The P14-T04a fail-closed limits are preserved: every new refusal is enforced inside the existing reservation transaction or ahead of reserve_spend, so no path reaches the provider without a reservation.
+- result-verify: `cargo test --locked provider` (34 passed, from 23 at task start), `cargo test --locked` (248 passed), `python3 tests/recording_integration.py` (PASS), `cargo clippy --locked --all-targets --all-features -- -D warnings` (clean).
 - priority: high
 - lane: providers
 - parallel: yes
