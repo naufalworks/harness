@@ -21,3 +21,4 @@ docs/INPUTS.json
 reference/source-archives/
 *.bak*
 tests/recall_eval/metrics.json
+tests/coverage_eval/metrics.json
