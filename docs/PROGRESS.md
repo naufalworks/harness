@@ -29,6 +29,8 @@ LSP discovery coverage now also pins the configured C/C++ mapping (`.cpp` → `c
 
 The LSP pool tests now exercise same-root process reuse and idle expiry, including replacement of an expired process rather than returning it to the registry.
 
+The remaining optional voice item is now explicitly bounded in the UI design rather than implemented speculatively: it requires opt-in, visible recording state, no audio persistence, an 8 KiB editable transcript cap, no auto-submit, and a configured speech-provider contract. The current composer stays text-only until that contract exists.
+
 ## 2026-09-15T15:50:00Z · P14-T05 — doing; language, browser, and accessible UI expansion
 
 P14-T03 is complete on commit `43c1b9c`. The documented eligibility rule selects P14-T05 as the

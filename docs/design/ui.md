@@ -87,6 +87,16 @@ proposal stays pending and approvable afterwards. Memory keys and notes are plac
 
 `Enter` send, `Shift+Enter` newline, `Esc` focus composer, `Cmd/Ctrl+K` palette. Slash commands: `/scope <name>`, `/mode ask|auto_edit|auto_all`, `/plan`, `/compact` (P3), `/forget <key>` (P4), `/skill <name>` (P5).
 
+## Voice input (deferred)
+
+Voice remains an explicit follow-up rather than an implicit browser capability. It may only be added
+once the product contract names the speech engine/endpoint and retention policy. The minimum safe
+contract is: a user-visible opt-in and recording indicator; browser permission requested only after
+that opt-in; no raw audio or transcript persisted in local/session storage; a bounded transcript
+(8 KiB) with an explicit edit-before-send step; no automatic submission; and a clear refusal when
+the configured speech provider is unavailable. Until those conditions are implemented and covered
+by browser tests, the composer remains text-only.
+
 ## Copy rules
 
 - State labels stay honest: "Saved · answer failed" not "Error". "Awaiting your approval" not "Blocked".
