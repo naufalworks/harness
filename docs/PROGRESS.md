@@ -1,5 +1,45 @@
 # PROGRESS — journal
 
+## 2026-09-15T04:35:00Z · P12-T01b — done; the decision is to stop, and it is now measured
+
+P12-T01b was written as an either/or: justify a new boundary before splitting `run`/`impl Ctx`
+further, or record the decision to stop. The decision is to stop, on both the split and the
+rename. What changed today is not the conclusion but its basis — P12-T01 asserted that the two
+share the same eight private `Ctx` fields, and that assertion had never actually been checked.
+
+It now has been. Every unit was scored for which of the eight fields it touches, and six seams a
+reasonable reviewer might propose were scored for what they would take versus what they would
+leave behind:
+
+- `cancellation` (39 lines) needs `store`, `request`
+- `permissions` (44) needs `request`, `session`
+- `verification` (70) needs `store`, `request`, `session`, `model`
+- `tools` (157) needs six of the eight
+- `delegation` (288) needs seven of the eight
+- `orchestration` (350) needs seven of the eight
+
+Not one of them has a single exclusive field. Every seam needs fields the remaining module still
+needs, so each split would produce two files reaching into the same state — worse than one
+cohesive file, because coupling the compiler currently enforces would have to be re-exposed as
+`pub(super)` or threaded through call sites by hand. The parent is 2,662 lines, but 1,570 of
+those are tests; the code actually under debate is about 1,090. Line count was never the
+argument and still is not.
+
+The rename to `agent` is also declined, with its cost measured rather than guessed: 33 references
+across eight source files plus a Python test, and 52 doc mentions, 23 of which are journal
+entries that were true when written and that the done-when requires leaving untouched. Renaming
+would therefore manufacture a split vocabulary — code saying `agent`, accurate history saying
+`agent_loop` — in exchange for no structural change.
+
+Two corrections to the inherited notes. The claim of "37 loop tests" is wrong: the test binary
+lists 23 under `agent_loop::`, 21 in the parent and 2 already in `compaction`. The 1,570-line
+figure is right, but that module holds 21 tests and 14 shared helpers. And `race_cancellation`
+(18 lines) and `refuse_delegation` (15) touch no `Ctx` field at all, so they could become free
+functions today — 33 lines, no new boundary, not worth the churn, but recorded so the next reader
+need not rediscover it.
+
+No source file changed in this task, by design. A decision to stop is the deliverable.
+
 ## 2026-09-15T04:20:00Z · P12-T03 — done; the contract is now checked from four sides
 
 All four `done-when` clauses are met, each on its own gated commit:
