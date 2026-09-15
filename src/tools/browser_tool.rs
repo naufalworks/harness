@@ -434,6 +434,14 @@ mod tests {
     }
 
     #[test]
+    fn browser_transfers_are_explicitly_refused_before_cdp() {
+        for operation in ["upload", "download"] {
+            let error = parse_call(&json!({ "operation": operation })).unwrap_err();
+            assert_eq!(error.code, "invalid_arguments", "{operation}");
+        }
+    }
+
+    #[test]
     fn snapshots_are_bounded_deterministic_and_marked_untrusted() {
         let tree = json!({ "nodes": [
             { "nodeId": "1", "ignored": false, "role": { "value": "RootWebArea" }, "name": { "value": "Fixture" }, "backendDOMNodeId": 1 },

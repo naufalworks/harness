@@ -23,6 +23,8 @@ The activity rail now includes a bounded project/usage overview: scope, tool ava
 
 The accessibility slice is now implemented and covered: the mobile navigation has `aria-controls`/`aria-expanded`, Escape closes it and restores focus, the activity rail exposes the same state, and a skip link targets the focusable main landmark. Browser checks pass at mobile and desktop widths with no overflow or JavaScript exceptions.
 
+Transfer policy is explicit and fail-closed: browser upload/download operations are not in the schema, and unit coverage confirms both operation names are refused before CDP dispatch. Screenshots remain the only browser artifact transfer surface and are root-relative, generated-name, PNG-capped artifacts.
+
 ## 2026-09-15T15:50:00Z · P14-T05 — doing; language, browser, and accessible UI expansion
 
 P14-T03 is complete on commit `43c1b9c`. The documented eligibility rule selects P14-T05 as the
