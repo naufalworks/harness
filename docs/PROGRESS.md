@@ -1,5 +1,12 @@
 # PROGRESS — journal
 
+## 2026-09-15T17:39:00Z · P16-T02 — reconciled completed incident comparison work
+
+The implementation was already committed as `a2b5474` but its ledger status had remained `todo`.
+Fresh execution of its exact verification command passed all 12 incident tests and the complete real
+browser-to-server E2E, including denial, crash recovery, cancellation/safe retry and unsafe-retry
+refusal. The status is now corrected to `done`; no runtime or infrastructure change was required.
+
 ## 2026-09-15T17:20:00Z · P16-T03 — recovered interrupted work without changing access
 
 An autonomous turn stopped at its configured 900-second wall-clock budget and left the P16-T03
