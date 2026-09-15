@@ -955,7 +955,7 @@ async function refreshAgentTurn(receipt) {
   renderProjectOverview();
   $('agent-turn').hidden = false;
   // P2-T02: the turn record lives in the right rail; auto-open it on wide screens only.
-  if (!window.matchMedia('(max-width: 1100px)').matches) $('rail').hidden = false;
+  if (!window.matchMedia('(max-width: 1100px)').matches) { $('rail').hidden = false; $('railbtn').setAttribute('aria-expanded', 'true'); }
   $('agent-turn-status').textContent = agentStatusLabel(receipt?.state);
   agentState.verification = data[0].verification || null;
   renderVerification(agentState.verification);
@@ -1115,10 +1115,31 @@ $('themebtn').addEventListener('click', () => {
   document.documentElement.dataset.theme = next;
   try { localStorage.setItem('harness_theme', next); } catch { /* ignore */ }
 });
-$('navtoggle').addEventListener('click', () => { $('sidebar').classList.toggle('open'); $('drawerbg').classList.toggle('show'); });
-$('drawerbg').addEventListener('click', () => { $('sidebar').classList.remove('open'); $('drawerbg').classList.remove('show'); });
-$('railbtn').addEventListener('click', () => { $('rail').hidden = !$('rail').hidden; });
-$('railclose').addEventListener('click', () => { $('rail').hidden = true; });
+function setDrawer(open, restoreFocus = false) {
+  $('sidebar').classList.toggle('open', open);
+  $('drawerbg').classList.toggle('show', open);
+  $('navtoggle').setAttribute('aria-expanded', String(open));
+  if (open) $('sidebar').querySelector('input,button,summary')?.focus();
+  else if (restoreFocus) $('navtoggle').focus();
+}
+$('navtoggle').addEventListener('click', () => setDrawer(!$('sidebar').classList.contains('open')));
+$('drawerbg').addEventListener('click', () => setDrawer(false, true));
+$('railbtn').addEventListener('click', () => {
+  const open = $('rail').hidden;
+  $('rail').hidden = !open;
+  $('railbtn').setAttribute('aria-expanded', String(open));
+  if (open) $('rail').querySelector('button,select')?.focus();
+});
+$('railclose').addEventListener('click', () => {
+  $('rail').hidden = true;
+  $('railbtn').setAttribute('aria-expanded', 'false');
+  $('railbtn').focus();
+});
+document.addEventListener('keydown', event => {
+  if (event.key !== 'Escape') return;
+  if ($('sidebar').classList.contains('open')) { setDrawer(false, true); return; }
+  if (!$('rail').hidden) { $('rail').hidden = true; $('railbtn').setAttribute('aria-expanded', 'false'); $('railbtn').focus(); }
+});
 // CLI-style composer: Enter sends, Shift+Enter keeps the newline (design: ui.md#keyboard).
 $('prompt').addEventListener('keydown', event => {
   if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); $('chatform').requestSubmit(); }

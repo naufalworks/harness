@@ -22,14 +22,15 @@
 </section>
 
 <p id="notice" role="status" aria-live="polite"></p>
+<a class="skip-link" href="#main">Skip to main content</a>
 
 <div id="workspace" hidden>
   <header class="topbar">
-    <button id="navtoggle" class="iconbtn" type="button" title="Toggle navigation" aria-label="Toggle navigation"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M2 4h12M2 8h12M2 12h12"/></svg></button>
+    <button id="navtoggle" class="iconbtn" type="button" title="Toggle navigation" aria-label="Toggle navigation" aria-controls="sidebar" aria-expanded="false"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M2 4h12M2 8h12M2 12h12"/></svg></button>
     <div class="brand"><span class="mark sm" aria-hidden="true">h</span><span class="brandname">harness</span></div>
     <div class="spacer"></div>
     <button id="newchat" class="chipbtn" type="button"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg><span>New chat</span></button>
-    <button id="railbtn" class="iconbtn" type="button" title="Toggle agent activity panel" aria-label="Toggle agent activity panel"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="2" y="3" width="12" height="10" rx="2"/><path d="M10 3v10"/></svg></button>
+    <button id="railbtn" class="iconbtn" type="button" title="Toggle agent activity panel" aria-label="Toggle agent activity panel" aria-controls="rail" aria-expanded="false"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="2" y="3" width="12" height="10" rx="2"/><path d="M10 3v10"/></svg></button>
     <button id="themebtn" class="iconbtn" type="button" title="Toggle light / dark theme" aria-label="Toggle light or dark theme"><svg class="moon" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13.5 9.5A5.5 5.5 0 0 1 6.5 2.5a5.5 5.5 0 1 0 7 7z"/></svg><svg class="sun" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="8" cy="8" r="3"/><path d="M8 1.5v1.5M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1 1M11.6 11.6l1 1M12.6 3.4l-1 1M4.4 11.6l-1 1"/></svg></button>
     <button id="lock" class="iconbtn" type="button" title="Lock — clears the token from this tab" aria-label="Lock"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="3.5" y="7" width="9" height="6.5" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/></svg></button>
     <span id="connection" class="badge">Locked</span>
@@ -69,7 +70,7 @@
     </aside>
     <div id="drawerbg"></div>
 
-    <main id="main">
+    <main id="main" tabindex="-1">
       <section id="view-chat" class="view chatview">
         <div id="chatscroll">
           <div class="chatcol">

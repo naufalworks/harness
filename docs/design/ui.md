@@ -60,6 +60,8 @@ For each `file_changes` row: header `path · +A −B · applied 12:42`, body uni
 
 ## Keyboard and commands (P2+)
 
+The shell exposes a skip link to the focusable main landmark. Mobile navigation and the activity rail report their expanded state through `aria-expanded`/`aria-controls`; Escape closes either surface and returns focus to its trigger. Opening the mobile drawer moves focus into the drawer, and clicking the backdrop returns focus to the navigation trigger.
+
 The connection badge is an evidence state, not a retry control. A fetch/network failure changes it
 to `Offline · retrying` or `Connection delayed`; the notice says that ambiguous submissions are not
 resent automatically. A browser `online` event changes it to `Reconnecting…` and performs only a

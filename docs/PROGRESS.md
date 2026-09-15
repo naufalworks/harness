@@ -21,6 +21,8 @@ The reconnect slice is now also implemented: API transport failures distinguish 
 
 The activity rail now includes a bounded project/usage overview: scope, tool availability, permission mode, recorded token usage, and an explicit tokens-only cost label. Project-root text is rendered with `textContent`, and the mocked UI suite asserts the dashboard without changing the submission or persistence contract.
 
+The accessibility slice is now implemented and covered: the mobile navigation has `aria-controls`/`aria-expanded`, Escape closes it and restores focus, the activity rail exposes the same state, and a skip link targets the focusable main landmark. Browser checks pass at mobile and desktop widths with no overflow or JavaScript exceptions.
+
 ## 2026-09-15T15:50:00Z · P14-T05 — doing; language, browser, and accessible UI expansion
 
 P14-T03 is complete on commit `43c1b9c`. The documented eligibility rule selects P14-T05 as the
