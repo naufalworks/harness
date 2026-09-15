@@ -175,6 +175,20 @@ Exit: one manually inspected capsule can be restored and validated without chang
 - Copy approved memories into an isolated treatment store.
 - Implement remove-one-memory and no-memory treatments.
 
+M1 freezes only strict capsules whose source checkout is clean and still points at the capsule's
+exact commit. Project identity is SHA-256 over the raw bytes emitted by
+`git ls-tree -r -z --full-tree <revision>`; the detached temporary worktree must reproduce both that
+commit and digest. The source database is read only: each declared memory must still be active at
+the exact revision and content hash named by the parent capsule before it is copied.
+
+Each child is content-addressed as `harness-treatment-v1` and owns a detached worktree, canonical
+manifest, and isolated SQLite store. The store contains one treatment row plus the selected memory
+revisions, seals inserts after creation, rejects updates/deletes with triggers, and is made read-only
+on disk. Baseline keeps all declared memories, remove-one omits exactly its named stable ID, and
+no-memory omits all of them. Freezing fails closed if a destination exists or if the source checkout
+fingerprint changes before completion; the source database change count and source commit/tree/status
+fingerprint are verified unchanged.
+
 Exit: two strict replays differ only when the treatment memory differs; source DB and source worktree hashes remain unchanged.
 
 ### M2: strict Memory Wind Tunnel

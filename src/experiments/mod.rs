@@ -4,3 +4,4 @@
 //! treatments and replay execution belong to later P17 tasks.
 
 pub mod capsule;
+pub mod treatment;

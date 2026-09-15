@@ -1,5 +1,22 @@
 # PROGRESS — journal
 
+## 2026-09-15T18:33:11Z · P17-T02 — isolated treatment freezing completed
+
+Implemented content-addressed `harness-treatment-v1` children without adding a live schema or write
+path. Each child gets a detached clean worktree at the capsule's exact commit, a canonical manifest,
+and a sealed per-treatment SQLite store containing only the exact active memory revisions declared
+by the strict parent capsule. Baseline, remove-one, and no-memory conditions are distinct; existing
+destinations, output inside the source tree, stale memory content/revisions, dirty checkouts, and
+commit/tree drift fail closed. Store triggers prohibit post-seal inserts and all updates/deletes, and
+the manifest/store files are made read-only.
+
+The exact task gate passed with both treatment tests and the complete real E2E/failure-path suite.
+The full 300-test Rust suite, strict Clippy, formatting, Python lint/compile, script freeze smoke test,
+migration 001->016, all 16 SQL contracts, API schema and diff checks also passed. Tests prove the
+source database change count and source worktree commit/tree/status fingerprint remain unchanged.
+No deployment, service restart, provider call, approved-memory mutation, live project write, access,
+Cloudflare, DNS, UpCloud, firewall, relay, TLS, Tailscale, origin or infrastructure setting changed.
+
 ## 2026-09-15T18:24:03Z · P17-T02 — isolated treatment freezing started
 
 P17-T01 was fast-forwarded into `main` and pushed at `4112888`; production was not deployed and

@@ -1112,7 +1112,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - result-verify: exact migration chain 001->016 passed and all 3 capsule tests passed. The full 298-test Rust suite, strict Clippy, formatting, SQL migration contracts and API schema checks also passed. `scripts/check_docs.py` has only the pre-existing intentional deployment-truth failure because production remains at `6423d5a`; this task was not deployed.
 
 ### P17-T02 · Freeze and fork isolated treatments
-- status: doing
+- status: done
 - priority: research
 - lane: experiment-isolation
 - parallel: no
@@ -1121,6 +1121,8 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - files: src/experiments/*, scripts/capsule.py
 - done-when: clean project and approved-memory snapshots fork immutable children without changing live DB/worktree; remove-one and no-memory treatments are supported.
 - verify: cargo test --locked treatment && scripts/verify_e2e.sh
+- result: Added content-addressed `harness-treatment-v1` children with detached clean project worktrees and per-treatment sealed SQLite stores. Freezing accepts only validated strict capsules, checks the source HEAD and raw Git-tree SHA-256, copies only the exact active memory revisions declared by the capsule, and supports baseline, remove-one, and no-memory conditions. Existing destinations, in-source output paths, stale memory revisions/content, dirty projects, commit/tree drift, and post-freeze source drift fail closed. The live Harness database, approved memories, source worktree, provider access, production, and infrastructure are not modified.
+- result-verify: Exact task gate passed: 2 treatment tests plus the complete browser-to-Rust-to-SQLite-to-filesystem E2E and all failure-path lanes. The full 300-test Rust suite, strict Clippy, formatting, Python lint/compile, capsule-script freeze smoke test, migration chain 001->016, 16 SQL contracts, API schema, and diff checks also passed. This task was not deployed.
 
 ### P17-T03 · Implement strict replay and first-divergence reports
 - status: todo
