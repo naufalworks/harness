@@ -1,5 +1,40 @@
 # PROGRESS — journal
 
+## 2026-09-15T17:10:00Z · integration — fast-forward `main` to `a0ba96b` and repair two stale contract fixtures
+
+`main` was fast-forwarded `a5dadb0..a0ba96b` (`git merge --ff-only p14-t05`, 39 files, +3029/-118).
+Caveat, stated plainly: this integrated four completed tasks at once (P15-T03, P14-T02, P14-T03,
+P14-T05a) rather than one at a time as AGENTS.md prescribes. The history is linear and the other
+branches are ancestors of `p14-t05`, so the integrated tip is the only distinct tree, and the full
+gate was run at that tip. Nothing was pushed; `main` is ahead of `origin/main` by 14.
+
+The per-task gate passed at the tip (`cargo test --locked`, clippy `-D warnings`, `fmt --check`,
+migrations, API schema, SQL contracts, mocked browser, real browser-to-service E2E). The strict
+`scripts/verify_release.sh` then caught two integration regressions that no single lane could see,
+both in Python contract fixtures that mirror Rust and the migration chain:
+
+- `tests/test_tool_schemas.py` did not list the `git` schema added by `43c1b9c` (P14-T03), even
+  though `docs/design/tools.md` documents the tool. Added `git` to `EXPECTED`.
+- `tests/test_recording_contracts.py` built its fixture from migrations 001-004 plus 009, so it
+  lacked `013_session_workflows.sql` (P14-T02) while `src/recording.rs` had started selecting
+  `s.title`, `s.archived_at`, and `s.forked_from`. Applied 013 in the fixture, made the three
+  positional `INSERT INTO sessions VALUES(...)` statements column-explicit so added columns cannot
+  break them again, and bound the session list as `(?1 search, ?2 include_archived, ?3 cursor)`
+  with the keyset cursor read from `MAX(m.seq)` at index 6.
+
+These were real gaps in the verification mirror, not flakes: the shipped Rust query was correct and
+the fixture was stale, so the contract test had stopped exercising the session list at all.
+
+After the fix the strict gate is green except one honest failure and documented skips:
+`[FAIL] deployment: live a5dadb0 trails HEAD a0ba96b` — expected, because deployment is a separate
+explicit step and the live service still runs the pre-merge commit. `[SKIP]` remains for coverage,
+signature, cross-target, and public-smoke (tooling or `HARNESS_PUBLIC_URL` not available locally;
+required by CI). Two pre-existing `[WARN]` lines for P17-T04/P17-T05 verify commands are untouched.
+
+Next selected task by the documented rule: no `release-blocker` is open, the `medium` tier holds
+P15-T04 and P16-T01 with all dependencies `done`, and the earlier stable ID wins, so P15-T04.
+Worktree `harness-p15-t04` on branch `p15-t04` was created from this tip.
+
 ## 2026-09-15T16:45:00Z · P14-T05 — split into P14-T05a (done) and P14-T05b (todo)
 
 P14-T05 bundled optional voice input with the language, browser, and modular-UI surfaces. Every

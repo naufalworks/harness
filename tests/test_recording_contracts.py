@@ -34,7 +34,8 @@ class Recorder:
         self.c.execute('PRAGMA journal_mode=WAL');self.c.execute('PRAGMA synchronous=FULL')
         if fresh:
             # P14-T01: the receipt read now joins run_controls, so the fixture applies 009 too.
-            for name in ['001_core.sql','002_recording.sql','003_agentic.sql','004_memory_kinds.sql','009_run_cancellation.sql']:self.c.executescript((ROOT/'migrations'/name).read_text())
+            # P14-T02: the session list now reads title/archived_at/forked_from, so 013 is required.
+            for name in ['001_core.sql','002_recording.sql','003_agentic.sql','004_memory_kinds.sql','009_run_cancellation.sql','013_session_workflows.sql']:self.c.executescript((ROOT/'migrations'/name).read_text())
     def tx(self,fn):
         self.c.execute('BEGIN IMMEDIATE')
         try:out=fn();self.c.execute('COMMIT');return out
@@ -45,7 +46,7 @@ class Recorder:
         def body():
             row=self.c.execute('SELECT signature FROM chat_receipts WHERE request_id=?',(request,)).fetchone()
             if row:return 'duplicate' if row[0]==signature else 'conflict'
-            self.c.execute("INSERT INTO sessions VALUES(?,?,'now') ON CONFLICT(id) DO NOTHING",(session,scope))
+            self.c.execute("INSERT INTO sessions(id,scope,created_at) VALUES(?,?,'now') ON CONFLICT(id) DO NOTHING",(session,scope))
             if self.c.execute('SELECT scope FROM sessions WHERE id=?',(session,)).fetchone()[0]!=scope:return 'scope_conflict'
             if self.c.execute("SELECT count(*) FROM chat_receipts WHERE session_id=? AND state IN ('captured','generating')",(session,)).fetchone()[0]:return 'busy'
             self.execute('INSERT_MESSAGE',request,session,prompt,'now')
@@ -158,7 +159,7 @@ class RecordingContracts(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             path=str(Path(d)/'db');r=Recorder(path);r.capture();r.c.close();r=Recorder(path,fresh=False);self.assertEqual(r.state(),'captured');self.assertEqual(r.c.execute('PRAGMA integrity_check').fetchone()[0],'ok');r.c.close()
     def test_message_keyset_pagination_covers_history_without_duplicates(self):
-        self.c.execute("INSERT INTO sessions VALUES('s','global','now')")
+        self.c.execute("INSERT INTO sessions(id,scope,created_at) VALUES('s','global','now')")
         self.c.executemany("INSERT INTO messages(id,session_id,role,content,status,created_at) VALUES(?,'s','user','fixture','complete','now')",[(str(i),) for i in range(257)])
         ids=[];cursor=2**63-1
         while True:
@@ -167,8 +168,10 @@ class RecordingContracts(unittest.TestCase):
             cursor=rows[-1][0]
         self.assertEqual(len(ids),257);self.assertEqual(len(set(ids)),257)
     def test_session_pagination_does_not_strand_old_work(self):
-        for i in range(63):self.c.execute("INSERT INTO sessions VALUES(?,'global','now')",(str(i),));self.c.execute("INSERT INTO messages(id,session_id,role,content,status,created_at) VALUES(?,?,'user','fixture','complete','now')",(str(i),str(i)))
-        first=self.c.execute(SESSIONS,(2**63-1,)).fetchall()[:50];rest=self.c.execute(SESSIONS,(first[-1][3],)).fetchall();self.assertEqual(len(first+rest),63)
+        for i in range(63):self.c.execute("INSERT INTO sessions(id,scope,created_at) VALUES(?,'global','now')",(str(i),));self.c.execute("INSERT INTO messages(id,session_id,role,content,status,created_at) VALUES(?,?,'user','fixture','complete','now')",(str(i),str(i)))
+        # P14-T02: the list now binds (?1 search, ?2 include_archived, ?3 cursor) and returns
+        # title/archived_at/forked_from, so the keyset cursor is MAX(m.seq) at index 6.
+        first=self.c.execute(SESSIONS,(None,0,2**63-1)).fetchall()[:50];rest=self.c.execute(SESSIONS,(None,0,first[-1][6])).fetchall();self.assertEqual(len(first+rest),63)
     def test_failed_history_excluded_from_model_context(self):
         self.finish();self.r.capture('r2');self.r.claim();self.r.context('r2');self.r.fail('r2');self.r.capture('r3');row=self.r.claim();events=self.c.execute(CONTEXT_HISTORY,('s1',row[-1])).fetchall();self.assertEqual({e[0] for e in events},{'r1','r1-answer'})
     def test_every_embedded_select_prepares_against_actual_schema(self):
