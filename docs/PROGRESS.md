@@ -2534,3 +2534,81 @@ still refused with 400 and `request_body_rejected` in the journal. The old proce
 recovery path — the one that stops the unit and demands owner approval rather than quietly
 restoring a database — remains untested against a real failure, which is worth naming rather
 than counting as verified.
+
+## 2026-09-15 · P16-T01 + P15-T05 — incident navigation, and the UI P15-T04 left owing
+
+Two tasks in one session, in the order the ledger implied: P16-T01 because it was the
+highest-priority `todo` with all dependencies `done`, and then the P15-T04 UI gap, which
+P15-T04's own result line had named as left open.
+
+**P16-T01.** No migration. The temptation was to add a `015_incident_projection.sql` holding a
+materialised graph, and I didn't, because everything the task asks for is derivable from columns
+migrations 003 and 006 already ship — `turn_steps.started_at`, `permission_requests.created_at`,
+`file_changes.created_at`, `activity_events.created_at`, and `provenance_edges`. A table would
+have been a cache with no invalidation story attached to it. So the chain still ends at `014` and
+`user_version` is still 14, and the `14`-assertion sites the last session found (storage version
+guard, readiness projection, its test, the `/health` test) were left alone deliberately rather
+than by omission.
+
+The thing I was most careful about was not growing a second projection. `incident_graph` is now
+one line: `incident_view(request_id, IncidentQuery::default())`, and there is a test asserting
+that default reproduces the pre-P16-T01 response. That is the same discipline P15-T02 recorded
+for the ranker and P15-T04 for sanitization, and it is the only reason a reviewer's filtered view
+and the unfiltered endpoint cannot disagree about what the incident is. Row gathering also
+collapsed into one `collect()`, so `path`, `tool`, `at` and `seq` are read once and both the
+causal and chronological views and every filter see the same values.
+
+Filtering is server-side, and the frontend deliberately does not narrow a page locally. This is
+the sort of thing that looks identical and is not: the client only ever holds a bounded page, so
+a local filter would have searched less than the reviewer believed. Free-text search reuses
+`safety::fts_query` rather than a second tokeniser, so an incident query and a history query
+treat punctuation and AND-matching identically.
+
+Confidence is three labels and each one is earned. `recorded_dependency` needs a recorded edge.
+`temporal_proximity` means same request, recorded time, and no edge — co-occurrence, and the
+legend that ships in the response says so in those words. `unknown` means neither. Nothing
+upgrades ordering into dependency, `confidence_basis` names which evidence produced the label,
+and a recursive key check in both the unit tests and the integration test asserts no field is
+ever named for reasoning. The chronological view sorts by recorded time and puts undated rows
+*after* the dated ones with a count, rather than sorting them in by guesswork.
+
+**P15-T05.** Tracked as its own id, not `P15-T04b`: this is new frontend work against a backend
+that already shipped and already deployed, not a split of something in flight. The part worth
+being careful about is the forget / source-delete boundary, because a UI can collapse two
+different acts into one button far more easily than a backend can. They are two panels with
+different borders, different button classes, different copy, and a separate confirmation on the
+destructive one that names the asymmetry. After a forget the panel reads `content retained`,
+read from the server's own `content_present` flag rather than inferred from the action. Export
+asks the server for its own preview digest immediately after drafting, so the exact item list and
+the digest that pins it are rendered before any approve control, and the release control does not
+exist in the DOM until the bundle is `reviewed`.
+
+**What the gates caught, and what they didn't.** `tests/recording_integration.py` failed for a
+real reason: it pinned `bounds == {max_nodes, max_edges}` and the new `max_timeline` broke it.
+That is the assertion working. I extended it rather than only repairing it, so the confidence
+contract, the filter contract and the timeline ordering are now asserted against the running
+server and not only in unit tests. Nine tamper probes, eight non-zero. Two probes did not fail
+first time and both were my tests' fault, not the code's: the undated-row probe passed because
+the fixture had no undated row (fixed by giving it a real same-scope `memories` edge endpoint,
+which migration 006's trigger requires), and — this one I could not fix by testing harder —
+deleting the new query-parameter block from `docs/api.yaml` still exits 0, because
+`tests/test_api_schema.py` compares method+path pairs, error codes and receipt fields, not query
+parameters. So that spec entry is documentation, not a gate. I am recording it rather than
+implying the spec is enforced at parameter granularity.
+
+**Deviations.** Three, all narrowing rather than widening. The export draft is assembled from the
+current search results rather than per-row checkboxes, so "what will leave" cannot drift from
+what is on screen; there is still no import UI, because activating a ported memory is an owner
+act through the existing candidate flow and `docs/ARCHITECTURE.md` puts it outside this surface;
+and P16-T01's `- files:` line named `src/storage.rs, src/main.rs, static/*` while the work also
+touched `src/api/routes.rs`, `src/storage/provenance.rs`, `docs/api.yaml` and
+`tests/recording_integration.py`.
+
+**What remains.** `docs/api.yaml` query parameters are unenforced, as above — a real follow-up is
+teaching `tests/test_api_schema.py` to compare documented parameters against the `Query<...>`
+structs in `routes.rs`, which would have made that probe fail. P16-T02 (run comparison and graph
+export) and P16-T03 (coverage metrics, anomaly flags, deploy provenance) are now unblocked; T03
+is the one that will need migration `015`. Graph retention and anomaly flags from the P16
+roadmap paragraph are explicitly *not* in T01 and are not claimed here. The incident UI is
+covered by mocked-browser checks only; there is no Playwright run against the real server for
+the new panels, same limitation the rest of `ui_smoke.cjs` has.
