@@ -42,7 +42,7 @@ P0–P10 are historical, completed phases. The active continuation is P11–P18 
 | Migration chain | `python3 tests/test_migrations.py` | Applies 001 through the latest migration with SQLite FTS5 |
 | Fault injection | `python3 tests/fault_injection.py` | Disposable crash, WAL, disk, queue, and replay boundaries |
 | Browser UI fixtures | `scripts/verify_browser.sh` | Both mocked-browser suites |
-| Frontend syntax | `node --check static/app.js` | JavaScript parser check |
+| Frontend syntax | `node --check static/api.js static/app.js` | JavaScript parser check |
 
 Do not copy historical test counts or deployment IDs into current claims. Report evidence from the command actually run.
 

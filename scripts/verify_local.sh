@@ -66,7 +66,7 @@ run_python_suite recording-integration tests/recording_integration.py
 run_suite shell-syntax bash -n scripts/deploy.sh scripts/release.sh scripts/setup_browser_tests.sh scripts/verify_browser.sh scripts/verify_e2e.sh scripts/verify_local.sh scripts/verify_release.sh
 run_suite supply-chain python3 scripts/check_supply_chain.py
 run_suite release-quality python3 scripts/check_release_quality.py
-run_suite javascript-syntax node --check static/app.js
+run_suite javascript-syntax node --check static/api.js static/app.js
 
 if [ -d node_modules ]; then
   run_suite mocked-browser scripts/verify_browser.sh

@@ -60,7 +60,7 @@ fn main() {
     println!("cargo:rustc-env=HARNESS_GIT_COMMIT={commit}");
     println!("cargo:rerun-if-env-changed=HARNESS_BUILD_COMMIT");
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR");
-    for name in ["index.html", "app.js", "style.css"] {
+    for name in ["index.html", "api.js", "app.js", "style.css"] {
         precompress(name, &commit, &out_dir);
     }
     if let Some(head) = git(&["rev-parse", "--git-path", "HEAD"]) {

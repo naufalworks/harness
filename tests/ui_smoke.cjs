@@ -26,7 +26,7 @@ const root=path.resolve(__dirname,'..');const out=process.env.QA_DIR || path.joi
   const data={id:'synthetic-proposal',scope:'global',key:'preferred_language',value:'Rust for local tools. '+malicious,old_value:'Python for prototypes.',category:'preference',expected_revision:1,request_id:null,priority:'normal',evidence:{quote:'I prefer Rust for local tools.'}};
   await page.route('http://127.0.0.1:8080/**',async route=>{
    const req=route.request();const u=new URL(req.url());const p=u.pathname;
-   const staticFiles={'/':'index.html','/style.css':'style.css','/app.js':'app.js'};
+   const staticFiles={'/':'index.html','/style.css':'style.css','/api.js':'api.js','/app.js':'app.js'};
    if(staticFiles[p]){return route.fulfill({contentType:p.endsWith('.css')?'text/css':p.endsWith('.js')?'text/javascript':'text/html',body:fs.readFileSync(path.join(root,'static',staticFiles[p]),'utf8')});}
    if(p==='/auth/session'&&req.headers().authorization==='Bearer test-token')return route.fulfill({status:201,json:{session_token:'test-session',expires_in:900}});
    if(req.headers().authorization!=='Bearer test-session'){return route.fulfill({status:401,json:{error:'Bearer token required'}});}

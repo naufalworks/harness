@@ -27,27 +27,19 @@ function rememberPending(value) {
   else { sessionStorage.removeItem('harness_pending'); pendingPrompt = null; }
   $('checkrecording').hidden = !value; $('leavepending').hidden = !value; $('send').hidden = !!value; $('cancelrequest').hidden = !value;
 }
-async function api(path, body) {
-  const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 20000);
-  try {
-    const response = await fetch(path, { method: body === undefined ? 'GET' : 'POST', signal: controller.signal, headers: { 'Authorization': `Bearer ${token}`, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) }, body: body === undefined ? undefined : JSON.stringify(body) });
-    const payload = await response.json().catch(() => ({ error: `Unexpected response (${response.status})` }));
-    if (!response.ok) { const error = new Error(payload.error || `Request failed (${response.status})`); error.status = response.status; throw error; }
-    return payload;
-  } finally { clearTimeout(timer); }
-}
-async function exchangeBrowserSession(masterToken) {
-  const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 20000);
-  try {
-    const response = await fetch('/auth/session', { method: 'POST', signal: controller.signal, headers: { 'Authorization': `Bearer ${masterToken}` } });
-    const payload = await response.json().catch(() => ({ error: `Unexpected response (${response.status})` }));
-    if (!response.ok || typeof payload.session_token !== 'string') { const error = new Error(payload.error || `Request failed (${response.status})`); error.status = response.status; throw error; }
-    return payload.session_token;
-  } finally { clearTimeout(timer); }
-}
+// P12-T03: both wrappers now delegate to `api.js`, which owns the request shape and the error
+// envelope. `error.status` and `error.message` keep their old meaning for the many callers that
+// only display the sentence; `error.code` is what new branches test. A thrown value is only an
+// `ApiError` when the server actually answered - an aborted or dropped request is not - so every
+// branch below checks the type before reading a code, and an unrecognised failure keeps the
+// cautious path it had before.
+async function api(path, body) { return apiRequest(path, { token, body }); }
+async function exchangeBrowserSession(masterToken) { return apiExchangeSession(masterToken); }
 function node(tag, text, cls) { const element = document.createElement(tag); if (text !== undefined) element.textContent = text; if (cls) element.className = cls; return element; }
 function persistSession() { sessionStorage.setItem('harness_scope', scope); sessionStorage.setItem('harness_session', session); }
-const stateLabels = { captured: 'Sent · waiting for answer', generating: 'Thinking…', complete: 'Done', failed: 'Saved · answer failed', interrupted: 'Saved · answer interrupted' };
+// Owned by `api.js` so the gate can check that every recorded state has a label. A state with no
+// label used to render as a bare identifier in the receipt panel.
+const stateLabels = REQUEST_STATE_LABELS;
 const eventLabels = { captured: 'Message saved locally', generation_started: 'Answer started', context_saved: 'Context receipt saved', answer_saved: 'Answer saved locally', generation_failed: 'Answer did not complete', interrupted: 'Server restarted; no automatic resend', extraction_queued: 'Memory review queued', provider_spend_refused: 'Provider call refused by spend limit', cancel_requested: 'Cancellation requested', turn_cancelled: 'Turn cancelled at a recorded boundary', retry_created: 'Retry started from a safe boundary' };
 async function showReceipt(id, content, button) {
   const myEpoch = epoch; button.disabled = true;
@@ -311,7 +303,7 @@ async function resumeRecording() {
   catch (error) {
     if (myEpoch === epoch && token) {
       captureLabel('Needs checking');
-      notice(error.status === 404 ? 'No receipt found yet. Nothing was resent. If your draft is still in this tab, Retry same message safely reuses its original request.' : 'Connection lost. The latest status is unknown—not necessarily lost. Check again; nothing will be resent automatically.', true);
+      notice(error instanceof ApiError && error.is('not_found') ? 'No receipt found yet. Nothing was resent. If your draft is still in this tab, Retry same message safely reuses its original request.' : 'Connection lost. The latest status is unknown—not necessarily lost. Check again; nothing will be resent automatically.', true);
       $('retryrequest').hidden = pendingPrompt === null;
     }
   } finally { if (myEpoch === epoch) setBusy(false); }
@@ -349,7 +341,7 @@ async function retryFromBoundary(requestId, button) {
     setBusy(true);
     try { await followReceipt(receipt, myEpoch); } finally { if (myEpoch === epoch) setBusy(false); }
   } catch (error) {
-    notice((error.status === 409 ? 'Retry refused: ' : 'Retry failed: ') + error.message, true);
+    notice((error instanceof ApiError && error.is('conflict') ? 'Retry refused: ' : 'Retry failed: ') + error.message, true);
   } finally { if (button) button.disabled = false; }
 }
 async function sendAttempt(retry = false) {
@@ -369,7 +361,8 @@ async function sendAttempt(retry = false) {
     if (token && myEpoch === epoch) {
       // Only definite validation/admission rejections clear the pending identity.
       // 5xx/network/parse failures may occur AFTER a commit: keep the receipt ID.
-      if (!admitted && !retry && [400,401,403,413,422,503].includes(error.status)) {
+      // `notAdmitted` is that same set expressed as codes; see NOT_ADMITTED_CODES in api.js.
+      if (!admitted && !retry && error instanceof ApiError && error.notAdmitted) {
         rememberPending(null); captureLabel('Message not accepted'); notice(error.message + ' Your draft remains in this tab.', true);
       } else {
         captureLabel('Needs checking'); notice('Could not confirm the result. Use Check status before sending again. Your draft stays in this tab.', true);

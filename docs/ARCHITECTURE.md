@@ -65,6 +65,7 @@ existence: an unauthenticated request never learns whether a path exists.
 ### Unauthenticated
 
 - `GET /`
+- `GET /api.js`
 - `GET /app.js`
 - `GET /style.css`
 - `POST /auth/session`

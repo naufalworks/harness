@@ -237,6 +237,21 @@ paths:
             text/html: {}
         '304':
           description: Cached copy is still valid.
+  /api.js:
+    get:
+      operationId: apiClientScript
+      summary: Serve the HTTP client script.
+      description: >-
+        Loaded before the application script, which depends on it. Mirrors the error envelope and
+        the request states; tests/test_api_schema.py checks that mirror against the server.
+      security: []
+      responses:
+        '200':
+          description: JavaScript, content-encoding negotiated.
+          content:
+            text/javascript: {}
+        '304':
+          description: Cached copy is still valid.
   /app.js:
     get:
       operationId: appScript

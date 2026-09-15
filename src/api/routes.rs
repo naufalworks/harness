@@ -1,7 +1,7 @@
 //! The routing table and the request handlers it points at.
 //!
 //! Moved verbatim from `main.rs` by P12-T01; behaviour is unchanged.
-use crate::api::assets::{css, index, js};
+use crate::api::assets::{api_js, css, index, js};
 use crate::api::auth::{authenticate, create_browser_session, headers};
 use crate::api::dto::{ChangeRow, ReceiptView, UNREADABLE_CHANGE};
 use crate::api::error::{db_error, invalid, ApiError, ApiResult, JsonBody};
@@ -963,6 +963,7 @@ pub(crate) fn router(state: Harness) -> Router {
         .route_layer(middleware::from_fn_with_state(state.clone(), authenticate));
     Router::new()
         .route("/", get(index))
+        .route("/api.js", get(api_js))
         .route("/app.js", get(js))
         .route("/style.css", get(css))
         .route("/auth/session", post(create_browser_session))

@@ -20,6 +20,12 @@ It also compares the error-code enum in the contract against the `error_code`
 table in src/api/error.rs, so a new code cannot be added to the server without
 appearing in the published contract.
 
+Finally it compares the frontend client in static/api.js against the same two
+sources. The client is the fourth place that has to agree: it mirrors the error
+codes it can branch on and the request states it can label, and a mirror nobody
+checks is just a stale copy waiting to mislabel a state or silently stop
+matching a renamed code.
+
 Run: python3 tests/test_api_schema.py
 """
 
@@ -37,13 +43,19 @@ ERROR_RS = ROOT / "src" / "api" / "error.rs"
 RECORDING_RS = ROOT / "src" / "recording.rs"
 ARCHITECTURE = ROOT / "docs" / "ARCHITECTURE.md"
 CONTRACT = ROOT / "docs" / "api.yaml"
+API_JS = ROOT / "static" / "api.js"
 
 HTTP_METHODS = ("get", "post", "put", "patch", "delete")
 
 # Routes that do not answer with the JSON error envelope. The asset routes serve
 # HTML/JS/CSS and are reached before any JSON handler, so requiring an ApiError
 # response on them would document a body they never produce.
-NON_JSON_OPERATIONS = {("get", "/"), ("get", "/app.js"), ("get", "/style.css")}
+NON_JSON_OPERATIONS = {
+    ("get", "/"),
+    ("get", "/api.js"),
+    ("get", "/app.js"),
+    ("get", "/style.css"),
+}
 
 failures: list[str] = []
 
@@ -147,6 +159,30 @@ def server_receipt_fields() -> set[str]:
     return set(re.findall(r'"([a-z_]+)"\s*:', body))
 
 
+def client_frozen_list(name: str) -> set[str]:
+    """The string members of a `const <name> = Object.freeze([...])` in api.js.
+
+    Reading the source rather than executing it keeps this test dependency-free:
+    there is no Node requirement and nothing from the client runs here.
+    """
+    source = API_JS.read_text(encoding="utf-8")
+    match = re.search(rf"const {name} = Object\.freeze\(\[(.*?)\]\)", source, re.S)
+    if not match:
+        fail(f"no {name} list found in {API_JS}")
+        return set()
+    return set(re.findall(r"'([a-z_]+)'", match.group(1)))
+
+
+def client_label_keys() -> set[str]:
+    """The states static/api.js has a reader-facing label for."""
+    source = API_JS.read_text(encoding="utf-8")
+    match = re.search(r"const REQUEST_STATE_LABELS = Object\.freeze\(\{(.*?)\}\)", source, re.S)
+    if not match:
+        fail(f"no REQUEST_STATE_LABELS map found in {API_JS}")
+        return set()
+    return set(re.findall(r"^\s*([a-z_]+):", match.group(1), re.M))
+
+
 def main() -> int:
     if not CONTRACT.exists():
         print(f"[FAIL] api-schema: {CONTRACT} is missing")
@@ -212,6 +248,33 @@ def main() -> int:
         if set(receipt.get("required") or []) != properties:
             fail("Receipt must require every field it documents; the builder always emits all of them")
 
+    # The frontend client mirrors the codes it branches on and the states it
+    # labels. Both are compared against the server, so a rename on either side
+    # fails here instead of degrading into a missed branch or a raw identifier
+    # rendered at the reader.
+    client_codes = client_frozen_list("API_ERROR_CODES")
+    if client_codes:
+        actual = server_error_codes()
+        for code in sorted(actual - client_codes):
+            fail(f"src/api/error.rs can return code {code!r}, unknown to static/api.js")
+        for code in sorted(client_codes - actual):
+            fail(f"static/api.js expects code {code!r}, which src/api/error.rs never returns")
+        # Every code a branch depends on must be one the server can really send.
+        for code in sorted(client_frozen_list("NOT_ADMITTED_CODES") - actual):
+            fail(f"static/api.js treats {code!r} as a non-admission, but the server never sends it")
+
+    client_states = client_frozen_list("REQUEST_STATES")
+    if client_states:
+        actual = server_request_states()
+        for state in sorted(actual - client_states):
+            fail(f"recording::RequestState defines {state!r}, unknown to static/api.js")
+        for state in sorted(client_states - actual):
+            fail(f"static/api.js expects state {state!r}, which recording::RequestState does not define")
+        for state in sorted(client_states - client_label_keys()):
+            fail(f"static/api.js has no reader-facing label for state {state!r}")
+        for state in sorted(client_frozen_list("RETRYABLE_REQUEST_STATES") - actual):
+            fail(f"static/api.js offers retry for state {state!r}, which is not a recorded state")
+
     for method, path in sorted(contract):
         if (method, path) in NON_JSON_OPERATIONS:
             continue
@@ -233,6 +296,10 @@ def main() -> int:
     print(
         f"[PASS] api-schema: receipt schema matches the builder "
         f"({len(server_receipt_fields())} fields, {len(server_request_states())} states) in src/recording.rs"
+    )
+    print(
+        f"[PASS] api-schema: static/api.js mirrors {len(client_codes)} error codes "
+        f"and {len(client_states)} labelled request states"
     )
     return 0
 

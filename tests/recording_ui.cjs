@@ -14,7 +14,7 @@ const root=path.resolve(__dirname,'..'), out=path.join(root,'docs/qa');fs.mkdirS
   function generationRows(sessionId,after){return [...records.values()].filter(v=>v.session_id===sessionId).flatMap(generationEvents).filter(v=>v.seq>after).sort((a,b)=>a.seq-b.seq);}
   await page.route('http://127.0.0.1:8080/**',async route=>{
    const req=route.request(),u=new URL(req.url()),p=u.pathname;
-   const staticFiles={'/':'index.html','/app.js':'app.js','/style.css':'style.css'};
+   const staticFiles={'/':'index.html','/api.js':'api.js','/app.js':'app.js','/style.css':'style.css'};
    if(staticFiles[p])return route.fulfill({contentType:p.endsWith('.js')?'text/javascript':p.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(path.join(root,'static',staticFiles[p]),'utf8')});
    if(p==='/auth/session'&&req.headers().authorization==='Bearer fixture-token')return route.fulfill({status:201,json:{session_token:'fixture-session',expires_in:900}});
    if(req.headers().authorization!=='Bearer fixture-session')return route.fulfill({status:401,json:{error:'Bearer token required'}});

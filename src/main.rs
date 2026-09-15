@@ -649,12 +649,17 @@ mod tests {
     }
     #[test]
     fn auth_frontend_keeps_credentials_out_of_url_and_storage() {
-        let source = include_str!("../static/app.js");
-        assert!(source.contains("fetch('/auth/session'"));
-        assert!(!source.contains("sessionStorage.setItem('token"));
-        assert!(!source.contains("localStorage.setItem('harness_token"));
-        assert!(!source.contains("sessionStorage.setItem('harness_token"));
-        assert!(!source.contains("?token="));
+        // P12-T03 moved the token exchange into the client asset, so the guard follows it there
+        // and keeps checking both files for credential leaks: either one could reintroduce one.
+        let client = include_str!("../static/api.js");
+        let app = include_str!("../static/app.js");
+        assert!(client.contains("fetch('/auth/session'"));
+        for source in [client, app] {
+            assert!(!source.contains("sessionStorage.setItem('token"));
+            assert!(!source.contains("localStorage.setItem('harness_token"));
+            assert!(!source.contains("sessionStorage.setItem('harness_token"));
+            assert!(!source.contains("?token="));
+        }
     }
     #[tokio::test]
     async fn health_reports_identity_database_queue_and_workers() {

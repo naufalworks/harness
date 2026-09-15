@@ -8,15 +8,17 @@ use axum::{
     response::{IntoResponse, Response},
 };
 // P11-T05: the static assets are compiled into this binary, so the build commit identifies
-// their bytes exactly and is a sound strong validator. `index.html` requests `/app.js` and
-// `/style.css` with a `?v=<commit>` fingerprint, which is why those two may be cached
-// immutably: a new build changes the URL. The document itself must revalidate on every load,
-// otherwise a cached page would keep pointing at a retired build and trip "Stale UI detected".
+// their bytes exactly and is a sound strong validator. `index.html` requests `/api.js`,
+// `/app.js` and `/style.css` with a `?v=<commit>` fingerprint, which is why those three may be
+// cached immutably: a new build changes the URL. The document itself must revalidate on every
+// load, otherwise a cached page would keep pointing at a retired build and trip "Stale UI
+// detected" - or, worse for a split client, pair a fresh `app.js` with a stale `api.js`.
 const ASSET_IMMUTABLE: &str = "public, max-age=31536000, immutable";
 const ASSET_REVALIDATE: &str = "no-cache";
 // P11-T06: gzip bytes produced by build.rs. Empty means the build had no gzip available, in
 // which case negotiation is skipped and identity bytes are served.
 pub(crate) const INDEX_GZ: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/index.html.gz"));
+pub(crate) const API_JS_GZ: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/api.js.gz"));
 pub(crate) const APP_JS_GZ: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/app.js.gz"));
 pub(crate) const STYLE_CSS_GZ: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/style.css.gz"));
 // Accept only an explicit, non-rejected gzip token. `gzip;q=0` means "do not send gzip", and a
@@ -93,6 +95,18 @@ pub(crate) async fn index(request_headers: HeaderMap) -> Response {
         "index.html",
         include_str!("../../static/index.html").replace("__HARNESS_BUILD_COMMIT__", BUILD_COMMIT),
         INDEX_GZ,
+    )
+}
+// P12-T03: the HTTP client lives in its own asset so the contract it mirrors is reviewable on its
+// own. It is served the same way as `app.js` and must load before it, which `index.html` orders.
+pub(crate) async fn api_js(request_headers: HeaderMap) -> Response {
+    asset(
+        &request_headers,
+        "text/javascript; charset=utf-8",
+        ASSET_IMMUTABLE,
+        "api.js",
+        include_str!("../../static/api.js").to_string(),
+        API_JS_GZ,
     )
 }
 pub(crate) async fn js(request_headers: HeaderMap) -> Response {
