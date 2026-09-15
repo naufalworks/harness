@@ -945,7 +945,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - verify: cargo test --locked provider && python3 tests/recording_integration.py
 
 ### P14-T04b · Improve provider scheduling and resilience
-- status: todo
+- status: doing
 - priority: high
 - lane: providers
 - parallel: yes
@@ -954,6 +954,8 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - files: src/memory_agents.rs, src/recording.rs, src/storage.rs, static/*
 - done-when: capability detection, role fallback, circuit breakers, Retry-After/jitter, foreground/background fairness, and role-specific budgets preserve the fail-closed limits.
 - verify: cargo test --locked provider && python3 tests/recording_integration.py
+- note (2026-09-15, selection): picked by the documented rule, not by the previous session's suggestion. That session proposed P13-T04 next; P13-T04 is ineligible because its dependency P16-T03 is still `todo`. Among eligible `todo` tasks whose dependencies are all `done`, the `high` tier holds P14-T04b and P15-T01 with no `release-blocker` on either, so the earlier stable task ID wins.
+- note (2026-09-15, starting recon): all six done-when clauses are greenfield. At 2805d71 no `circuit`, `breaker`, `Retry-After`/`retry_after`, `jitter`, `capabilit*` or role-`fallback` symbol exists anywhere in `src/` (the only `fallback` hits are unrelated: `grep_fallback`, `fallback_symbols`, an API error-status fallback). `src/storage/provider.rs` is 143 lines and exports no `pub` item. The P14-T04a surface this must preserve is `SpendLimits` + `reserve_spend`/`finish_spend` wrapping every provider call in `src/memory_agents.rs`, so resilience work has to route through that reservation path rather than around it.
 
 ### P14-T05 · Expand language/browser tools and modular accessible UI
 - status: todo

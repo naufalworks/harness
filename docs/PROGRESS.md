@@ -1,5 +1,38 @@
 # PROGRESS — journal
 
+## 2026-09-15T04:50:00Z · P14-T04b — doing; and a correction to the suggested next step
+
+Task: P14-T04b, improve provider scheduling and resilience; status: `todo` → `doing`; priority:
+high; lane: providers; worktree `../harness-p14-providers` on branch
+`p14-t04b-provider-resilience` off 2805d71.
+
+**The previous session's suggested next step was wrong, and this entry corrects it rather than
+inheriting it.** That handoff proposed P13-T04 next. P13-T04 cannot be started: it depends on
+P16-T03, which is still `todo`. Selecting by the documented rule instead — highest-priority
+eligible `todo`, `release-blocker` first within the tier, then earliest stable ID — the eligible
+set whose dependencies are all `done` is P14-T04b and P15-T01 at `high`, then P14-T02, P14-T03,
+P14-T05 and P16-T01 at `medium`. Neither `high` task carries `release-blocker`, so the earlier ID
+wins and P14-T04b is the correct pick. P15-T01 is equally eligible and is the natural next one.
+
+Recon before writing code, because the six done-when clauses could plausibly have been partly
+built already. They are not: at 2805d71 there is no `circuit`, `breaker`, `Retry-After`,
+`retry_after`, `jitter`, `capabilit*` or role-`fallback` symbol anywhere under `src/`. The three
+`fallback` matches are unrelated — `grep_fallback` in `fs_tools.rs`, `fallback_symbols` in
+`repo_map.rs`, and an unused-status fallback in `api/error.rs`. `src/storage/provider.rs` is 143
+lines and exports no `pub` item at all. So all six clauses are greenfield.
+
+The constraint that shapes the work: P14-T04a is a `release-blocker` that is already `done`, and
+its done-when says unknown cost must never be treated as zero. Its mechanism is `SpendLimits`
+plus `reserve_spend`/`finish_spend` bracketing every provider call in `src/memory_agents.rs`
+(`complete`, `stream_turn`, `complete_with_tools`, `compact`, `verify`, `extract`). Retries,
+fallback and breaker probes are all *additional provider calls*, so each one must pass through
+that same reservation rather than around it, or resilience work would quietly reopen the spend
+hole a release blocker just closed. Role-specific budgets therefore layer on `SpendLimits` and
+must stay fail-closed when pricing is unknown.
+
+No source file has changed yet; this entry records the transition and the selection correction.
+Next: the capability-detection and role-fallback clauses, each with its own test, before breakers.
+
 ## 2026-09-15T04:35:00Z · P12-T01b — done; the decision is to stop, and it is now measured
 
 P12-T01b was written as an either/or: justify a new boundary before splitting `run`/`impl Ctx`
