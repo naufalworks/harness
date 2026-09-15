@@ -1,5 +1,43 @@
 # PROGRESS — journal
 
+## 2026-09-15T04:20:00Z · P12-T03 — done; the contract is now checked from four sides
+
+All four `done-when` clauses are met, each on its own gated commit:
+
+- `f4c8fdf` errors carry a stable `code` and a `retryable` flag. The code is derived from the
+  status, so all 37 construction sites stayed unchanged and the human sentences kept their exact
+  wording — the envelope is additive, not a rewrite.
+- `c63da5d`, `0951fbe`, `ac61e91` typed DTOs replace external `Value` indexing: `RequestState`
+  instead of string comparisons, `ReceiptView` and `ChangeRow` for the fields handlers branch on.
+- `4d2a3fa`, `27bd6a5`, `ac61e91` `docs/api.yaml` is published and compared against the router,
+  the ARCHITECTURE inventory and the receipt builder, in both directions.
+- `3208aeb` `static/api.js` is a schema-checked client; `app.js` delegates to it.
+
+Three real defects surfaced from writing the checks rather than from reading the code. Cancel
+never documented its ordinary 202. Retry documented a 200 no code path can produce. And the
+frontend recognised failures by status number and by reading the human sentence, so a handler
+answering a different status for the same situation would have silently changed the UI's
+behaviour; it now branches on codes, and the client's codes and states are compared against
+`src/api/error.rs` and `recording::RequestState` on every gate run.
+
+Two things worth recording for whoever touches the assets next. Splitting the client into its own
+file is not free: `/api.js` is a real route, precompressed by `build.rs`, fingerprinted in
+`index.html`, listed in the contract and the inventory (43 operations on 40 paths), and mocked in
+both browser fixtures — which would otherwise 404 it and break the page under test. Concatenating
+it into `/app.js` to avoid that was rejected: `APP_JS_GZ` is gzipped from `static/app.js` alone,
+so gzip clients would have received a bundle with no client at all. Separately, the auth guard in
+`src/main.rs` asserted `app.js` contained the `/auth/session` fetch; moving the exchange broke it,
+which is the guard working. It now checks both files for credential leaks.
+
+Every new cross-check was mutation-tested before being trusted: dropping or inventing an error
+code or a request state, leaving a state unlabelled, and branching on a code the server cannot
+send are all caught, with a clean control run.
+
+Deliberately left open: the crate-wide state-string swap in `context.rs`, `agent_loop.rs` and
+`main.rs` (~150 mostly-test sites), field-level schemas for the other 40 operations, and the
+readiness payload shapes. The receipt is the one success payload specified in full, and the
+contract's header says so rather than implying complete coverage.
+
 ## 2026-09-15T03:20:00Z · P12-T03 — doing; the task's own verify command names a test that does not exist
 
 P12-T03 is `doing` on branch `p12-t03-api-contracts` (worktree `/root/development/harness-p12-t03`,
