@@ -8,10 +8,13 @@ gate gets disabled, which is worse than no gate.
 
 Checks
     1. routes      - the router and the HTTP surface inventory in
-                   docs/ARCHITECTURE.md agree exactly, in both directions.
-  2. verify-cmds - every `verify:` command in docs/TASKS.md refers to scripts
-                   that exist. A task cannot be honestly `done` if its own
-                   verification command cannot run.
+                   docs/ARCHITECTURE.md agree exactly, in both directions,
+                   compared as method+path pairs. Comparing paths alone
+                   under-counts the surface, because several paths serve two
+                   methods, and it blesses an undocumented method silently.
+  2. verify-cmds - every `verify:` command in docs/TASKS.md refers to files
+                   that exist, in scripts/ or tests/. A task cannot be honestly
+                   `done` if its own verification command cannot run.
   3. ledger      - task statuses are from the known set, every `depends:` id
                    exists, and no task is `done` while a dependency is not.
   4. counts      - the living docs (README/AGENTS/ARCHITECTURE) carry no
@@ -67,20 +70,35 @@ def git(*args: str) -> str:
 # --------------------------------------------------------------------------
 # 1. routes
 # --------------------------------------------------------------------------
-def router_routes() -> set[str]:
+def router_operations() -> set[tuple[str, str]]:
+    """Method+path pairs served by `router()`.
+
+    Pairs, not paths. `get(get_config).post(set_config)` is two operations on
+    one path, so a path-only comparison cannot tell whether the inventory
+    documents both methods, and quietly accepts a new one.
+    """
     src = ROUTES_RS.read_text(encoding="utf-8")
     start = src.find("pub(crate) fn router")
     if start < 0:
         record("FAIL", "routes", f"no router function found in {ROUTES_RS}")
         return set()
-    body = src[start:]
+    operations: set[tuple[str, str]] = set()
     # .route("/path", ...) including the multi-line form where the path sits on
-    # its own line after the opening paren.
-    return set(re.findall(r"\.route\(\s*\"([^\"]+)\"", body))
+    # its own line after the opening paren. Each chunk is bounded so it cannot
+    # claim the methods of the route that follows it.
+    for chunk in src[start:].split(".route(")[1:]:
+        path = re.search(r"\"([^\"]+)\"", chunk)
+        if not path:
+            continue
+        body = chunk.split(".route_layer(")[0].split("Router::new()")[0]
+        for method in ("get", "post", "put", "patch", "delete"):
+            if re.search(rf"\b{method}\(", body):
+                operations.add((method.upper(), path.group(1)))
+    return operations
 
 
-def inventory_routes() -> set[str]:
-    """Routes listed in the HTTP surface inventory in docs/ARCHITECTURE.md.
+def inventory_operations() -> set[tuple[str, str]]:
+    """Method+path pairs listed in the HTTP surface inventory.
 
     An explicit inventory is compared exactly against the router, in both
     directions. README prose is deliberately not used as the source of truth:
@@ -100,38 +118,44 @@ def inventory_routes() -> set[str]:
             "docs/ARCHITECTURE.md has no '## HTTP surface' inventory section",
         )
         return set()
-    return set(
-        re.findall(r"`(?:GET|POST|PUT|DELETE|PATCH)(?:\|(?:GET|POST|PUT|DELETE|PATCH))* ([^`]+)`", match.group(1))
-    )
+    operations: set[tuple[str, str]] = set()
+    for methods, path in re.findall(
+        r"`((?:GET|POST|PUT|DELETE|PATCH)(?:\|(?:GET|POST|PUT|DELETE|PATCH))*) ([^`]+)`",
+        match.group(1),
+    ):
+        for method in methods.split("|"):
+            operations.add((method, path))
+    return operations
 
 
 def check_routes() -> None:
-    actual = router_routes()
+    actual = router_operations()
     if not actual:
         return
-    listed = inventory_routes()
+    listed = inventory_operations()
     if not listed:
         return
 
     missing = sorted(actual - listed)
-    for path in missing:
+    for method, path in missing:
         record(
             "FAIL",
             "routes",
-            f"router serves {path}, absent from the HTTP surface inventory",
+            f"router serves {method} {path}, absent from the HTTP surface inventory",
         )
     ghosts = sorted(listed - actual)
-    for path in ghosts:
+    for method, path in ghosts:
         record(
             "FAIL",
             "routes",
-            f"inventory lists {path}, which the router does not serve",
+            f"inventory lists {method} {path}, which the router does not serve",
         )
     if not missing and not ghosts:
         record(
             "PASS",
             "routes",
-            f"{len(actual)} router routes match the HTTP surface inventory exactly",
+            f"{len(actual)} router operations on {len({p for _, p in actual})} paths "
+            "match the HTTP surface inventory exactly",
         )
 
 
@@ -158,18 +182,24 @@ def check_verify_commands(tasks: dict[str, dict[str, str]]) -> None:
     missing = 0
     for name, fields in tasks.items():
         verify = fields.get("verify", "")
-        for script in re.findall(r"(?:python3?\s+|bash\s+|sh\s+|\./)?(scripts/[A-Za-z0-9_.\-]+)", verify):
-            if not (ROOT / script).exists():
+        # scripts/ and tests/ both hold verification entry points. Resolving
+        # only scripts/ is how P12-T03 shipped a `verify:` command naming a
+        # test file that did not exist, without this gate ever noticing.
+        for target in re.findall(
+            r"(?:python3?\s+|bash\s+|sh\s+|node\s+|\./)?((?:scripts|tests)/[A-Za-z0-9_./\-]+)",
+            verify,
+        ):
+            if not (ROOT / target).exists():
                 missing += 1
                 level = "FAIL" if fields.get("status") == "done" else "WARN"
                 record(
                     level,
                     "verify-cmds",
                     f"{name} (status: {fields.get('status', '?')}) verifies with "
-                    f"{script}, which does not exist",
+                    f"{target}, which does not exist",
                 )
     if not missing:
-        record("PASS", "verify-cmds", "every verify: command refers to scripts that exist")
+        record("PASS", "verify-cmds", "every verify: command refers to files that exist")
 
 
 def check_ledger(tasks: dict[str, dict[str, str]]) -> None:
