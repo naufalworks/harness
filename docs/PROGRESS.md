@@ -1,5 +1,29 @@
 # PROGRESS — journal
 
+## 2026-09-15T19:18:46Z · P17-T05 — merged into main and promoted to production
+
+Re-ran the exact P17-T05 gate independently before integration: `python3 scripts/remote_runner.py
+--fixture --check` performed nine fail-closed admission checks and reported zero network, provider
+and cloud API calls, and `scripts/verify_e2e.sh` passed the full browser-to-Axum-to-SQLite-to-
+filesystem path plus the denial, crash-recovery, cancellation/retry and unsafe-retry lanes. The
+pre-merge strict gate passed every lane except the deployment-identity check, which failed only
+because live `6423d5a` trailed HEAD; that is deployment drift, not a code defect.
+
+Before merging, confirmed the serving commit `6423d5a` was already an ancestor of both `main` and
+the task branch, so promotion could not drop a production-only recovery fix. Fast-forwarded
+`task/p17-t05-reports-remote-guardrails` into `main` at `39167cd` and pushed `fd8acb8..39167cd`.
+The only working-tree change was regenerated `tests/coverage_eval/metrics.json` fixture UUIDs from
+the verification run; it was restored rather than committed, so the tree was clean at deploy time.
+
+`scripts/deploy.sh` promoted `39167cd` to the `harness` unit: pid 637696, release sha256
+`bec3cabf...d905a1ae`, schema version 16, readiness verified, API answering, non-object body
+refused with 400, provenance recorded as `deploy-20260915T191619Z-39167cd`. The post-integration
+strict release gate then passed with 0 failing checks, including `deployment: live binary matches
+HEAD (39167cd)` and the 100-task ledger at 97 done / 3 todo. Coverage, signature, cross-target and
+public-smoke stayed SKIPPED locally and remain CI-owned. No database was restored, no migration was
+hand-applied, and no access, UpCloud, Cloudflare, DNS, TLS, firewall, relay or Tailscale setting
+changed. Next eligible work is P18-T01, P18-T02 or P14-T05b, all `todo` and low/optional priority.
+
 ## 2026-09-15T19:06:06Z · P17-T05 — sanitized reports and remote guardrails completed
 
 Added content-addressed, review-gated research reports using the shared sanitizer. The artifact
