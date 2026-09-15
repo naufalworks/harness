@@ -1099,7 +1099,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 ## P17 · Memory Wind Tunnel
 
 ### P17-T01 · Define and validate immutable run capsules
-- status: todo
+- status: doing
 - priority: research
 - lane: experiment-contract
 - parallel: yes

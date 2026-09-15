@@ -1,5 +1,19 @@
 # PROGRESS — journal
 
+## 2026-09-15T18:10:05Z · P17-T01 — immutable run-capsule contract started
+
+P13-T04 was fast-forwarded into `main` and pushed at `4a5b4f0` after its three focused
+audit-export tests and real browser-to-server E2E passed again. The integrated documentation
+check reported one intentional release-state failure: production still serves `6423d5a`, so live
+code trails `main` in the new audit exporter. This is retained truthfully because deployment was
+explicitly withheld; no service or infrastructure setting changed.
+
+P17-T01 is now the highest-priority dependency-ready task. Work is isolated on
+`task/p17-t01-run-capsules`. The first slice will define an immutable, content-addressed capsule
+schema and fail-closed validation for project/model/tool/memory/context boundaries, deterministic
+assertions, explicit unavailable evidence, and strict/live/hybrid semantics. It will not mutate the
+live worktree, approved memories, provider access, or infrastructure.
+
 ## 2026-09-15T17:56:01Z · P13-T04 — verifiable one-run audit export completed
 
 Implemented an authenticated preview/release protocol for a single selected run. The preview is
