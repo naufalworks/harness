@@ -17,6 +17,8 @@ use serde_json::Value;
 pub(crate) struct ReceiptView {
     #[serde(default)]
     pub(crate) request_id: Option<String>,
+    #[serde(default)]
+    pub(crate) scope: Option<String>,
     /// Deliberately the raw string rather than `Option<RequestState>`. A state
     /// this build does not recognise would fail deserialization for the whole
     /// struct, which would also blank `request_id` and turn an unknown state
@@ -43,6 +45,54 @@ impl ReceiptView {
     /// Distinguishes a deliberate cancellation from any other interruption.
     pub(crate) fn was_cancelled(&self) -> bool {
         self.error_code.as_deref() == Some("cancelled")
+    }
+}
+
+/// Shown on a change card when the row itself could not be read. Refusing is
+/// the only safe direction: a revert writes to the user's files, so an
+/// unreadable row must never be treated as revertable.
+pub(crate) const UNREADABLE_CHANGE: &str = "This change could not be read; revert unavailable";
+
+/// One recorded file change, as stored by `file_changes` and returned by both
+/// `turn_changes` (a list) and `file_change` (a single row). The two producers
+/// emit the same field names, so one view serves both; fields only one of them
+/// sends are simply absent here, because the revert logic does not read them.
+///
+/// Every field is optional except `applied`, which is written as a real JSON
+/// boolean by the storage layer (`r.get::<_, i64>(..)? == 1`). Keeping it a
+/// strict `bool` means a row carrying anything else fails to parse, and a row
+/// that fails to parse is refused rather than reverted. That matches the
+/// previous `change["applied"] != json!(true)` test, which also demanded a
+/// literal `true`.
+#[derive(Debug, Deserialize)]
+pub(crate) struct ChangeRow {
+    #[serde(default)]
+    pub(crate) id: Option<String>,
+    #[serde(default)]
+    pub(crate) path: Option<String>,
+    #[serde(default)]
+    pub(crate) action: Option<String>,
+    #[serde(default)]
+    pub(crate) applied: bool,
+    #[serde(default)]
+    pub(crate) reverted_at: Option<String>,
+    #[serde(default)]
+    pub(crate) before_hash: Option<String>,
+    #[serde(default)]
+    pub(crate) after_hash: Option<String>,
+    #[serde(default)]
+    pub(crate) diff: Option<String>,
+}
+
+impl ChangeRow {
+    /// `None` when the row cannot be read. Callers must refuse the revert in
+    /// that case; there is no safe default for "which bytes should I restore".
+    pub(crate) fn of(change: &Value) -> Option<Self> {
+        serde_json::from_value(change.clone()).ok()
+    }
+
+    pub(crate) fn is_action(&self, action: &str) -> bool {
+        self.action.as_deref() == Some(action)
     }
 }
 
@@ -144,5 +194,92 @@ mod tests {
             .collect();
         assert_eq!(retryable, vec!["failed", "interrupted"]);
         assert!(!RequestState::Complete.is_pending());
+    }
+
+    /// The exact shape `turn_changes` emits, field for field.
+    fn recorded_change() -> Value {
+        json!({
+            "id": "c1",
+            "step_id": "s1",
+            "path": "src/main.rs",
+            "action": "edit",
+            "before_hash": "aaa",
+            "after_hash": "bbb",
+            "diff": "@@\n-a\n+b\n",
+            "applied": true,
+            "reverted_at": Value::Null,
+            "created_at": "2026-01-01T00:00:00Z"
+        })
+    }
+
+    #[test]
+    fn api_change_row_reads_a_recorded_change() {
+        let change = ChangeRow::of(&recorded_change()).expect("the listed row shape must parse");
+        assert_eq!(change.id.as_deref(), Some("c1"));
+        assert_eq!(change.path.as_deref(), Some("src/main.rs"));
+        assert_eq!(change.before_hash.as_deref(), Some("aaa"));
+        assert_eq!(change.after_hash.as_deref(), Some("bbb"));
+        assert!(change.applied);
+        assert_eq!(change.reverted_at, None);
+        assert!(change.is_action("edit"));
+        assert!(!change.is_action("delete"));
+    }
+
+    #[test]
+    fn api_change_row_reads_the_single_row_shape_too() {
+        // `file_change` adds scope/session_id/request_id and omits created_at.
+        // The revert path reads neither, but the row must still parse.
+        let mut row = recorded_change();
+        let object = row.as_object_mut().unwrap();
+        object.remove("created_at");
+        object.insert("scope".into(), json!("global"));
+        object.insert("session_id".into(), json!("sess"));
+        object.insert("request_id".into(), json!("req"));
+        let change = ChangeRow::of(&row).expect("the single-row shape must parse");
+        assert_eq!(change.path.as_deref(), Some("src/main.rs"));
+        assert!(change.applied);
+    }
+
+    #[test]
+    fn api_a_change_row_that_cannot_be_read_is_refused_rather_than_reverted() {
+        // `applied` is written as a real boolean. Anything else means this row
+        // did not come from a build that agrees with us about the format, and a
+        // revert writes to the user's files, so the row is refused outright.
+        let mut row = recorded_change();
+        row.as_object_mut()
+            .unwrap()
+            .insert("applied".into(), json!(1));
+        assert!(ChangeRow::of(&row).is_none());
+        assert!(ChangeRow::of(&json!("not even an object")).is_none());
+    }
+
+    #[test]
+    fn api_a_change_row_without_an_applied_flag_is_not_applied() {
+        // Absent is not the same as unreadable: the row parses, and the missing
+        // flag means "never applied", which is not revertable either.
+        let mut row = recorded_change();
+        row.as_object_mut().unwrap().remove("applied");
+        let change = ChangeRow::of(&row).expect("a missing flag still parses");
+        assert!(!change.applied);
+    }
+
+    #[test]
+    fn api_a_change_row_may_omit_its_hashes_and_diff() {
+        // A created file has no previous content; the revert path relies on
+        // these being absent rather than empty.
+        let change = ChangeRow::of(&json!({
+            "id": "c2",
+            "path": "new.txt",
+            "action": "create",
+            "applied": true,
+            "before_hash": Value::Null,
+            "after_hash": "ccc",
+            "diff": Value::Null,
+            "reverted_at": Value::Null
+        }))
+        .expect("a create row must parse");
+        assert_eq!(change.before_hash, None);
+        assert_eq!(change.diff, None);
+        assert!(change.is_action("create"));
     }
 }

@@ -3,7 +3,7 @@
 //! Moved verbatim from `main.rs` by P12-T01; behaviour is unchanged.
 use crate::api::assets::{css, index, js};
 use crate::api::auth::{authenticate, create_browser_session, headers};
-use crate::api::dto::ReceiptView;
+use crate::api::dto::{ChangeRow, ReceiptView, UNREADABLE_CHANGE};
 use crate::api::error::{db_error, invalid, ApiError, ApiResult, JsonBody};
 use crate::api::stream::{activity, activity_stream, generation, generation_stream};
 use crate::archive::{ArchiveStore, PrivacyAction};
@@ -550,7 +550,7 @@ async fn request_changes(
     let mut changes = h.store.turn_changes(q.request_id).await.map_err(db_error)?;
     // P2-T03: whether a card's Revert can work is a fact about the file right now, so it is read
     // here rather than guessed in the browser. An offer that cannot work is worse than none.
-    let scope = receipt["scope"].as_str().unwrap_or_default().to_string();
+    let scope = ReceiptView::of(&receipt).scope.unwrap_or_default();
     let root = h
         .store
         .scope_config(scope)
@@ -562,7 +562,10 @@ async fn request_changes(
         let states = tokio::task::spawn_blocking(move || {
             listed
                 .iter()
-                .map(|row| revert_state(root.as_deref(), row))
+                .map(|row| match ChangeRow::of(row) {
+                    Some(change) => revert_state(root.as_deref(), &change),
+                    None => (false, UNREADABLE_CHANGE),
+                })
                 .collect::<Vec<_>>()
         })
         .await
@@ -586,11 +589,11 @@ async fn request_changes(
 /// Can this recorded change still be undone? The only honest answer comes from the file itself:
 /// the bytes on disk have to be the bytes the edit produced. Returns the reason when they are
 /// not, in the words the card shows.
-fn revert_state(root: Option<&str>, change: &Value) -> (bool, &'static str) {
-    if change["reverted_at"].as_str().is_some() {
+fn revert_state(root: Option<&str>, change: &ChangeRow) -> (bool, &'static str) {
+    if change.reverted_at.is_some() {
         return (false, "Already reverted");
     }
-    if change["applied"] != json!(true) {
+    if !change.applied {
         return (false, "Never applied, so there is nothing to undo");
     }
     let Some(root) = root else {
@@ -599,19 +602,19 @@ fn revert_state(root: Option<&str>, change: &Value) -> (bool, &'static str) {
             "This scope has no project root, so nothing can be restored",
         );
     };
-    let Some(path) = change["path"].as_str() else {
+    let Some(path) = change.path.as_deref() else {
         return (false, "This change has no recorded path");
     };
     let Ok(resolved) = tools::paths::resolve(std::path::Path::new(root), path) else {
         return (false, "That path is outside the project root");
     };
-    let after = change["after_hash"].as_str().unwrap_or_default();
+    let after = change.after_hash.as_deref().unwrap_or_default();
     match std::fs::read_to_string(&resolved) {
         Ok(text) if tools::content_hash(&text) == after => (true, ""),
         Ok(_) => (false, "File changed since; revert unavailable"),
         // Forward-compatible only: no current tool emits `action=delete`. If one does, the file
         // being gone is the recorded after-state and the diff can rebuild its prior contents.
-        Err(_) if change["action"] == json!("delete") => (true, ""),
+        Err(_) if change.is_action("delete") => (true, ""),
         Err(_) => (false, "File is no longer there; revert unavailable"),
     }
 }
@@ -624,7 +627,10 @@ fn restore_change(
     root: &std::path::Path,
     change: &Value,
 ) -> std::result::Result<&'static str, &'static str> {
-    let (revertable, why) = revert_state(Some(&root.to_string_lossy()), change);
+    // An unreadable row is refused, never reverted: this function writes to the
+    // user's files, so there is no safe guess about which bytes to restore.
+    let change = ChangeRow::of(change).ok_or(UNREADABLE_CHANGE)?;
+    let (revertable, why) = revert_state(Some(&root.to_string_lossy()), &change);
     if !revertable {
         return Err(if why.is_empty() {
             "This change cannot be reverted"
@@ -632,22 +638,23 @@ fn restore_change(
             why
         });
     }
-    let path = change["path"]
-        .as_str()
+    let path = change
+        .path
+        .as_deref()
         .ok_or("This change has no recorded path")?;
     let resolved =
         tools::paths::resolve(root, path).map_err(|_| "That path is outside the project root")?;
     let after = std::fs::read_to_string(&resolved).unwrap_or_default();
-    let Some(before_hash) = change["before_hash"].as_str() else {
+    let Some(before_hash) = change.before_hash.as_deref() else {
         // Nothing existed before: undoing a file this turn created means removing it again.
-        if change["action"] != json!("create") {
+        if !change.is_action("create") {
             return Err("This change has no recorded previous content; revert unavailable");
         }
         std::fs::remove_file(&resolved)
             .map_err(|_| "The file could not be removed; nothing was changed")?;
         return Ok("deleted");
     };
-    let before = tools::textdiff::reverse(&after, change["diff"].as_str().unwrap_or_default())
+    let before = tools::textdiff::reverse(&after, change.diff.as_deref().unwrap_or_default())
         .ok_or("The recorded diff cannot rebuild the previous content; revert unavailable")?;
     if tools::content_hash(&before) != before_hash {
         return Err("The rebuilt content does not match the recorded hash; nothing was written");
@@ -659,7 +666,7 @@ fn restore_change(
     tools::edit_tools::atomic_write(
         root,
         &resolved,
-        change["id"].as_str().unwrap_or("revert"),
+        change.id.as_deref().unwrap_or("revert"),
         &before,
     )
     .map_err(|_| "The file could not be written; nothing was changed")?;
