@@ -1,5 +1,12 @@
 # PROGRESS — journal
 
+## 2026-09-15T17:40:00Z · P13-T04 — selected next dependency-ready audit task
+
+With P13-T02 and P16-T03 complete, P13-T04 is now the highest-priority ready implementation task.
+Work is isolated on `task/p13-t04-audit-bundles`. The next slice will define and test a bounded,
+reviewed, sanitized audit-bundle export with checksums and optional hash-chain integrity, without
+including unrelated workspace data. No production or infrastructure change is part of task startup.
+
 ## 2026-09-15T17:39:00Z · P16-T02 — reconciled completed incident comparison work
 
 The implementation was already committed as `a2b5474` but its ledger status had remained `todo`.

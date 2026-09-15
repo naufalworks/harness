@@ -882,7 +882,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - verify: cargo test --locked tools && python3 tests/recording_integration.py
 
 ### P13-T04 · Export verifiable sanitized audit bundles
-- status: todo
+- status: doing
 - priority: medium
 - lane: audit
 - parallel: yes
