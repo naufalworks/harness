@@ -18,6 +18,8 @@ mod api; // P12-T01 HTTP surface split into cohesive modules
 mod archive; // P13 opt-in exact-original encryption and privacy audit policy
 mod context; // P3-T01 deterministic initial window and per-category byte receipts
 mod embeddings;
+#[allow(dead_code)]
+mod experiments; // P17 immutable run-capsule contract; execution lands in later P17 tasks
 mod export; // P15-T04 reviewed sanitized export/import and the continuation-packet shape
 mod ingest;
 mod limits; // P12-T04 bounds that two modules must agree on, defined once
@@ -682,7 +684,7 @@ mod tests {
         assert_eq!(payload["ready"], true);
         assert_eq!(payload["commit"], BUILD_COMMIT);
         assert_eq!(payload["binary_sha256"].as_str().unwrap().len(), 64);
-        assert_eq!(payload["schema_version"], 15);
+        assert_eq!(payload["schema_version"], 16);
         assert_eq!(payload["database"]["quick_check"], "ok");
         assert_eq!(payload["database"]["queue"]["jobs_pending"], 0);
         assert_eq!(payload["workers"]["recording"], true);

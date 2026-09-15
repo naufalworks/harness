@@ -1099,7 +1099,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 ## P17 · Memory Wind Tunnel
 
 ### P17-T01 · Define and validate immutable run capsules
-- status: doing
+- status: done
 - priority: research
 - lane: experiment-contract
 - parallel: yes
@@ -1108,6 +1108,8 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - files: docs/design/memory-wind-tunnel.md, src/experiments/*, migrations/*
 - done-when: content-addressed capsules declare project/model/tool/memory/context state, assertions, unavailable evidence and strict/live/hybrid semantics; validation rejects incomplete nondeterministic boundaries.
 - verify: python3 tests/test_migrations.py && cargo test --locked capsule
+- result: `harness-run-capsule-v1` is a canonical-JSON, SHA-256-addressed manifest for sanitized task/history evidence, clean project identity, exact model parameters, ordered tool requests/results and permission mode, stable memory revisions, context receipt, deterministic assertions, and explicit clock/randomness/provider/tool boundaries. Strict mode accepts only complete frozen/deterministic boundaries; live mode requires an explicitly live provider; hybrid mode pins a strict prefix and first live boundary. Missing evidence is represented as a matching `unavailable` boundary/evidence pair rather than a zero. Migration `016_run_capsules.sql` stores validated manifests under their address and rejects update/delete; no replay, provider call, tool execution, memory activation, worktree mutation or infrastructure change was added.
+- result-verify: exact migration chain 001->016 passed and all 3 capsule tests passed. The full 298-test Rust suite, strict Clippy, formatting, SQL migration contracts and API schema checks also passed. `scripts/check_docs.py` has only the pre-existing intentional deployment-truth failure because production remains at `6423d5a`; this task was not deployed.
 
 ### P17-T02 · Freeze and fork isolated treatments
 - status: todo

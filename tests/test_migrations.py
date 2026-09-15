@@ -12,7 +12,7 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MIG = ROOT / "migrations"
-CHAIN = ["001_core.sql", "002_recording.sql", "003_agentic.sql", "004_memory_kinds.sql", "005_generation_stream.sql", "006_provenance_edges.sql", "007_privacy_archive.sql", "008_provider_spend.sql", "009_run_cancellation.sql", "010_retention_maintenance.sql", "011_retrieval_receipts.sql", "012_memory_governance.sql", "013_session_workflows.sql", "014_history_search.sql", "015_causal_coverage.sql"]
+CHAIN = ["001_core.sql", "002_recording.sql", "003_agentic.sql", "004_memory_kinds.sql", "005_generation_stream.sql", "006_provenance_edges.sql", "007_privacy_archive.sql", "008_provider_spend.sql", "009_run_cancellation.sql", "010_retention_maintenance.sql", "011_retrieval_receipts.sql", "012_memory_governance.sql", "013_session_workflows.sql", "014_history_search.sql", "015_causal_coverage.sql", "016_run_capsules.sql"]
 VERSIONS = [name.split("_", 1)[0] for name in CHAIN]
 LATEST_VERSION = int(VERSIONS[-1])
 OPEN_CONNECTIONS = []
@@ -33,6 +33,7 @@ EXPECTED_TABLES = {
     13: set(),
     14: {"history_documents", "history_privacy_events", "export_bundles", "export_items", "import_receipts", "import_decisions"},
     15: {"deployment_events", "incident_reviews"},
+    16: {"run_capsules"},
 }
 
 
@@ -431,6 +432,34 @@ def test_015_causal_coverage_constraints():
     )
 
 
+def test_016_run_capsule_constraints():
+    c = fresh()
+    apply(c, len(CHAIN))
+    now = "2026-01-01T00:00:00Z"
+    c.execute("INSERT INTO sessions(id,scope,created_at) VALUES('s1','global',?)", (now,))
+    c.execute("INSERT INTO messages(id,session_id,role,content,status,created_at) VALUES('req','s1','user','task','pending',?)", (now,))
+    c.execute("INSERT INTO chat_receipts(request_id,session_id,scope,model,signature,redacted,state,captured_at,updated_at) VALUES('req','s1','global','m','sig',0,'captured',?,?)", (now, now))
+    manifest = '{"format":"harness-run-capsule-v1"}'
+    digest = "a" * 64
+    insert = "INSERT INTO run_capsules(id,format,validator,source_request_id,replay_mode,manifest_json,manifest_sha256,created_at) VALUES(?,?,?,?,?,?,?,?)"
+    c.execute(insert, (digest, "harness-run-capsule-v1", "harness-capsule-validator-v1", "req", "strict", manifest, digest, now))
+    attempts = [
+        ("UPDATE run_capsules SET replay_mode='live' WHERE id=?", (digest,)),
+        ("DELETE FROM run_capsules WHERE id=?", (digest,)),
+        (insert, ("g" * 64, "harness-run-capsule-v1", "harness-capsule-validator-v1", "req", "strict", manifest, "g" * 64, now)),
+        (insert, ("b" * 64, "harness-run-capsule-v1", "harness-capsule-validator-v1", "req", "guessed", manifest, "b" * 64, now)),
+        (insert, ("c" * 64, "harness-run-capsule-v1", "harness-capsule-validator-v1", "missing", "strict", manifest, "c" * 64, now)),
+        (insert, ("d" * 64, "harness-run-capsule-v1", "harness-capsule-validator-v1", "req", "strict", "not-json", "d" * 64, now)),
+        (insert, ("e" * 64, "harness-run-capsule-v1", "harness-capsule-validator-v1", "req", "strict", manifest, "f" * 64, now)),
+    ]
+    for statement, values in attempts:
+        try:
+            c.execute(statement, values)
+        except sqlite3.DatabaseError:
+            continue
+        raise AssertionError(f"run capsule constraint was not enforced: {statement}")
+
+
 def test_014_history_search_constraints():
     """P15-T04. The four invariants migration 014 exists to hold:
 
@@ -549,6 +578,7 @@ def main():
         test_010_retention_maintenance_constraints()
         test_014_history_search_constraints()
         test_015_causal_coverage_constraints()
+        test_016_run_capsule_constraints()
         print(
             f"migrations OK: {' -> '.join(VERSIONS)}, "
             f"user_version={LATEST_VERSION}, data/FTS/FKs preserved"

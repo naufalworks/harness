@@ -1,5 +1,22 @@
 # PROGRESS — journal
 
+## 2026-09-15T18:20:06Z · P17-T01 — immutable run-capsule contract completed
+
+Landed the M0 experiment contract on `task/p17-t01-run-capsules`. Capsules are canonical JSON
+addressed by their SHA-256 and explicitly bind sanitized task/history evidence, a clean project
+commit or snapshot, model/provider parameters, tool schemas/permissions/ordered results, stable
+memory revisions, the context receipt, deterministic assertions, and clock/randomness/provider/tool
+nondeterminism. Validation fails closed on missing or malformed boundaries. Strict, live and hybrid
+replay modes are distinct, and unavailable evidence must be named with downstream behavior
+`unavailable` rather than silently scored as zero.
+
+Migration 016 stores a validated capsule once under its content address and rejects update/delete.
+The exact task gate passed (001->016 migration chain and 3 capsule tests); the full 298-test Rust
+suite, strict Clippy, formatting, SQL contracts and API schema checks also passed. The documentation
+check's sole failure remains truthful deployment drift: production is still `6423d5a`, while this
+branch contains undeployed P13/P17 code. No service, provider access, approved memory, live worktree,
+Cloudflare, DNS, UpCloud, firewall, relay, TLS, Tailscale, origin or infrastructure setting changed.
+
 ## 2026-09-15T18:10:05Z · P17-T01 — immutable run-capsule contract started
 
 P13-T04 was fast-forwarded into `main` and pushed at `4a5b4f0` after its three focused

@@ -150,6 +150,22 @@ Use an ephemeral UpCloud VM only after the local lane is green. Create it from a
 - Add deterministic outcome assertions and an explicit `unavailable` state.
 - Decide the first coding benchmark: small Rust bugfixes with compile/test acceptance.
 
+The landed v1 contract is `harness-run-capsule-v1`, validated by
+`harness-capsule-validator-v1`. Its ID is the lowercase SHA-256 of canonical JSON with the ID
+field omitted. A manifest names sanitized task/history evidence; an immutable clean commit or
+snapshot; exact model parameters; tool schemas, permission mode, and ordered results; stable
+memory IDs/revisions; the context receipt; deterministic assertions; and exactly four
+nondeterministic boundaries (`clock`, `randomness`, `provider`, `tools`). Frozen/deterministic
+boundaries require a digest. Live/unavailable boundaries require a reason and cannot claim frozen
+bytes. Every unavailable boundary has a matching record whose downstream behavior is explicitly
+`unavailable`.
+
+Strict capsules permit only frozen/deterministic boundaries and complete recorded tool results.
+Live capsules require the provider boundary to be explicitly live. Hybrid capsules require a
+request-identical strict-prefix digest and name the first boundary that becomes live. The database
+stores the canonical manifest once under its content address and rejects update or delete. This is
+the contract only: snapshotting, treatment forks, and execution remain M1/M2 work.
+
 Exit: one manually inspected capsule can be restored and validated without changing live state.
 
 ### M1: freeze and fork
