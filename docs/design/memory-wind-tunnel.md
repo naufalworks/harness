@@ -252,6 +252,21 @@ Exit: the report can distinguish "memory changed the trace" from "memory improve
 - Add cost ledger and emergency cleanup command.
 - Run only sanitized capsules and verify destruction after collection.
 
+Research exports use content-addressed `harness-research-report-v1` artifacts and the shared
+`harness-sanitize-v1` gate. Reports project only paired statistics plus bounded evidence references;
+they do not embed raw prompts, memories, provider transcripts, tool payloads or project files.
+Available evidence links bind kind, stable ID and SHA-256. Unavailable evidence keeps an explicit
+sanitized reason and cannot pretend to have bytes. Preview and release are separate, and release
+requires the exact report digest reviewed.
+
+The remote-runner build is deliberately fixture-only. Its plan validator refuses before action
+without explicit opt-in and requires a SHA-256-pinned image, fixed region and size, positive bounded
+TTL and micro-USD spend cap, enabled destroy kill switch, content-addressed shared-sanitizer input,
+and cleanup configured to verify `destroyed`. The deterministic fixture exercises each refusal and
+a complete simulated lifecycle ending in a matching cleanup confirmation while recording zero
+network, provider and cloud API calls. No actual remote transport or cloud credential path is
+enabled by this milestone.
+
 Exit: one remote experiment completes with a bounded bill, no leaked token, and a confirmed destroyed VM.
 
 ## 9. Success factors

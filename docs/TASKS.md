@@ -1151,7 +1151,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - result-verify: Exact task gate passed with 14 experiment-focused tests and `scripts/experiment.py --fixture --check`. The full 309-test Rust suite, strict all-feature Clippy, formatting, Python lint/compile, migration chain 001->016, all 16 SQL contracts, API schema and diff checks also passed. No live provider call or deployment occurred.
 
 ### P17-T05 · Export sanitized research reports and optional remote runs
-- status: doing
+- status: done
 - priority: research
 - lane: experiment-reporting
 - parallel: yes
@@ -1160,6 +1160,8 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - files: src/experiments/*, scripts/remote_runner.py, static/*
 - done-when: reports link sanitized evidence and limitations; remote runs require explicit opt-in, pinned image/size/region, TTL, spend cap, kill switch and confirmed cleanup.
 - verify: python3 scripts/remote_runner.py --fixture --check && scripts/verify_e2e.sh
+- result: Added content-addressed, review-gated research reports that reuse the shared sanitizer, project paired statistics, link available evidence by kind/stable ID/SHA-256, preserve explicit unavailable evidence reasons, and require limitations without embedding raw experiment inputs or outputs. Added an executable fixture-only remote plan validator that refuses absent opt-in, unpinned image/region/size, invalid TTL or spend cap, missing kill switch, unsanitized input, and unconfirmed cleanup. The fixture simulates a full lifecycle ending in a matching destroyed confirmation and reports zero network, provider and cloud API calls; this build exposes no actual remote transport.
+- result-verify: Exact task gate passed: deterministic remote fixture validation performed nine fail-closed admission checks and the complete real browser-to-Rust-to-SQLite-to-filesystem E2E plus denial, crash-recovery, cancellation/retry and unsafe-retry lanes passed. Two report tests and the full 311-test Rust suite passed, along with strict all-feature Clippy, formatting, Python lint/compile, migration chain 001->016, all 16 SQL contracts, API schema and diff checks. No remote resource, deployment, provider call, access or infrastructure change occurred.
 
 ## P18 · Optional platform evolution
 

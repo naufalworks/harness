@@ -5,4 +5,5 @@
 pub mod capsule;
 pub mod experiment;
 pub mod replay;
+pub mod report;
 pub mod treatment;

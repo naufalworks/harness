@@ -1,5 +1,25 @@
 # PROGRESS — journal
 
+## 2026-09-15T19:06:06Z · P17-T05 — sanitized reports and remote guardrails completed
+
+Added content-addressed, review-gated research reports using the shared sanitizer. The artifact
+contains paired statistical projections, explicit limitations, and bounded content-addressed
+evidence references only. Available links bind kind, stable ID and SHA-256; unavailable evidence
+keeps a sanitized reason and cannot claim bytes. Raw prompts, memories, provider transcripts, tool
+payloads and project files are excluded. Release requires the exact report digest reviewed.
+
+Added an executable fixture-only remote runner validator. It refuses absent explicit opt-in,
+unpinned image/region/size, invalid TTL or spend cap, missing destroy kill switch, non-sanitized
+input, and cleanup that does not verify destroyed state. The deterministic fixture performs nine
+fail-closed checks and simulates a lifecycle ending in a matching cleanup confirmation while
+recording zero network, provider and cloud API calls. This build has no actual remote transport.
+
+The exact task gate and complete E2E/failure-path suite passed. Two report tests and the full
+311-test Rust suite passed with strict all-feature Clippy, formatting, Python lint/compile,
+migration 001->016, 16 SQL contracts, API schema and diff checks. No remote VM, deployment,
+provider call, approved-memory mutation, live project write, service restart, access, Cloudflare,
+DNS, UpCloud, firewall, relay, TLS, Tailscale, origin or infrastructure setting changed.
+
 ## 2026-09-15T19:01:53Z · P17-T05 — sanitized reports and remote guardrails started
 
 Started from merged P17-T04 commit `fd8acb8` on isolated branch

@@ -1,0 +1,33 @@
+{
+  "format": "harness-remote-runner-fixture-v1",
+  "fixture_instance_id": "fixture-vm-0001",
+  "plan": {
+    "format": "harness-remote-run-plan-v1",
+    "execution_mode": "fixture_simulation_no_network",
+    "image": "harness-research@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "region": "fi-hel1",
+    "size": "DEV-1xCPU-1GB",
+    "ttl_seconds": 900,
+    "spend_cap_microusd": 50000,
+    "kill_switch": {
+      "enabled": true,
+      "command": "fixture://destroy/fixture-vm-0001",
+      "timeout_seconds": 30
+    },
+    "sanitized_input": {
+      "sanitizer": "harness-sanitize-v1",
+      "content_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "cleanup": {
+      "required": true,
+      "verify_state": "destroyed",
+      "confirmation_field": "confirmation_id"
+    }
+  },
+  "cleanup_confirmation": {
+    "instance_id": "fixture-vm-0001",
+    "state": "destroyed",
+    "confirmation_id": "fixture-destroy-confirmation-0001",
+    "confirmed_at": "2026-09-15T00:00:00Z"
+  }
+}
