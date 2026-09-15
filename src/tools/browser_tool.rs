@@ -164,6 +164,13 @@ impl Tool for Browser {
             .into_tool();
         };
 
+        if call.operation == Operation::Screenshot {
+            return match session.screenshot(&ctx.root, deadline) {
+                Ok(content) => ToolResult::ok(summary, content),
+                Err(error) => error.into_tool(),
+            };
+        }
+
         let result = match call.operation {
             Operation::Open => session.navigate(
                 call.url.as_deref().expect("open URL was validated"),
@@ -200,6 +207,7 @@ impl Tool for Browser {
                     deadline,
                 )
             }),
+            Operation::Screenshot => unreachable!("screenshot is handled before dispatch"),
             Operation::Close => unreachable!(),
         };
 
@@ -282,6 +290,7 @@ mod tests {
                             page_url = params["url"].as_str().unwrap().to_string();
                             json!({ "frameId": "frame-1" })
                         }
+                        "Page.captureScreenshot" => json!({ "data": "iVBORw0KGgo=" }),
                         "Runtime.evaluate" => json!({
                             "result": {
                                 "type": "object",
@@ -493,6 +502,43 @@ mod tests {
         assert_eq!(closed.status, ToolStatus::Complete);
         drop(browser);
         fake.join();
+    }
+
+    #[test]
+    fn screenshot_writes_a_bounded_png_artifact() {
+        let root = std::env::temp_dir().join(format!("harness-browser-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut ctx = context();
+        ctx.root = root.clone();
+        let fake = FakeCdp::start();
+        let browser = Browser::for_endpoint(fake.endpoint.clone());
+        let opened = browser.run(
+            &ctx,
+            json!({ "operation": "open", "url": "http://example.test", "wait_ms": 0, "timeout_seconds": 5 }),
+        );
+        assert_eq!(opened.status, ToolStatus::Complete, "{}", opened.content);
+        let captured = browser.run(
+            &ctx,
+            json!({ "operation": "screenshot", "timeout_seconds": 5 }),
+        );
+        assert_eq!(
+            captured.status,
+            ToolStatus::Complete,
+            "{}",
+            captured.content
+        );
+        let receipt: Value = serde_json::from_str(&captured.content).unwrap();
+        assert_eq!(receipt["format"], "png");
+        assert_eq!(receipt["capture"], "viewport only");
+        assert_eq!(receipt["bytes"], 8);
+        let artifact = root.join(receipt["artifact"].as_str().unwrap());
+        assert!(artifact.starts_with(root.join(".harness/artifacts/browser")));
+        assert_eq!(std::fs::read(&artifact).unwrap(), b"\x89PNG\r\n\x1a\n");
+        let closed = browser.run(&ctx, json!({ "operation": "close" }));
+        assert_eq!(closed.status, ToolStatus::Complete);
+        drop(browser);
+        fake.join();
+        std::fs::remove_dir_all(root).ok();
     }
 
     #[test]

@@ -21,6 +21,7 @@ pub(super) const DIAGNOSTICS_CAP: usize = 4 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Operation {
+    Discover,
     Diagnostics,
     References,
     Rename,
@@ -29,13 +30,14 @@ pub(super) enum Operation {
 impl Operation {
     pub(super) fn parse(args: &Value) -> Result<Self, ToolResult> {
         match args.get("operation").and_then(Value::as_str) {
+            Some("discover") => Ok(Self::Discover),
             Some("diagnostics") => Ok(Self::Diagnostics),
             Some("references") => Ok(Self::References),
             Some("rename") => Ok(Self::Rename),
             Some(other) => Err(ToolResult::err(
                 "invalid_arguments",
                 format!(
-                    "unknown lsp operation {other:?}; expected diagnostics, references, or rename"
+                    "unknown lsp operation {other:?}; expected discover, diagnostics, references, or rename"
                 ),
             )),
             None => Err(ToolResult::err(

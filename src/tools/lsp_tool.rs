@@ -29,6 +29,7 @@ fn query_server(ctx: &ToolCtx, prepared: &Prepared) -> Result<Value, ToolResult>
         session.initialize(prepared.server)?;
         session.open(prepared)?;
         match prepared.operation {
+            Operation::Discover => unreachable!("discover is handled before query_server"),
             Operation::Diagnostics => session.wait_diagnostics(&prepared.uri),
             Operation::References => {
                 session.request(
@@ -67,6 +68,48 @@ mod rename;
 use rename::*;
 
 pub struct Lsp;
+
+fn executable_available(program: &str) -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|dir| dir.join(program).is_file())
+}
+
+fn discover(ctx: &ToolCtx, args: &Value) -> ToolResult {
+    let Some(raw) = args.get("path").and_then(Value::as_str) else {
+        return ToolResult::err("invalid_arguments", "path is required");
+    };
+    let path = match paths::resolve(&ctx.root, raw) {
+        Ok(path) => path,
+        Err(error) => return ToolResult::err(error.code(), error.detail()),
+    };
+    let display = paths::display(&ctx.root, &path);
+    let Some(server) = server_for(&path) else {
+        return ToolResult::ok(
+            "lsp discover",
+            json!({
+                "path": display,
+                "supported": false,
+                "reason": "no configured language server for this extension"
+            })
+            .to_string(),
+        );
+    };
+    ToolResult::ok(
+        "lsp discover",
+        json!({
+            "path": display,
+            "supported": true,
+            "language": server.language_id,
+            "server": server.program,
+            "available": executable_available(server.program),
+            "session_policy": "bounded per-call stdio session; no daemon state is reused"
+        })
+        .to_string(),
+    )
+}
+
 impl Tool for Lsp {
     fn name(&self) -> &'static str {
         "lsp"
@@ -91,6 +134,9 @@ impl Tool for Lsp {
         rename_payload(plan_rename(ctx, args), args)
     }
     fn run(&self, ctx: &ToolCtx, args: Value) -> ToolResult {
+        if args.get("operation").and_then(Value::as_str) == Some("discover") {
+            return discover(ctx, &args);
+        }
         let prepared = match prepare(ctx, &args) {
             Ok(prepared) => prepared,
             Err(refusal) => return refusal,
@@ -100,6 +146,7 @@ impl Tool for Lsp {
             Err(refusal) => return refusal,
         };
         match prepared.operation {
+            Operation::Discover => unreachable!("discover is handled before query_server"),
             Operation::Diagnostics => {
                 format_diagnostics(&prepared, &response).unwrap_or_else(|refusal| refusal)
             }
@@ -288,6 +335,38 @@ mod tests {
             Some("unsupported_edit")
         );
         std::fs::remove_dir_all(ctx.root).ok();
+    }
+
+    #[test]
+    fn discovery_reports_configured_language_and_unsupported_extensions() {
+        let (root, ctx) = project();
+        let rust = Lsp.run(
+            &ctx,
+            json!({ "operation": "discover", "path": "src/lib.rs" }),
+        );
+        assert_eq!(rust.status, ToolStatus::Complete, "{}", rust.content);
+        let rust: Value = serde_json::from_str(&rust.content).unwrap();
+        assert_eq!(rust["supported"], true);
+        assert_eq!(rust["language"], "rust");
+        assert_eq!(rust["server"], "rust-analyzer");
+        assert_eq!(
+            rust["session_policy"],
+            "bounded per-call stdio session; no daemon state is reused"
+        );
+
+        std::fs::write(root.join("README.txt"), "plain text\n").unwrap();
+        let text = Lsp.run(
+            &ctx,
+            json!({ "operation": "discover", "path": "README.txt" }),
+        );
+        assert_eq!(text.status, ToolStatus::Complete, "{}", text.content);
+        let text: Value = serde_json::from_str(&text.content).unwrap();
+        assert_eq!(text["supported"], false);
+        assert_eq!(
+            text["reason"],
+            "no configured language server for this extension"
+        );
+        std::fs::remove_dir_all(root).ok();
     }
 
     #[test]

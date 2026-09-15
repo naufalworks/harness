@@ -549,6 +549,7 @@ dependencies = [
  "ast-grep-core",
  "ast-grep-language",
  "axum",
+ "base64",
  "chrono",
  "dotenvy",
  "futures-core",

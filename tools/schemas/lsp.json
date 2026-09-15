@@ -2,13 +2,14 @@
   "type": "function",
   "function": {
     "name": "lsp",
-    "description": "Ask a local language server for diagnostics or symbol references, or perform an approval-gated workspace rename. Paths stay inside the project. Diagnostics and references are read-only. Before rename, collect references/read every affected file and pass their current content hashes in expected_files; an unlisted or stale file makes the whole rename fail without writing.",
+    "description": "Discover the configured language server, ask it for diagnostics or symbol references, or perform an approval-gated workspace rename. Paths stay inside the project. Discovery, diagnostics and references are read-only. Before rename, collect references/read every affected file and pass their current content hashes in expected_files; an unlisted or stale file makes the whole rename fail without writing.",
     "parameters": {
       "type": "object",
       "properties": {
         "operation": {
           "type": "string",
           "enum": [
+            "discover",
             "diagnostics",
             "references",
             "rename"
@@ -17,7 +18,7 @@
         },
         "path": {
           "type": "string",
-          "description": "Rust or C/C++ file relative to the project root."
+          "description": "Project-relative source file used to discover or query the configured language server."
         },
         "line": {
           "type": "integer",

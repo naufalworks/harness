@@ -8,7 +8,9 @@
 use super::cdp::{connect_cdp, launch_browser, Cdp, OwnedBrowser};
 use super::snapshot::{snapshot_from_ax, RefView, Snapshot};
 use super::{settle, truncate_chars, validate_destination, BrowserResult, Call, Failure};
+use base64::Engine as _;
 use serde_json::{json, Value};
+use std::fs;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -90,6 +92,71 @@ impl Session {
         }
         settle(wait, deadline)?;
         self.capture_and_store(deadline)
+    }
+
+    pub(super) fn screenshot(&mut self, root: &Path, deadline: Instant) -> BrowserResult<String> {
+        let result = self.cdp.call(
+            "Page.captureScreenshot",
+            json!({
+                "format": "png",
+                "fromSurface": true,
+                "captureBeyondViewport": false,
+            }),
+            deadline,
+        )?;
+        let encoded = result.get("data").and_then(Value::as_str).ok_or_else(|| {
+            Failure::new("browser_protocol", "screenshot response had no image data")
+        })?;
+        if encoded.len() > super::protocol::SCREENSHOT_MAX_BYTES * 2 {
+            return Err(Failure::new(
+                "browser_protocol",
+                "screenshot exceeds the encoded size cap",
+            ));
+        }
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .map_err(|_| Failure::new("browser_protocol", "screenshot was not valid base64"))?;
+        if bytes.len() > super::protocol::SCREENSHOT_MAX_BYTES {
+            return Err(Failure::new(
+                "browser_protocol",
+                "screenshot exceeds the 1.5 MiB cap",
+            ));
+        }
+        if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+            return Err(Failure::new(
+                "browser_protocol",
+                "screenshot was not a PNG image",
+            ));
+        }
+        let directory = root.join(".harness").join("artifacts").join("browser");
+        fs::create_dir_all(&directory).map_err(|error| {
+            Failure::new(
+                "artifact_write_failed",
+                format!("could not create browser artifact directory: {error}"),
+            )
+        })?;
+        let path = directory.join(format!("screenshot-{}.png", uuid::Uuid::new_v4()));
+        let temporary = path.with_extension("png.tmp");
+        fs::write(&temporary, &bytes).map_err(|error| {
+            Failure::new(
+                "artifact_write_failed",
+                format!("could not write browser screenshot: {error}"),
+            )
+        })?;
+        if let Err(error) = fs::rename(&temporary, &path) {
+            let _ = fs::remove_file(&temporary);
+            return Err(Failure::new(
+                "artifact_write_failed",
+                format!("could not publish browser screenshot: {error}"),
+            ));
+        }
+        Ok(json!({
+            "artifact": path.strip_prefix(root).unwrap_or(&path).to_string_lossy(),
+            "bytes": bytes.len(),
+            "format": "png",
+            "capture": "viewport only"
+        })
+        .to_string())
     }
 }
 

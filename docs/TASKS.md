@@ -962,7 +962,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - note (2026-09-15, starting recon): all six done-when clauses are greenfield. At 2805d71 no `circuit`, `breaker`, `Retry-After`/`retry_after`, `jitter`, `capabilit*` or role-`fallback` symbol exists anywhere in `src/` (the only `fallback` hits are unrelated: `grep_fallback`, `fallback_symbols`, an API error-status fallback). `src/storage/provider.rs` is 143 lines and exports no `pub` item. The P14-T04a surface this must preserve is `SpendLimits` + `reserve_spend`/`finish_spend` wrapping every provider call in `src/memory_agents.rs`, so resilience work has to route through that reservation path rather than around it.
 
 ### P14-T05 · Expand language/browser tools and modular accessible UI
-- status: todo
+- status: doing
 - priority: medium
 - lane: experience
 - parallel: yes

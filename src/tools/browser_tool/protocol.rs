@@ -26,6 +26,7 @@ pub(super) const URL_MAX: usize = 2 * 1024;
 pub(super) const LABEL_MAX: usize = 240;
 pub(super) const EVENT_MAX: usize = 1_000;
 pub(super) const STDERR_MAX: usize = 8 * 1024;
+pub(super) const SCREENSHOT_MAX_BYTES: usize = 1_500_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Operation {
@@ -35,6 +36,7 @@ pub(super) enum Operation {
     Type,
     Press,
     Close,
+    Screenshot,
 }
 
 impl Operation {
@@ -46,8 +48,9 @@ impl Operation {
             Some("type") => Ok(Self::Type),
             Some("press") => Ok(Self::Press),
             Some("close") => Ok(Self::Close),
+            Some("screenshot") => Ok(Self::Screenshot),
             Some(other) => Err(Failure::invalid(format!(
-                "unknown browser operation {other:?}; expected open, snapshot, click, type, press, or close"
+                "unknown browser operation {other:?}; expected open, snapshot, click, type, press, screenshot, or close"
             ))),
             None => Err(Failure::invalid("operation is required")),
         }
@@ -61,6 +64,7 @@ impl Operation {
             Self::Type => "type",
             Self::Press => "press",
             Self::Close => "close",
+            Self::Screenshot => "screenshot",
         }
     }
 

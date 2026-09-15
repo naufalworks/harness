@@ -1,5 +1,32 @@
 # PROGRESS — journal
 
+## 2026-09-15T16:20:00Z · P14-T05 — bounded language discovery and browser evidence slice
+
+The first implementation slice is complete but the task remains `doing`. LSP now exposes a
+read-only `discover` operation that reports the configured language/server mapping and whether the
+fixed executable is available, while all existing diagnostics/references/rename boundaries remain
+unchanged. Browser now supports a fixed, viewport-only PNG screenshot: decoded data is capped at
+1.5 MiB, signature-checked, and atomically published under `.harness/artifacts/browser/` with a
+generated filename; no upload/download endpoint or model-selected path was introduced.
+
+Focused discovery and screenshot tests pass. Full Rust tests (262), strict clippy, formatting,
+API-schema and migration checks pass. Mocked browser suites and real browser-to-service E2E also
+pass. Remaining P14-T05 work is bounded LSP session reuse, safe transfer policy if justified by
+the existing contract, and the modular UI/reconnect/dashboard/accessibility pass; optional voice is
+deferred until a safe product contract exists.
+
+## 2026-09-15T15:50:00Z · P14-T05 — doing; language, browser, and accessible UI expansion
+
+P14-T03 is complete on commit `43c1b9c`. The documented eligibility rule selects P14-T05 as the
+earliest eligible medium-priority task: P12-T02 and P11-T05 are done, while the other medium
+tasks are later stable IDs. Work is isolated on branch `p14-t05` in
+`/root/development/harness-p14-t05`.
+
+The first pass will inventory existing AST/LSP and browser contracts plus the current static UI,
+then add the smallest bounded, testable improvements without weakening the recording-first,
+permission, path, network, upload/download, accessibility, or reconnect boundaries. No optional
+voice or broad dashboard work will be added ahead of the safety and evidence surfaces.
+
 ## 2026-09-15T15:45:00Z · P14-T03 — done; process, Git and checkpoint controls
 
 P14-T03 finished on branch `p14-t03` in `/root/development/harness-p14-t03`. The Git tool now
