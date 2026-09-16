@@ -1310,6 +1310,18 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
   duplicate external effect). Still owed: heartbeat renewal under contention, cancellation at a
   non-holder, clock skew as its own test, the unfenced no-remembered-lease paths, fencing *every*
   durable turn write, and replacing `SINGLE_WORKER_FENCE = 1` with the lease fence.
+- note (2026-09-16, slice 3 landed; failure-mode tests): all five lease failure modes now have
+  executable coverage. Heartbeat renewal contends with a separate SQLite writer holding
+  `BEGIN IMMEDIATE`, waits inside the busy timeout, advances its database-issued timestamp, and
+  keeps the same holder and fence. Cancellation is issued by a store that neither holds nor
+  remembers the lease and still records exactly one terminal cancellation without moving
+  ownership or creating an external effect. Clock skew is tested by bracketing acquire and renew
+  with SQLite UTC, rejecting deliberately absurd worker-time bounds as persisted values, and
+  proving that only database-issued expiry changes liveness and permits takeover.
+  P18-T04 remains `doing`: test coverage now satisfies the five-mode half of `done-when`, but the
+  no-remembered-lease writes, every-durable-write audit, real effect fence, once-only tool effects,
+  `delete_archive`, and multi-worker out-of-turn provider refusal are still open. Worker count
+  remains pinned at one.
 
 ### P18-T05 · Measure SQLite write contention before a second writer runs
 - status: todo

@@ -1,5 +1,28 @@
 # PROGRESS — journal
 
+## 2026-09-16T08:00:00Z · The five lease failure modes are now executable claims
+
+P18-T04 slice 3 adds the three tests left open after takeover. Heartbeat renewal now runs against
+a separate SQLite connection holding `BEGIN IMMEDIATE`, so the test exercises the database's write
+lock and busy timeout rather than only the store's mutex. Renewal waits, advances `renewed_at`,
+keeps the holder and fence unchanged, remains writable, and remains unstealable while live.
+
+Cancellation is tested from a store that demonstrably does not hold or remember the lease. The
+durable `run_controls` intent still reaches one terminal cancellation, while the holder, fence and
+lease state do not move and no external effect appears. This preserves cancellation as an
+out-of-band control rather than turning it into an ownership operation.
+
+The clock-skew test brackets acquisition and renewal with SQLite's own UTC timestamps, checks that
+the persisted times fall inside those bounds rather than two deliberately absurd worker clocks,
+then proves liveness and takeover change only when the database-issued expiry changes. Worker wall
+time is not an input to acquire, renew, guard or steal.
+
+Evidence: 335 Rust tests, strict all-target/all-feature Clippy, migrations 001 -> 018 at
+`user_version=18`, 19 SQL contracts, fault injection, and 0 failing documentation checks. All five
+lease failure modes are now covered. P18-T04 stays `doing`: the no-remembered-lease write paths are
+still unfenced, `SINGLE_WORKER_FENCE = 1` is still a constant, and the remaining external-effect
+checklist is not wired. Worker count stays pinned at one.
+
 ## 2026-09-16T07:55:00Z · A takeover is gated on the outside world, not on the lease
 
 P18-T04 slice 2 adds the steal path. The lease was the easy half: `steal_in_tx` raises the fence,

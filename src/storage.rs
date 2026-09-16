@@ -600,6 +600,222 @@ mod tests {
         .unwrap();
     }
 
+    /// P18-T04 failure mode: ordinary SQLite write contention may delay a heartbeat, but a delay
+    /// inside the configured busy timeout must not lose the lease, mint a new fence, or make the
+    /// turn stealable. The competing writer is a separate connection so this exercises SQLite's
+    /// lock rather than only this store's in-process mutex.
+    #[tokio::test]
+    async fn heartbeat_renewal_survives_write_contention_without_changing_the_fence() {
+        let (dir, db) = leased_turn().await;
+        let lease = acquire_lease(&db, "worker-a")
+            .await
+            .expect("a fresh turn has no holder");
+        let before: String = db
+            .read(|c| {
+                Ok(c.query_row(
+                    "SELECT renewed_at FROM worker_leases WHERE request_id='r1'",
+                    [],
+                    |r| r.get(0),
+                )?)
+            })
+            .await
+            .unwrap();
+
+        let path = dir.join("harness.db");
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+        let blocker = std::thread::spawn(move || {
+            let mut competing = rusqlite::Connection::open(path).unwrap();
+            competing
+                .busy_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            let tx = competing
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .unwrap();
+            locked_tx.send(()).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            tx.commit().unwrap();
+        });
+        locked_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("the competing writer must hold the SQLite write lock");
+
+        assert!(db.renew_lease(&lease).await.unwrap());
+        blocker.join().unwrap();
+        let (renewed, fence, holder, state): (String, i64, String, String) = db
+            .read(|c| {
+                Ok(c.query_row(
+                    "SELECT renewed_at,fence,worker_id,state FROM worker_leases WHERE request_id='r1'",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                )?)
+            })
+            .await
+            .unwrap();
+        assert!(
+            renewed > before,
+            "heartbeat did not advance: {before} -> {renewed}"
+        );
+        assert_eq!(
+            (fence, holder.as_str(), state.as_str()),
+            (1, "worker-a", "held")
+        );
+        assert_eq!(guard_lease(&db, lease).await, None);
+        assert_eq!(
+            steal_lease(&db, "worker-b").await.unwrap_err(),
+            leases::StealRefusal::StillLive {
+                worker_id: "worker-a".into()
+            }
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// P18-T04 failure mode: cancellation is durable intent in `run_controls`, not an ownership
+    /// operation. A process that does not hold the turn may request and finalize cancellation, and
+    /// doing so must neither acquire nor steal the holder's lease.
+    #[tokio::test]
+    async fn cancellation_at_a_non_holder_is_honored_without_moving_the_lease() {
+        let (dir, db) = leased_turn().await;
+        let holder = acquire_lease(&db, "worker-a")
+            .await
+            .expect("a fresh turn has no holder");
+        assert_ne!(db.worker_identity().as_str(), holder.worker_id);
+        assert!(
+            db.held_lease("r1").is_none(),
+            "the cancelling store is not the holder"
+        );
+
+        let requested = db
+            .request_cancellation("r1".into())
+            .await
+            .unwrap()
+            .expect("the generating turn exists");
+        assert_eq!(requested["state"], "generating");
+        let lease_row: (String, i64, String) = db
+            .read(|c| {
+                Ok(c.query_row(
+                    "SELECT worker_id,fence,state FROM worker_leases WHERE request_id='r1'",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )?)
+            })
+            .await
+            .unwrap();
+        assert_eq!(lease_row, ("worker-a".into(), 1, "held".into()));
+
+        assert!(db.finalize_cancellation("r1".into()).await.unwrap());
+        assert!(!db.finalize_cancellation("r1".into()).await.unwrap());
+        let receipt = db.recording_receipt("r1".into()).await.unwrap().unwrap();
+        assert_eq!(receipt["state"], "interrupted");
+        assert_eq!(receipt["error_code"], "cancelled");
+        let evidence: (i64, i64, i64, i64) = db
+            .read(|c| {
+                Ok((
+                    c.query_row(
+                        "SELECT count(*) FROM activity_events WHERE request_id='r1' AND kind='cancel_requested'",
+                        [],
+                        |r| r.get(0),
+                    )?,
+                    c.query_row(
+                        "SELECT count(*) FROM activity_events WHERE request_id='r1' AND kind='turn_cancelled'",
+                        [],
+                        |r| r.get(0),
+                    )?,
+                    c.query_row(
+                        "SELECT count(*) FROM generation_events WHERE request_id='r1' AND state='interrupted' AND error_code='cancelled'",
+                        [],
+                        |r| r.get(0),
+                    )?,
+                    c.query_row(
+                        "SELECT count(*) FROM external_effects WHERE request_id='r1'",
+                        [],
+                        |r| r.get(0),
+                    )?,
+                ))
+            })
+            .await
+            .unwrap();
+        assert_eq!(evidence, (1, 1, 1, 0));
+        let unchanged: (String, i64, String) = db
+            .read(|c| {
+                Ok(c.query_row(
+                    "SELECT worker_id,fence,state FROM worker_leases WHERE request_id='r1'",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )?)
+            })
+            .await
+            .unwrap();
+        assert_eq!(unchanged, lease_row);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// P18-T04 failure mode: workers can disagree arbitrarily about wall time, but no worker time
+    /// is accepted by the lease API. Acquisition, renewal, liveness and takeover are all bounded by
+    /// SQLite's own UTC clock.
+    #[tokio::test]
+    async fn worker_clock_skew_cannot_extend_or_revoke_database_issued_ownership() {
+        let (dir, db) = leased_turn().await;
+        let absurdly_slow_worker = "1900-01-01T00:00:00.000Z";
+        let absurdly_fast_worker = "9999-12-31T23:59:59.999Z";
+        let db_before: String = db
+            .read(|c| {
+                Ok(
+                    c.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now')", [], |r| {
+                        r.get(0)
+                    })?,
+                )
+            })
+            .await
+            .unwrap();
+        let lease = acquire_lease(&db, "worker-a")
+            .await
+            .expect("worker-local time is not part of acquisition");
+        assert!(db.renew_lease(&lease).await.unwrap());
+        let db_after: String = db
+            .read(|c| {
+                Ok(
+                    c.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now')", [], |r| {
+                        r.get(0)
+                    })?,
+                )
+            })
+            .await
+            .unwrap();
+        let (acquired, renewed, expires): (String, String, String) = db
+            .read(|c| {
+                Ok(c.query_row(
+                    "SELECT acquired_at,renewed_at,expires_at FROM worker_leases WHERE request_id='r1'",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )?)
+            })
+            .await
+            .unwrap();
+        assert!(db_before <= acquired && acquired <= db_after);
+        assert!(db_before <= renewed && renewed <= db_after);
+        assert!(expires > renewed);
+        assert_ne!(renewed, absurdly_slow_worker);
+        assert_ne!(renewed, absurdly_fast_worker);
+        assert_eq!(guard_lease(&db, lease.clone()).await, None);
+        assert_eq!(
+            steal_lease(&db, "worker-b").await.unwrap_err(),
+            leases::StealRefusal::StillLive {
+                worker_id: "worker-a".into()
+            }
+        );
+
+        // Once SQLite itself says the lease is past due, the same two skewed workers get the same
+        // answer: the old fence is dead and takeover raises it exactly once.
+        lapse(&db).await;
+        let stolen = steal_lease(&db, "worker-b")
+            .await
+            .expect("database-issued expiry permits takeover");
+        assert_eq!(stolen.fence, 2);
+        assert!(guard_lease(&db, lease).await.is_some());
+        assert_eq!(guard_lease(&db, stolen).await, None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// P18-T04: takeover. A lapsed lease does not prove the old holder is gone, only that it
     /// stopped reporting. Raising the fence is what actually disarms it: the number it remembers
     /// no longer matches the database, so a write it starts after waking up is refused rather
