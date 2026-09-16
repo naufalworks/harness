@@ -2961,3 +2961,41 @@ recorded so the next person who sees it does not re-debug it from scratch.
 
 `coverage`, `signature`, `cross-target` and `public-smoke` remain `[SKIP]` locally and stay
 CI-owned; nothing here changes that.
+
+### Workspace cleanup and the P18-T01 design draft
+
+The repository is down to a single branch. Four stale worktrees and eleven merged local branches
+were removed, the remote was pruned to `main`, and three branch tips that had no merge commit were
+preserved as `archive/v1`, `archive/v2-upgrade` and `archive/v3` before deletion. `p15-t04` was
+verified by capability rather than by filename: its endpoints and behavior are present on `main`
+under reworked names, so matching file paths or symbol names would have been the wrong proof.
+
+The sibling `harness-attic` directory is gone, but not simply deleted. It held three abandoned
+worktrees saved as `tracked.patch` plus, in one case, an `untracked.tar.gz`. Checking before
+removing turned out to matter: `src/runtime_safety.rs` and `src/tools/command_policy.rs` existed
+only in that tarball and on no branch. Most of that work is genuinely superseded -- `src/processes.rs`
+does strictly more than `runtime_safety.rs`, including cancellation-aware sealing and per-request
+group draining, and `command_uses_network` / `command_touches_protected_path` /
+`is_dangerous_command` cover the network and protected-path gating. One idea was not superseded:
+the `InstallPolicy` concept, which classified package managers and install verbs with ask/deny modes
+read from the environment, has no equivalent on `main`. Rather than discard it, the whole attic was
+committed as a parentless snapshot and pushed as `archive/attic-2026-09-14`, so it is recoverable
+from git with no working-tree cost and no change to `main`'s history. Whether `InstallPolicy` is
+worth reviving is an open product question, not a regression.
+
+`docs/design/leased-multi-worker.md` drafts the P18-T01 design. Its central claim is that
+multi-worker execution is not a throughput change but the removal of the assumption the current
+side-effect guarantees rest on: one process holds an `flock` for its lifetime, which is why a turn
+cannot run twice and a cancellation cannot race a late spawn. The design therefore leads with
+fencing rather than with TTLs, because a stalled worker that resumes after its lease expires is not
+stopped by expiry -- it is stopped by a database-issued fence that makes its write refusable inside
+the same transaction. External effects key on request and step identity deliberately excluding the
+fence, since a steal that minted a fresh key would permit exactly the duplicate the key exists to
+prevent.
+
+P18-T01 stays `todo`. Its `done-when` requires an *approved* design, and approval is the owner's to
+give; drafting it does not close the gate. The document names two blocking decisions -- keep the
+single-writer process lock (recommended) or move correctness onto leases plus fencing, and whether a
+second worker is wanted at all -- and states plainly that deferring is a legitimate outcome, since
+P18 is optional and nothing observed so far demands one. No lease table, worker identity, or second
+worker was created.

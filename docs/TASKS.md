@@ -1175,6 +1175,14 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - files: docs/ARCHITECTURE.md, migrations/*, src/recording.rs
 - done-when: an approved design defines leases, fencing, recovery and no-duplicate-side-effect semantics before any second worker or instance is enabled.
 - verify: cargo test --locked recovery && python3 tests/test_migrations.py
+- note (2026-09-16, design drafted, approval pending): a proposed design is written up in
+  `docs/design/leased-multi-worker.md` covering the lease unit and term, database-issued fencing
+  tokens, the three recovery cases, and idempotency keys for external effects. Status stays `todo`
+  because the `done-when` requires an *approved* design, and approval is an owner decision rather
+  than something implementation can satisfy. Two blocking questions are recorded there: whether the
+  single-writer `process_lock` guarantee is kept (recommended) or replaced by leases plus fencing,
+  and whether a second worker is wanted at all given that P18 is optional and nothing observed so
+  far demands one. No lease table, worker identity, or second worker exists.
 
 ### P18-T02 · Add portable providers, plugins and benchmark packs
 - status: done
