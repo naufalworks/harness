@@ -1,5 +1,47 @@
 # PROGRESS — journal
 
+## 2026-09-16T07:05:00Z · P18-T03 closes on an enumerated effect set, not on a claim about "every" effect
+
+The task said *every* non-replayable external effect is recorded. Only provider dispatch was, so
+the choice was to widen the code or narrow the claim. Both, split by what can be honestly proven
+today.
+
+Enumerated the candidates by reading the source rather than by memory: three outbound HTTP sites in
+the provider adapter (`complete_turn`, `stream_turn`, and `list_models`), six side-effecting tools,
+the archive and export writers, and the recording outbox. Classified each by whether a replay
+converges. `GET /models` is a read, so replaying it charges and delivers nothing. `write`, `edit`,
+`ast_edit`, exact archives and export packets are content-addressed — the same payload rewrites the
+same bytes. `bash` and `browser` are the genuine once-only pair with no idempotency to lean on. The
+outbox flush turned out not to belong in this table at all: it only inserts jobs rows, so it is an
+internal write covered by fencing, and calling it an external effect would have inflated the
+guarantee.
+
+Did not record the once-only tool effects, and that is the substantive judgement here. A record
+written under `SINGLE_WORKER_FENCE = 1` proves that something happened but not which holder did
+it, so it could not refuse a duplicate after a steal — the entire reason the record exists. Writing
+it now would have produced a table that looks like protection and is not, which is the failure mode
+this project keeps trying to avoid. Those effects moved to P18-T04 with the fence, recorded as a
+`done-when-change` rather than as a quiet reinterpretation.
+
+The out-of-turn provider call stays exempt. `external_effects.request_id` references
+`chat_receipts`, so recording one would have meant minting a synthetic receipt — fabricated evidence
+in exactly the table an operator reads to decide whether an effect happened. Refusing the dispatch
+instead would fail closed on paths that cannot duplicate anything today (no spend store in tests, no
+request scope in maintenance). The refusal is placed where a worker has identity, in P18-T04.
+
+The enumeration is enforced instead of documented. `ExternalEffectCoverage` in
+`tests/test_sql_contracts.py` scrapes the adapter's implementation source, finds every function that
+dispatches, and fails unless it reserves an effect or is named in an exemption list with a reason;
+two companion tests fail if an exemption outlives its function or if a reserved effect is never
+settled. The first version of that suite failed on its own helper — `reserve_effect` matched its own
+definition — which is a good reminder that a source-scraping test needs to exclude the thing it is
+scraping for. Matching `self.reserve_effect(` fixed it. Mutation-checked by deleting the reserve
+call from `stream_turn`: the contract failed and named that function, and the source was restored
+immediately after.
+
+Unchanged and still owed: the placeholder fence, the unrecorded once-only tools, and the surface
+that shows a human the `unknown` rows. Worker count remains pinned at one.
+
 ## 2026-09-16T06:35:00Z · maintenance and SQL-contract gates were pinned to dead schema versions
 
 Two gates asserted exact schema versions and had been quietly wrong for several migrations.

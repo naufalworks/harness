@@ -137,11 +137,42 @@ a reason; triggers refuse a second outcome, an edit to the effect's identity, an
 proposed `no_rereserve` trigger was dropped after mutation testing showed `settle_once` already
 refused the write, making it decoration rather than protection.
 
-**Still owed by P18-T03.** No code writes to the table yet: the reserve/settle call sites in the
-provider and tool paths, a restart sweep that moves still-reserved effects to `unknown` alongside
-the existing `provider_calls` sweep, and the surfacing hop into `permission_requests` (which exists
-as a table but is not yet a verified end-to-end ask-a-human path). Until those land, this section
-describes an enforceable record, not an enforced one.
+**Wired (P18-T03).** Every provider dispatch reserves a row before the request can leave the
+process and settles it after, and a restart sweeps still-reserved rows to `unknown` next to the
+existing `provider_calls` sweep. `dispatched` distinguishes the two honest outcomes: a request that
+was answered unusably still happened (settled `succeeded`, error kept as the reason), while one that
+never visibly left may still have arrived and been billed (settled `unknown`, never `failed`).
+
+**Which effects are in scope.** "Record every external effect" is only a real claim if the set is
+enumerated, so it is enumerated here and the provider half is enforced by
+`tests/test_sql_contracts.py::ExternalEffectCoverage`, which fails if a new dispatch site in the
+provider adapter is added without a record, or if an exemption outlives the function it names.
+
+| Effect | Class | Status |
+| --- | --- | --- |
+| `chat/completions` (buffered and streamed) | once-only — costs money, cannot be replayed | recorded (P18-T03) |
+| `GET /models` | replayable read — no charge, no delivery | exempt, named in the contract test |
+| `write`, `edit`, `ast_edit` tools | content-addressed: the same payload rewrites the same bytes, so a replay converges | needs a record only to report a *partial* write; deferred to P18-T04 with the fence |
+| `bash`, `browser` tools | once-only — arbitrary commands and navigations, no idempotency to lean on | **not recorded**; the sharpest remaining hole, owed by P18-T04 |
+| `lsp` tool | server-local, no durable external state | out of scope |
+| exact archives, export packets | content-addressed by digest; rewriting identical bytes is harmless. `delete_archive` is not | archive writes out of scope; deletion owed by P18-T04 |
+| `recording_outbox` flush | internal database write only (it inserts jobs); at-least-once by design | covered by fencing, not by this table |
+| notifications | no sender exists; the `kind` value is reserved for one | nothing to record yet |
+
+**A provider call that cannot be attributed to a turn is deliberately exempt, not silently
+dropped.** `external_effects.request_id` references `chat_receipts`, so an effect can only be
+recorded inside a recorded turn. Today that gap is reachable only when there is no spend store
+(tests) or no request scope (maintenance paths), and both are single-writer contexts where a steal
+cannot happen. Two alternatives were rejected: inventing a synthetic receipt would put fabricated
+evidence in the same table an operator reads to decide whether an effect happened, and refusing to
+dispatch outside a turn would fail closed on paths that cannot currently duplicate anything. The
+refusal belongs at the point where a worker has identity, so P18-T04 owns it: once a lease exists,
+an out-of-turn dispatch in multi-worker mode is refused rather than exempted.
+
+**Still owed (now P18-T04/T05).** The fence written today is the `SINGLE_WORKER_FENCE = 1`
+placeholder, so the row attributes an attempt without yet proving *which* holder made it; the
+once-only tool effects above are unrecorded; and the surfacing hop that shows an operator the
+`unknown` rows (`unknown_external_effects` exists and is unused) lands with P18-T05.
 
 ## Interaction with the existing process lock
 

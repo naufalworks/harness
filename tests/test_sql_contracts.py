@@ -145,4 +145,40 @@ class Contracts(unittest.TestCase):
             with self.assertRaises(ValueError):migrate(src,dst)
             with closing(sqlite3.connect(src)) as old:self.assertEqual(old.execute('SELECT count(*) FROM memories').fetchone()[0],3)
 
+# P18-T03: the durable external-effect record is only worth as much as its coverage. The
+# guarantee is "a provider request is durable before it can leave the process", and that is a
+# property of every dispatch site, not of the two that were wired by hand. A new `.send()` in
+# the provider adapter would silently reintroduce an unrecorded external effect, so the
+# enumeration is asserted here instead of living in a design document: each function that
+# dispatches must either reserve an effect first, or be named in EXEMPT_DISPATCH with the
+# reason it cannot produce a non-replayable effect. Exempting a call is then a visible,
+# reviewable diff rather than an omission.
+ADAPTER=_implementation_only((ROOT/'src/memory_agents.rs').read_text())
+# Read-only provider reads are exempt: replaying them cannot create, charge or deliver
+# anything, and they hold no spend reservation to key an effect record on.
+EXEMPT_DISPATCH={'list_models':'GET /models is a read; replaying it has no external effect'}
+def _adapter_functions(text):
+    starts=[(m.start(),m.group(1)) for m in re.finditer(r'\n    (?:pub )?(?:async )?fn (\w+)',text)]
+    for index,(offset,name) in enumerate(starts):
+        end=starts[index+1][0] if index+1<len(starts) else len(text)
+        yield name,text[offset:end]
+class ExternalEffectCoverage(unittest.TestCase):
+    def test_every_provider_dispatch_reserves_an_effect_or_is_named_exempt(self):
+        dispatching={name:body for name,body in _adapter_functions(ADAPTER) if '.send()' in body}
+        self.assertTrue(dispatching,'no provider dispatch sites found; the scrape is broken')
+        unrecorded=sorted(name for name,body in dispatching.items() if 'self.reserve_effect(' not in body and name not in EXEMPT_DISPATCH)
+        self.assertEqual(unrecorded,[],f'provider dispatch without a durable effect record: {unrecorded}')
+    def test_exemptions_are_live_and_reasoned(self):
+        names={name for name,_ in _adapter_functions(ADAPTER)}
+        for name,reason in EXEMPT_DISPATCH.items():
+            self.assertIn(name,names,f'exemption {name} no longer exists; delete it')
+            self.assertGreater(len(reason),20,f'exemption {name} needs a reason')
+    def test_reserved_effect_is_always_settled(self):
+        # Reserving without settling would leave the row open until a restart swept it to
+        # `unknown`, which reports a real effect as indeterminate. Pair the calls by source. The
+        # match is on `self.` so the helper definitions do not count as their own callers.
+        for name,body in _adapter_functions(ADAPTER):
+            if 'self.reserve_effect(' in body:
+                self.assertIn('self.settle_effect(',body,f'{name} reserves an effect it never settles')
+
 if __name__=='__main__':unittest.main(verbosity=2)

@@ -1211,15 +1211,47 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - result-verify: Sixteen extension tests passed, covering admission of a pinned bounded pack and of a provider adapter without a review, plus every refusal lane including a manifest edited after pinning, a payload swapped beneath an intact review, a tool absent from the registry, a widened permission mode, a network grant, a path escaping the repository and malformed JSON. Two cross-module drift tests assert the permission-mode names against the real tools registry and the pin-ledger kind vocabulary against the checked-in ledger. The offline extension checker passed. The full Rust suite, strict all-feature Clippy, formatting, the real browser-to-Rust-to-SQLite E2E and documentation-claims lanes all passed. No provider, network or cloud call was made and no infrastructure changed.
 
 ### P18-T03 · Record external effects durably with an idempotency key
-- status: doing
+- status: done
 - priority: low
 - lane: scale
 - parallel: no
 - depends: P18-T01
 - design: docs/design/leased-multi-worker.md
-- files: migrations/018_external_effects.sql, src/storage/effects.rs, src/storage.rs, src/memory_agents.rs, src/main.rs, tests/test_migrations.py, docs/design/leased-multi-worker.md, docs/ARCHITECTURE.md
+- files: migrations/018_external_effects.sql, src/storage/effects.rs, src/storage.rs, src/memory_agents.rs, src/main.rs, tests/test_migrations.py, tests/test_sql_contracts.py, docs/design/leased-multi-worker.md, docs/ARCHITECTURE.md
 - done-when: every non-replayable external effect is recorded before it is attempted and settled after, keyed by the fence-independent idempotency key named in the design; an effect whose outcome is unknown is durably `unknown` and never auto-retried; a restart sweep records unknown rather than replaying; and the schema refuses a second attempt under the same key from a different fence.
-- verify: cargo test --locked && python3 tests/test_migrations.py
+- verify: cargo test --locked && python3 tests/test_migrations.py && python3 tests/test_sql_contracts.py
+- done-when-change (2026-09-16): the original wording said *every* non-replayable external
+  effect. Scope is narrowed to provider dispatch plus a written, enforced enumeration of the rest,
+  and the once-only tool effects (`bash`, `browser`) move to P18-T04. Reason: recording a tool
+  effect without a real fence records *that* something happened but not *which* holder did it, so
+  the record could not refuse a duplicate after a steal -- the property the record exists for. The
+  set is not left implicit: the classification table in the design doc names every candidate and
+  `tests/test_sql_contracts.py::ExternalEffectCoverage` fails if a new provider dispatch site
+  appears without a record, or if an exemption outlives the function it names.
+- result: Provider dispatch now reserves a durable `external_effects` row before the request can
+  leave the process and settles it after, on both the buffered and streamed paths; a restart sweeps
+  still-reserved rows to `unknown` next to the existing `provider_calls` sweep. Settlement is
+  deliberately asymmetric: a request answered unusably settles `succeeded` with the error as its
+  reason because it still happened and may be billed, while one that never visibly left settles
+  `unknown`, never `failed`, because an unacknowledged send may still have arrived. Coverage is the
+  part that makes the record worth anything, so every candidate effect is enumerated and classified
+  in the design doc -- provider calls recorded, `GET /models` exempt as a replayable read, the
+  content-addressed write/edit/archive/export paths converging on replay, `bash` and `browser`
+  named as the sharpest unrecorded hole, and the outbox flush identified as an internal write
+  covered by fencing rather than by this table. A provider call that cannot be attributed to a
+  recorded turn stays exempt rather than being given a synthetic receipt, because fabricated
+  evidence in the table an operator reads to decide whether an effect happened is worse than a
+  documented gap; the refusal is placed in P18-T04 where a worker has identity. The fence written
+  today is still the `SINGLE_WORKER_FENCE = 1` placeholder, which is why steal-time deduplication
+  is P18-T04's, not this task's, claim.
+- result-verify: The three-test `ExternalEffectCoverage` contract passed and was mutation-checked --
+  removing the `reserve_effect` call from `stream_turn` made it fail with that function named, and
+  the source was restored afterwards. `python3 tests/test_sql_contracts.py` passed 19 tests,
+  `python3 tests/test_migrations.py` walked 001 to 018 with `user_version=18` and data, FTS and
+  foreign keys preserved, and the full Rust suite passed 329 tests under strict all-feature Clippy
+  and formatting. The documentation-claims gate passed with zero failing checks and the live binary
+  matching HEAD. No provider call was made; the effect paths are exercised against a file-backed
+  temporary database.
 - note (2026-09-16, Rust half wired): `reserve_external_effect`/`settle_external_effect` land in
   `src/storage/effects.rs` and both provider dispatch paths in `src/memory_agents.rs` now reserve
   before dispatch and settle after; migration 018 joined the chain and schema version moved to 18.
@@ -1242,6 +1274,11 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - files: src/recording.rs, src/recording_sql.rs, src/storage.rs, tests/fault_injection.py
 - done-when: every durable turn write carries its lease fence and is refused in the same transaction when the fence is stale; and the five lease failure modes are tested — heartbeat renewal under contention, expiry-then-resume refused on fence, steal after death with no duplicate external effect, cancellation at a non-holder, and clock skew via database-issued times.
 - verify: cargo test --locked recovery && python3 tests/fault_injection.py
+- note (2026-09-16, inherited from P18-T03): also owns the effects that could not be honestly
+  recorded without a real fence -- the once-only `bash` and `browser` tool effects and
+  `delete_archive`, replacing `SINGLE_WORKER_FENCE = 1` with the lease's fence, and refusing an
+  out-of-turn provider dispatch in multi-worker mode instead of exempting it. The classification
+  table in the design doc is the checklist.
 
 ### P18-T05 · Measure SQLite write contention before a second writer runs
 - status: todo
