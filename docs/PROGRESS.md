@@ -1,5 +1,36 @@
 # PROGRESS — journal
 
+## 2026-09-16T06:35:00Z · maintenance and SQL-contract gates were pinned to dead schema versions
+
+Two gates asserted exact schema versions and had been quietly wrong for several migrations.
+`scripts/maintenance.py` pinned `SCHEMA_VERSION = 10`; `scripts/maintenance.py --check` did not
+merely warn, it raised `AssertionError` at the version assert, and `connect()` would have refused
+every real database with `BLOCKED: schema_version=18, maintenance requires 10`. The operator
+entry point for retention, compaction and WAL checkpointing was unusable and nothing in CI said so.
+`tests/test_sql_contracts.py` applied the chain only to `016_run_capsules.sql` and asserted
+`user_version == 16`, so the contract suite had not executed 017 or 018 at all.
+
+Both were already broken before today's schema 17 → 18 move; neither is a 17→18 rename, which is
+why they were left alone in the P18-T03 commit and fixed here on their own.
+
+The fix removes the pins rather than advancing them, because advancing a pin just schedules the
+same breakage for migration 019. Maintenance now holds a floor, `MIN_SCHEMA_VERSION = 10`, which is
+where the tables it touches landed and which additive migrations cannot take away, plus a ceiling
+derived from the checkout's own migration directory: a database *newer* than the code in hand is
+refused, because it may have changed something this script cannot see. The contract suite derives
+its expected version from the last entry of its own `MIGRATIONS` list, so adding a migration can no
+longer leave it asserting a version it does not build.
+
+Verification: `python3 scripts/maintenance.py --check` — `maintenance gate OK`, where it previously
+raised; `python3 tests/test_sql_contracts.py` — 16 tests, OK, now with 017 and 018 applied;
+`python3 scripts/maintenance.py status --database data/harness_v2.db` answered against the live
+schema-18 database instead of blocking.
+
+Worth noting what this was: the pins were introduced as safety checks, and an equality check on a
+monotonically increasing version is a check that expires. Both replacements state a range or derive
+the value, so they cannot go stale silently — they can only fail loudly when the property they
+assert is actually violated.
+
 ## 2026-09-16T06:10:00Z · P18-T03 — provider calls now reserve and settle a durable effect record
 
 The schema landed this morning with no Rust code writing to it, which is a table, not a guarantee.

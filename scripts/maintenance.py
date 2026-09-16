@@ -30,7 +30,21 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 MIGRATIONS = ROOT / "migrations"
 DEFAULT_DATABASE = ROOT / "data" / "harness_v2.db"
 TARGETS = ("generation_chunks", "activity_events")
-SCHEMA_VERSION = 10
+# P18-T03: this was pinned to an exact version (10, where the maintenance tables landed) and the
+# equality check made every later migration silently break the tool: by schema 18 `--check`
+# asserted itself into an AssertionError and `connect()` refused every real database. What
+# maintenance actually needs are the tables migration 010 introduced, and additive migrations after
+# it cannot take those away, so the floor stays a floor instead of becoming a pin. The ceiling is
+# the head of *this* checkout's migration chain: a database newer than the code in hand may have
+# changed something this script cannot see, and refusing that is the honest outcome.
+MIN_SCHEMA_VERSION = 10
+
+
+def chain_head_version() -> int:
+    versions = [int(p.name[:3]) for p in MIGRATIONS.glob("[0-9][0-9][0-9]_*.sql")]
+    if not versions:
+        raise SystemExit(f"BLOCKED: no migrations found in {MIGRATIONS}")
+    return max(versions)
 FINISHED_RECEIPTS = "SELECT request_id FROM chat_receipts WHERE state NOT IN ('captured','generating')"
 
 
@@ -49,8 +63,16 @@ def connect(database: pathlib.Path) -> sqlite3.Connection:
     connection.execute("PRAGMA foreign_keys=ON")
     connection.execute("PRAGMA busy_timeout=5000")
     version = connection.execute("PRAGMA user_version").fetchone()[0]
-    if version != SCHEMA_VERSION:
-        raise SystemExit(f"BLOCKED: schema_version={version}, maintenance requires {SCHEMA_VERSION}")
+    head = chain_head_version()
+    if version < MIN_SCHEMA_VERSION:
+        raise SystemExit(
+            f"BLOCKED: schema_version={version}, maintenance requires at least {MIN_SCHEMA_VERSION}"
+        )
+    if version > head:
+        raise SystemExit(
+            f"BLOCKED: schema_version={version} is newer than this checkout's migration chain (head {head});"
+            " update the checkout before running maintenance"
+        )
     return connection
 
 
@@ -247,7 +269,7 @@ def self_check() -> int:
         connection.execute("PRAGMA foreign_keys=ON")
         for name in sorted(p.name for p in MIGRATIONS.glob("*.sql")):
             connection.executescript((MIGRATIONS / name).read_text())
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == chain_head_version()
         _seed(connection)
 
         disabled = apply_retention(connection)
@@ -282,7 +304,7 @@ def self_check() -> int:
         assert "incremental_vacuum" in result
         assert connection.execute("SELECT count(*) FROM maintenance_runs WHERE action='wal_checkpoint'").fetchone()[0] == 1
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
-        assert status(connection)["schema_version"] == SCHEMA_VERSION
+        assert status(connection)["schema_version"] == chain_head_version()
         connection.close()
     print("maintenance gate OK: retention, compaction and checkpoint preserve receipts and live turns")
     return 0
