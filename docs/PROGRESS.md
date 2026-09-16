@@ -2999,3 +2999,51 @@ single-writer process lock (recommended) or move correctness onto leases plus fe
 second worker is wanted at all -- and states plainly that deferring is a legitimate outcome, since
 P18 is optional and nothing observed so far demands one. No lease table, worker identity, or second
 worker was created.
+
+### CI was red for days, and the local gate could not have told us
+
+Every push to `main` from P17-T03 onward failed `harness-checks`, and none of that was
+visible from this host. One step failed each time:
+`release-evidence :: cargo check --locked --target aarch64-unknown-linux-gnu`. The other four
+jobs -- `quality`, `supply-chain`, `browser-e2e` -- were green throughout, so the run looked
+unremarkable unless someone opened it. The local gate reports `cross-target` as `[SKIP]`
+because only the host target is installed here, which means the strict local gate passing was
+never evidence about this lane. That is the lesson worth keeping: a `[SKIP]` is not a pass, and
+four green jobs next to one red one still means red.
+
+The cause was not the cross toolchain, which installed fine. `reqwest` was declared with default
+features, pulling `native-tls` and therefore `openssl-sys`, whose build script locates OpenSSL
+through `pkg-config` -- and `pkg-config` cannot cross-compile:
+
+    Could not find openssl via pkg-config:
+    pkg-config has not been configured to support cross-compilation.
+
+The obvious workaround was an aarch64 sysroot plus `PKG_CONFIG_ALLOW_CROSS`. That was rejected
+because it keeps a C dependency in the cross build permanently and pays for it on every future
+run. The dependency was removed instead: `reqwest` now uses rustls, which is pure Rust over
+`ring`, already a direct dependency here for SHA-256. No source used a native-tls-specific API,
+so no code changed. `charset` and `http2` were re-enabled explicitly, since disabling default
+features would otherwise have dropped them silently -- the kind of quiet regression that a
+feature-flag change invites.
+
+The result is smaller as well as unblocked: `Cargo.lock` lost 236 lines, and neither cross target
+needs a C compiler or an OpenSSL sysroot any more.
+
+Switching TLS backends had one honest consequence. rustls brought in `webpki-roots`, which
+packages Mozilla's CA root store under `CDLA-Permissive-2.0`, and `cargo deny check licenses`
+rejected it. This was fixed by naming that licence in `deny.toml` with a reason -- it is a
+permissive data licence that imposes no obligation on the embedding binary -- rather than by
+widening the policy or disabling the gate. A supply-chain gate that gets relaxed whenever it
+fires is not a gate.
+
+Run 35055858683 on `1b0e9df` is the first all-success run on `main`: `quality`,
+`release-evidence`, `browser-e2e` and `supply-chain` all pass, with `public-smoke` skipped as
+designed while no public URL is configured. The aarch64 step passes for the first time. That run,
+not the local gate, is the evidence. `1b0e9df` is deployed as
+`deploy-20260916T044224Z-1b0e9df`, pid 695152, release sha256
+`7745ab8d28b7bffb843595df7e45e8836c162e7e7cc5bd1f263908df569150d8`, schema 16, readiness and API
+behavior verified.
+
+One consequence for P18 planning: no additional node or capacity was needed to fix this. The
+build got cheaper. Multi-worker capacity remains a separate decision, to be made on the fencing
+design's merits rather than because the queue looked slow.
