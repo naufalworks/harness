@@ -1,5 +1,11 @@
 # PROGRESS — journal
 
+## 2026-09-16T12:40:00Z · Multi-worker provider policy now refuses out-of-turn dispatch
+
+P18-T04 slice 7 closes the out-of-turn provider policy without pretending background work is a recorded turn. `MemoryAgents` now has an opt-in `HARNESS_MULTI_WORKER_PROVIDER_POLICY=refuse_out_of_turn` guard: when enabled, any provider dispatch that has a spend store but no task-local request id is refused before spend reservation, so no synthetic receipt, provider row, or external-effect row is invented. Ordinary single-worker operation keeps the existing exemption.
+
+Focused evidence: `cargo fmt`, `cargo test --locked memory_agents::provider_tests::multi_worker_policy_refuses_out_of_turn_provider_dispatch_before_spend`, and `cargo test --locked storage::tests::external_effects_are_recorded_before_dispatch_and_swept_to_unknown_on_restart` pass. P18-T04 remains `doing` for partial filesystem receipts and the remaining durable-write audit. Worker count remains pinned at one.
+
 ## 2026-09-16T10:22:00Z · Archive deletion now records intent and outcome
 
 P18-T04 slice 6 makes `delete_archive` truthful around the ciphertext-removal boundary. The

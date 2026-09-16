@@ -69,6 +69,7 @@ pub struct MemoryAgents {
     pub model: String,
     spend_store: Option<DbStore>,
     spend_limits: SpendLimits,
+    refuse_out_of_turn_provider: bool,
     health: ProviderHealth,
 }
 
@@ -460,6 +461,8 @@ impl MemoryAgents {
             model: model.into(),
             spend_store: None,
             spend_limits: SpendLimits::from_env()?,
+            refuse_out_of_turn_provider: env::var("HARNESS_MULTI_WORKER_PROVIDER_POLICY")
+                .is_ok_and(|value| value == "refuse_out_of_turn"),
             health: ProviderHealth::default(),
         })
     }
@@ -512,6 +515,9 @@ impl MemoryAgents {
             return Ok(None);
         };
         let request = SPEND_REQUEST_ID.try_with(Clone::clone).ok();
+        if request.is_none() && self.refuse_out_of_turn_provider {
+            bail!("out-of-turn provider dispatch refused in multi-worker mode");
+        }
         store
             .reserve_provider_call(
                 request,
@@ -1389,6 +1395,37 @@ mod provider_tests {
         );
         agents.health.record_success();
         assert!(clone.guard_breaker().is_ok());
+    }
+
+    #[tokio::test]
+    async fn multi_worker_policy_refuses_out_of_turn_provider_dispatch_before_spend() {
+        let dir =
+            std::env::temp_dir().join(format!("harness-out-of-turn-{}", crate::storage::uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = DbStore::init(dir.join("harness.db").to_str().unwrap()).unwrap();
+        let mut agents = MemoryAgents::new("http://127.0.0.1:9", "k", "m")
+            .unwrap()
+            .with_spend_store(db.clone());
+        agents.refuse_out_of_turn_provider = true;
+
+        let refused = agents
+            .reserve_spend("compaction", "m")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refused.contains("out-of-turn provider dispatch refused"),
+            "{refused}"
+        );
+        let rows: i64 = db
+            .read(|c| Ok(c.query_row("SELECT count(*) FROM provider_calls", [], |r| r.get(0))?))
+            .await
+            .unwrap();
+        assert_eq!(
+            rows, 0,
+            "the refusal happens before spend reservation, so no synthetic turn or provider row is invented"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

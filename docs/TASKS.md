@@ -1353,6 +1353,16 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
   `python3 tests/test_sql_contracts.py` pass. P18-T04 remains `doing`: partial filesystem receipts,
   the remaining durable-write audit, and multi-worker out-of-turn refusal remain. Worker count
   remains pinned at one.
+- note (2026-09-16, slice 7 implemented; out-of-turn provider policy): the multi-worker
+  provider policy is now an opt-in fail-closed guard, `HARNESS_MULTI_WORKER_PROVIDER_POLICY=refuse_out_of_turn`.
+  With that policy enabled, a provider dispatch that has a spend store but no task-local request id
+  is refused before `provider_calls` reservation, so it cannot fabricate a synthetic turn or leave a
+  misleading spend/effect row. The existing single-worker exemption remains the default. Focused
+  evidence: `cargo fmt`,
+  `cargo test --locked memory_agents::provider_tests::multi_worker_policy_refuses_out_of_turn_provider_dispatch_before_spend`,
+  and `cargo test --locked storage::tests::external_effects_are_recorded_before_dispatch_and_swept_to_unknown_on_restart`
+  pass. P18-T04 remains `doing`: partial filesystem receipts and the remaining durable-write audit
+  remain. Worker count remains pinned at one.
 
 ### P18-T05 · Measure SQLite write contention before a second writer runs
 - status: todo
