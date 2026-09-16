@@ -1322,6 +1322,18 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
   no-remembered-lease writes, every-durable-write audit, real effect fence, once-only tool effects,
   `delete_archive`, and multi-worker out-of-turn provider refusal are still open. Worker count
   remains pinned at one.
+- note (2026-09-16, slice 4 landed; provider effects carry the lease): the
+  `SINGLE_WORKER_FENCE = 1` production placeholder is removed. Provider-effect reservation now
+  presents the lease this worker actually acquired and checks it in the same transaction as the
+  insert; settlement carries that same remembered lease and guards it in the same transaction as
+  the update. A generating turn with no remembered lease is refused before an effect row or network
+  dispatch. Post-turn extraction remains explicitly outside the turn-effect ledger while the
+  process count is one. Tests prove the stored fence is the acquired fence, a missing lease creates
+  no reservation, and a stale holder cannot reserve or settle after ownership moves. Both new fence
+  guards were mutation-checked and the tests failed when either guard was removed.
+  P18-T04 remains `doing`: once-only `bash`/side-effecting-browser effects, partial-write reporting,
+  `delete_archive`, the remaining durable-write audit, and the multi-worker out-of-turn policy are
+  still open. Worker count remains pinned at one.
 
 ### P18-T05 · Measure SQLite write contention before a second writer runs
 - status: todo

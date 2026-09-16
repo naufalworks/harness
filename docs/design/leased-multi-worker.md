@@ -169,10 +169,11 @@ dispatch outside a turn would fail closed on paths that cannot currently duplica
 refusal belongs at the point where a worker has identity, so P18-T04 owns it: once a lease exists,
 an out-of-turn dispatch in multi-worker mode is refused rather than exempted.
 
-**Still owed (now P18-T04/T05).** The fence written today is the `SINGLE_WORKER_FENCE = 1`
-placeholder, so the row attributes an attempt without yet proving *which* holder made it; the
-once-only tool effects above are unrecorded; and the surfacing hop that shows an operator the
-`unknown` rows (`unknown_external_effects` exists and is unused) lands with P18-T05.
+**Still owed (now P18-T04/T05).** Provider-effect reservation and settlement now present the exact
+lease remembered by the worker and guard that fence in the same transaction as the effect write;
+the `SINGLE_WORKER_FENCE` placeholder is gone. The once-only tool effects above remain unrecorded,
+and the surfacing hop that shows an operator the `unknown` rows (`unknown_external_effects` exists
+and is unused) lands with P18-T05.
 
 ## Interaction with the existing process lock
 
@@ -225,9 +226,10 @@ lost race affecting zero rows rather than raising an error. Each trigger was mut
 dropping it and confirming the guarded write then succeeds — which caught two assertions that had
 been passing for the wrong reason.
 
-Still untested, because they need a lease client rather than a schema: heartbeat renewal under write
-contention, clock-skew comparisons using database-issued time, steal-with-no-duplicate-external-
-effect, and cancellation reaching a worker that no longer holds the lease.
+All five required lease failure modes now have executable coverage: heartbeat renewal under write
+contention, expiry-then-resume refusal, clock-skew comparisons using database-issued time,
+steal-with-no-duplicate-external-effect, and cancellation reaching a worker that no longer holds
+the lease. P18-T04 remains open for the complete durable-write and once-only-effect audit.
 
 ## Rollout gates
 

@@ -120,7 +120,7 @@ mod provenance;
 mod provider;
 mod turns;
 pub use causal_coverage::{DeploymentAnomalies, MAX_COVERAGE_REQUESTS};
-pub use effects::{EffectOutcome, SINGLE_WORKER_FENCE};
+pub use effects::{EffectOutcome, ExternalEffectReservation};
 pub use incident_compare::MAX_COMPARED_RUNS;
 pub use leases::{acquire_in_tx, guard_fence, steal_in_tx, AcquireRefusal, LEASE_TTL_SECONDS};
 #[allow(unused_imports)]
@@ -866,7 +866,7 @@ mod tests {
                 "call-1".into(),
                 "d".repeat(64),
                 "provider_call".into(),
-                dead.fence,
+                Some(dead.clone()),
             )
             .await
             .unwrap()
@@ -876,11 +876,11 @@ mod tests {
         assert_eq!(
             steal_lease(&db, "worker-b").await.unwrap_err(),
             leases::StealRefusal::EffectsNeedDecision {
-                effect_ids: vec![effect.clone()]
+                effect_ids: vec![effect.id().to_string()]
             }
         );
         // The refusal is not the whole guarantee; the durable evidence is.
-        let looked_up = effect.clone();
+        let looked_up = effect.id().to_string();
         let (state, reason): (String, Option<String>) = db
             .read(move |c| {
                 Ok(c.query_row(
@@ -905,12 +905,15 @@ mod tests {
                 "call-1".into(),
                 "d".repeat(64),
                 "provider_call".into(),
-                2,
+                Some(dead.clone()),
             )
             .await
             .unwrap_err()
             .to_string();
-        assert!(again.contains("unknown outcome"), "{again}");
+        assert!(
+            again.contains("lease") || again.contains("lapsed"),
+            "{again}"
+        );
 
         // Ownership did not move: refusing a steal must leave the recorded holder and fence alone,
         // or the turn would look recovered while its effect is still unclassified.
@@ -953,6 +956,31 @@ mod tests {
         .await
         .unwrap();
 
+        let lease = acquire_lease(&db, "worker-a")
+            .await
+            .expect("the recorded turn is claimable");
+
+        let missing = db
+            .reserve_external_effect(
+                "r1".into(),
+                "call-without-lease".into(),
+                "c".repeat(64),
+                "provider_call".into(),
+                None,
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(missing.contains("no remembered lease"), "{missing}");
+        assert_eq!(
+            count(
+                &db,
+                "SELECT count(*) FROM external_effects WHERE step_identity='call-without-lease'"
+            )
+            .await,
+            0
+        );
+
         // An effect outside a recorded turn is left unrecorded, not refused: the row references
         // `chat_receipts`, and failing the insert would turn a bookkeeping gap into a refused call.
         assert!(db
@@ -961,7 +989,7 @@ mod tests {
                 "call-0".into(),
                 "d".repeat(64),
                 "provider_call".into(),
-                SINGLE_WORKER_FENCE,
+                None,
             )
             .await
             .unwrap()
@@ -973,11 +1001,19 @@ mod tests {
                 "call-1".into(),
                 "a".repeat(64),
                 "provider_call".into(),
-                SINGLE_WORKER_FENCE,
+                Some(lease.clone()),
             )
             .await
             .unwrap()
             .unwrap();
+        assert_eq!(
+            count(
+                &db,
+                "SELECT count(*) FROM external_effects WHERE step_identity='call-1' AND fence=1"
+            )
+            .await,
+            1
+        );
         assert_eq!(
             count(
                 &db,
@@ -993,7 +1029,7 @@ mod tests {
                 "call-1".into(),
                 "a".repeat(64),
                 "provider_call".into(),
-                SINGLE_WORKER_FENCE,
+                Some(lease.clone()),
             )
             .await
             .is_err());
@@ -1004,7 +1040,7 @@ mod tests {
                 "call-2".into(),
                 "b".repeat(64),
                 "provider_call".into(),
-                SINGLE_WORKER_FENCE,
+                Some(lease.clone()),
             )
             .await
             .unwrap()
@@ -1030,7 +1066,7 @@ mod tests {
         drop(db);
 
         let reopened = DbStore::init(&path).unwrap();
-        let looked_up = stranded.clone();
+        let looked_up = stranded.id().to_string();
         let swept: (String, Option<String>) = reopened
             .read(move |c| {
                 Ok(c.query_row(
@@ -1048,7 +1084,56 @@ mod tests {
         );
         let owed = reopened.unknown_external_effects(10).await.unwrap();
         assert_eq!(owed.len(), 1);
-        assert_eq!(owed[0]["effect_id"], json!(stranded));
+        assert_eq!(owed[0]["effect_id"], json!(stranded.id()));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// P18-T04: settlement is a durable turn write too. It must present the lease captured when
+    /// the effect was reserved, not authorize itself by reading whatever fence is current later.
+    #[tokio::test]
+    async fn a_stale_holder_cannot_settle_an_external_effect_after_takeover() {
+        let (dir, db) = leased_turn().await;
+        let stale = acquire_lease(&db, "worker-a")
+            .await
+            .expect("a fresh turn is claimable");
+        let effect = db
+            .reserve_external_effect(
+                "r1".into(),
+                "call-1".into(),
+                "d".repeat(64),
+                "provider_call".into(),
+                Some(stale),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        db.run(|c| {
+            c.execute(
+                "UPDATE worker_leases SET worker_id='worker-b',fence=2,state='held',expires_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','+30 seconds') WHERE request_id='r1'",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+        let refused = db
+            .settle_external_effect(effect, EffectOutcome::Succeeded, None, None)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refused.contains("worker-b") && refused.contains("fence 2"),
+            "{refused}"
+        );
+        assert_eq!(
+            count(
+                &db,
+                "SELECT count(*) FROM external_effects WHERE step_identity='call-1' AND state='reserved' AND fence=1"
+            )
+            .await,
+            1
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 

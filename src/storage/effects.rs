@@ -10,15 +10,25 @@
 //! uniqueness into a second paid call. The fence is recorded so an operator can see which holder
 //! attempted the effect; it does not identify it.
 
-use super::{now, uid, DbStore};
+use super::{leases::Lease, now, uid, DbStore};
 use anyhow::{bail, Result};
 use rusqlite::{params, OptionalExtension, TransactionBehavior};
 use serde_json::{json, Value};
 
-/// Worker count is still pinned at one, and no lease is taken in code yet, so every effect is
-/// attributed to the same holder. P18-T04 replaces this with the lease's own fence; until then a
-/// constant is the honest value rather than a fabricated one.
-pub const SINGLE_WORKER_FENCE: i64 = 1;
+/// A reservation carries the exact lease that authorized it. Settlement must present this same
+/// remembered fence; reading the current fence later would authorize a stale worker after takeover.
+#[derive(Clone, Debug)]
+pub struct ExternalEffectReservation {
+    effect_id: String,
+    lease: Lease,
+}
+
+#[cfg(test)]
+impl ExternalEffectReservation {
+    pub(crate) fn id(&self) -> &str {
+        &self.effect_id
+    }
+}
 
 /// How an attempted external effect ended. `Unknown` is not a failure: it means the effect may
 /// have happened, which is the one outcome a human has to decide about.
@@ -60,11 +70,12 @@ impl DbStore {
         step_identity: String,
         payload_digest: String,
         kind: String,
-        fence: i64,
-    ) -> Result<Option<String>> {
+        lease: Option<Lease>,
+    ) -> Result<Option<ExternalEffectReservation>> {
         let effect_id = uid();
         let returned = effect_id.clone();
         let key = format!("{request_id}:{step_identity}:{payload_digest}");
+        let presented_lease = lease.clone();
         let recorded = self
             .run(move |c| {
                 let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -77,6 +88,26 @@ impl DbStore {
                     .optional()?
                     .is_some();
                 if !turn_is_recorded {
+                    return Ok(false);
+                }
+                let state: String = tx.query_row(
+                    "SELECT state FROM chat_receipts WHERE request_id=?1",
+                    [&request_id],
+                    |r| r.get(0),
+                )?;
+                if state == "generating" {
+                    let presented = presented_lease.as_ref().ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "provider effect on generating turn {request_id} has no remembered lease"
+                        )
+                    })?;
+                    if presented.request_id != request_id {
+                        bail!("provider effect lease belongs to a different turn");
+                    }
+                    super::leases::guard_fence(&tx, presented)?;
+                } else {
+                    // Post-turn extraction and maintenance are not turn execution and have no live
+                    // lease to fence. They remain outside the turn-effect ledger.
                     return Ok(false);
                 }
                 let existing = tx
@@ -111,7 +142,7 @@ impl DbStore {
                         payload_digest,
                         key,
                         kind,
-                        fence,
+                        presented_lease.as_ref().expect("generating effects require a lease").fence,
                         now()
                     ],
                 )?;
@@ -119,14 +150,17 @@ impl DbStore {
                 Ok(true)
             })
             .await?;
-        Ok(recorded.then_some(returned))
+        Ok(recorded.then(|| ExternalEffectReservation {
+            effect_id: returned,
+            lease: lease.expect("a recorded effect was guarded by a lease"),
+        }))
     }
 
     /// Settle a reserved effect exactly once. An `Unknown` outcome must carry a reason, because
     /// `unknown` with no reason is an alarm with nothing for a human to act on.
     pub async fn settle_external_effect(
         &self,
-        effect_id: String,
+        effect: ExternalEffectReservation,
         outcome: EffectOutcome,
         outcome_ref: Option<String>,
         reason: Option<String>,
@@ -136,13 +170,16 @@ impl DbStore {
         }
         let state = outcome.state();
         self.run(move |c| {
-            if c.execute(
+            let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            super::leases::guard_fence(&tx, &effect.lease)?;
+            if tx.execute(
                 "UPDATE external_effects SET state=?2,outcome_ref=?3,reason=?4,settled_at=?5 WHERE effect_id=?1 AND state='reserved'",
-                params![effect_id, state, outcome_ref, reason, now()],
+                params![effect.effect_id, state, outcome_ref, reason, now()],
             )? != 1
             {
                 bail!("external effect reservation is not active");
             }
+            tx.commit()?;
             Ok(())
         })
         .await

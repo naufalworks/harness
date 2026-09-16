@@ -535,29 +535,30 @@ impl MemoryAgents {
         }
         Ok(())
     }
-    /// P18-T03: record the provider call as an external effect before dispatch and settle it
-    /// after. The step identity is the durable spend reservation id, which exists before the
-    /// request leaves the process, and the digest is over the exact payload sent. Deduplicating a
-    /// *stolen* turn additionally needs the lease's own step identity, which P18-T04 adds; what is
-    /// enforced today is that an attempt is durable before it happens and settled once after.
+    /// P18-T04: record the provider call under the exact remembered lease before dispatch and
+    /// settle it under that same fence afterwards. The step identity is the durable spend
+    /// reservation id, which exists before the request leaves the process, and the digest is over
+    /// the exact payload sent. The idempotency identity excludes the fence so takeover cannot turn
+    /// one logical call into a fresh effect.
     async fn reserve_effect(
         &self,
         reservation: Option<&String>,
         request: &Value,
-    ) -> Result<Option<String>> {
+    ) -> Result<Option<crate::storage::ExternalEffectReservation>> {
         let (Some(store), Some(call_id)) = (&self.spend_store, reservation) else {
             return Ok(None);
         };
         let Ok(request_id) = SPEND_REQUEST_ID.try_with(Clone::clone) else {
             return Ok(None);
         };
+        let lease = store.held_lease(&request_id);
         store
             .reserve_external_effect(
                 request_id,
                 call_id.clone(),
                 safety::fingerprint(&request.to_string()),
                 "provider_call".into(),
-                crate::storage::SINGLE_WORKER_FENCE,
+                lease,
             )
             .await
     }
@@ -567,11 +568,11 @@ impl MemoryAgents {
     /// error as its reason. Inventing "it did not happen" is the failure mode being avoided.
     async fn settle_effect(
         &self,
-        effect: Option<String>,
+        effect: Option<crate::storage::ExternalEffectReservation>,
         dispatched: bool,
         error: Option<&str>,
     ) -> Result<()> {
-        let (Some(store), Some(effect_id)) = (&self.spend_store, effect) else {
+        let (Some(store), Some(effect)) = (&self.spend_store, effect) else {
             return Ok(());
         };
         let (outcome, reason) = match (dispatched, error) {
@@ -586,7 +587,7 @@ impl MemoryAgents {
             ),
         };
         store
-            .settle_external_effect(effect_id, outcome, None, reason)
+            .settle_external_effect(effect, outcome, None, reason)
             .await
     }
     async fn response_json(&self, mut response: reqwest::Response) -> Result<Value> {

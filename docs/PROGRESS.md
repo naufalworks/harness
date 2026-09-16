@@ -1,5 +1,24 @@
 # PROGRESS — journal
 
+## 2026-09-16T08:30:00Z · Provider effects now carry the holder's real fence
+
+P18-T04 slice 4 removes the `SINGLE_WORKER_FENCE = 1` production placeholder. Before either
+buffered or streamed provider dispatch, Harness now takes the lease remembered by the process and
+checks that holder and fence in the same SQLite transaction that inserts the `external_effects`
+reservation. Settlement carries the same remembered lease and guards it in the transaction that
+updates the effect, so reading the current fence can never authorize a stale worker after takeover.
+
+A generating turn with no remembered lease is refused before an effect row is inserted or a
+provider request is sent. Calls outside a recorded turn, and post-turn extraction while the process
+count remains one, keep their explicit exemption rather than manufacturing a receipt. Tests prove
+the stored effect fence is the acquired fence, a missing lease leaves no reservation, and a stale
+holder cannot reserve or settle after the recorded owner moves. Removing either in-transaction
+fence guard makes its focused test fail; both mutations were restored.
+
+P18-T04 stays `doing`: once-only `bash` and side-effecting browser calls, partial-write reporting,
+`delete_archive`, the rest of the durable-write audit, and the multi-worker out-of-turn provider
+policy are still open. Worker count stays pinned at one.
+
 ## 2026-09-16T08:00:00Z · The five lease failure modes are now executable claims
 
 P18-T04 slice 3 adds the three tests left open after takeover. Heartbeat renewal now runs against
