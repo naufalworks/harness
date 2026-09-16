@@ -535,6 +535,60 @@ impl MemoryAgents {
         }
         Ok(())
     }
+    /// P18-T03: record the provider call as an external effect before dispatch and settle it
+    /// after. The step identity is the durable spend reservation id, which exists before the
+    /// request leaves the process, and the digest is over the exact payload sent. Deduplicating a
+    /// *stolen* turn additionally needs the lease's own step identity, which P18-T04 adds; what is
+    /// enforced today is that an attempt is durable before it happens and settled once after.
+    async fn reserve_effect(
+        &self,
+        reservation: Option<&String>,
+        request: &Value,
+    ) -> Result<Option<String>> {
+        let (Some(store), Some(call_id)) = (&self.spend_store, reservation) else {
+            return Ok(None);
+        };
+        let Ok(request_id) = SPEND_REQUEST_ID.try_with(Clone::clone) else {
+            return Ok(None);
+        };
+        store
+            .reserve_external_effect(
+                request_id,
+                call_id.clone(),
+                safety::fingerprint(&request.to_string()),
+                "provider_call".into(),
+                crate::storage::SINGLE_WORKER_FENCE,
+            )
+            .await
+    }
+    /// `dispatched` is whether the provider actually received the request. A request that never
+    /// left may still have been received and billed, so it settles as `unknown` rather than as a
+    /// failure; one that was answered unusably still happened, so it settles as succeeded with the
+    /// error as its reason. Inventing "it did not happen" is the failure mode being avoided.
+    async fn settle_effect(
+        &self,
+        effect: Option<String>,
+        dispatched: bool,
+        error: Option<&str>,
+    ) -> Result<()> {
+        let (Some(store), Some(effect_id)) = (&self.spend_store, effect) else {
+            return Ok(());
+        };
+        let (outcome, reason) = match (dispatched, error) {
+            (_, None) => (crate::storage::EffectOutcome::Succeeded, None),
+            (true, Some(error)) => (
+                crate::storage::EffectOutcome::Succeeded,
+                Some(error.to_string()),
+            ),
+            (false, Some(error)) => (
+                crate::storage::EffectOutcome::Unknown,
+                Some(error.to_string()),
+            ),
+        };
+        store
+            .settle_external_effect(effect_id, outcome, None, reason)
+            .await
+    }
     async fn response_json(&self, mut response: reqwest::Response) -> Result<Value> {
         let status = response.status();
         let mut bytes = Vec::new();
@@ -736,6 +790,9 @@ impl MemoryAgents {
         self.guard_breaker()?;
         let reservation = self.reserve_spend(kind, model).await?;
         let request = completion_request(model, messages, tools);
+        let effect = self.reserve_effect(reservation.as_ref(), &request).await?;
+        let dispatched = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = Arc::clone(&dispatched);
         let response_result: Result<ModelTurn> = async {
             let response = self
                 .http
@@ -745,6 +802,7 @@ impl MemoryAgents {
                 .json(&request)
                 .send()
                 .await?;
+            observed.store(true, std::sync::atomic::Ordering::SeqCst);
             self.observe_retry_after(response.headers());
             let body: Completion = serde_json::from_value(self.response_json(response).await?)
                 .context("invalid completion shape")?;
@@ -765,6 +823,12 @@ impl MemoryAgents {
             .err()
             .map(|error| safety::redact(&error.to_string()));
         self.record_health(&response_result);
+        self.settle_effect(
+            effect,
+            dispatched.load(std::sync::atomic::Ordering::SeqCst),
+            error.as_deref(),
+        )
+        .await?;
         self.finish_spend(reservation, usage, error).await?;
         response_result
     }
@@ -780,8 +844,11 @@ impl MemoryAgents {
         }
         self.guard_breaker()?;
         let reservation = self.reserve_spend("model_call", model).await?;
+        let request = completion_stream_request(model, messages);
+        let effect = self.reserve_effect(reservation.as_ref(), &request).await?;
+        let dispatched = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = Arc::clone(&dispatched);
         let result: Result<()> = async {
-            let request = completion_stream_request(model, messages);
             let response = self
                 .http
                 .post(format!("{}/chat/completions", self.base_url))
@@ -790,6 +857,7 @@ impl MemoryAgents {
                 .json(&request)
                 .send()
                 .await?;
+            observed.store(true, std::sync::atomic::Ordering::SeqCst);
             self.observe_retry_after(response.headers());
             if !response
                 .headers()
@@ -825,6 +893,12 @@ impl MemoryAgents {
             .err()
             .map(|error| safety::redact(&error.to_string()));
         self.record_health(&result);
+        self.settle_effect(
+            effect,
+            dispatched.load(std::sync::atomic::Ordering::SeqCst),
+            error.as_deref(),
+        )
+        .await?;
         self.finish_spend(reservation, usage, error).await?;
         result
     }

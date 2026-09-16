@@ -102,6 +102,7 @@ pub struct Job {
 // caller path changes with the file move.
 mod causal_coverage;
 mod config;
+mod effects;
 mod history;
 mod incident_compare;
 mod jobs;
@@ -110,6 +111,7 @@ mod provenance;
 mod provider;
 mod turns;
 pub use causal_coverage::{DeploymentAnomalies, MAX_COVERAGE_REQUESTS};
+pub use effects::{EffectOutcome, SINGLE_WORKER_FENCE};
 pub use incident_compare::MAX_COMPARED_RUNS;
 #[allow(unused_imports)]
 pub use provenance::{IncidentQuery, PROVENANCE_NODE_KINDS, PROVENANCE_RELATIONS};
@@ -138,7 +140,7 @@ impl DbStore {
                     "legacy or unknown database: use scripts/migrate_legacy.py into a NEW database"
                 );
             }
-        } else if !(1..=17).contains(&version) {
+        } else if !(1..=18).contains(&version) {
             bail!("unsupported schema version {version}");
         }
         conn.execute_batch(
@@ -195,8 +197,18 @@ impl DbStore {
         if version < 17 {
             conn.execute_batch(include_str!("../migrations/017_worker_leases.sql"))?;
         }
+        if version < 18 {
+            conn.execute_batch(include_str!("../migrations/018_external_effects.sql"))?;
+        }
         conn.execute(
             "UPDATE provider_calls SET state='failed',usage_status='unavailable',reason='process_restarted_with_call_reserved',finished_at=?1 WHERE state='reserved'",
+            [Utc::now().to_rfc3339()],
+        )?;
+        // P18-T03: a still-reserved external effect means the process died between recording the
+        // attempt and learning its outcome. That outcome is genuinely unknown, so it is recorded
+        // as unknown for a human to decide rather than assumed failed and silently retried.
+        conn.execute(
+            "UPDATE external_effects SET state='unknown',reason='process_restarted_with_effect_reserved',settled_at=?1 WHERE state='reserved'",
             [Utc::now().to_rfc3339()],
         )?;
         let foreign_key_errors: i64 =
@@ -309,7 +321,7 @@ impl DbStore {
             let last_checkpoint:Option<String>=c.query_row("SELECT finished_at FROM maintenance_runs WHERE action='wal_checkpoint' ORDER BY id DESC LIMIT 1",[],|r|r.get(0)).optional()?;
             let last_retention:Option<String>=c.query_row("SELECT finished_at FROM maintenance_runs WHERE action='retention' ORDER BY id DESC LIMIT 1",[],|r|r.get(0)).optional()?;
             let last_compaction:Option<String>=c.query_row("SELECT finished_at FROM maintenance_runs WHERE action='compaction' ORDER BY id DESC LIMIT 1",[],|r|r.get(0)).optional()?;
-            Ok(json!({"ready":schema_version==17&&quick_check=="ok","schema_version":schema_version,
+            Ok(json!({"ready":schema_version==18&&quick_check=="ok","schema_version":schema_version,
                 "quick_check":quick_check,"queue":{"jobs_pending":pending_jobs,"jobs_running":running_jobs,
                 "jobs_failed":failed_jobs,"turns_waiting":waiting_turns,"turns_running":running_turns},
                 "maintenance":{"journal_mode":journal_mode,"last_wal_checkpoint_at":last_checkpoint,
@@ -379,6 +391,133 @@ mod tests {
             .unwrap()
     }
 
+    /// P18-T03: `provider_calls` records what a call cost; this records whether it may have
+    /// happened, which is the question a restarted or stolen turn has to ask before retrying.
+    /// The row is written before dispatch, settled once, and swept to `unknown` by init when the
+    /// process died mid-flight -- the one outcome that owes a human a decision.
+    #[tokio::test]
+    async fn external_effects_are_recorded_before_dispatch_and_swept_to_unknown_on_restart() {
+        let dir = std::env::temp_dir().join(format!("harness-effects-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("harness.db").to_string_lossy().to_string();
+        let db = DbStore::init(&path).unwrap();
+        db.run(|c| {
+            c.execute(
+                "INSERT INTO sessions(id,scope,created_at) VALUES('s1','proj',?1)",
+                params![now()],
+            )?;
+            c.execute(
+                "INSERT INTO messages(id,session_id,role,content,status,created_at) VALUES('r1','s1','user','hi','complete',?1)",
+                params![now()],
+            )?;
+            c.execute(
+                "INSERT INTO chat_receipts(request_id,session_id,scope,model,signature,redacted,state,captured_at,updated_at) VALUES('r1','s1','proj','m','sig',0,'generating',?1,?1)",
+                params![now()],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+        // An effect outside a recorded turn is left unrecorded, not refused: the row references
+        // `chat_receipts`, and failing the insert would turn a bookkeeping gap into a refused call.
+        assert!(db
+            .reserve_external_effect(
+                "not-a-recorded-turn".into(),
+                "call-0".into(),
+                "d".repeat(64),
+                "provider_call".into(),
+                SINGLE_WORKER_FENCE,
+            )
+            .await
+            .unwrap()
+            .is_none());
+
+        let effect = db
+            .reserve_external_effect(
+                "r1".into(),
+                "call-1".into(),
+                "a".repeat(64),
+                "provider_call".into(),
+                SINGLE_WORKER_FENCE,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            count(
+                &db,
+                "SELECT count(*) FROM external_effects WHERE state='reserved'"
+            )
+            .await,
+            1
+        );
+        // The same identity a second time is exactly the duplicate this table exists to prevent.
+        assert!(db
+            .reserve_external_effect(
+                "r1".into(),
+                "call-1".into(),
+                "a".repeat(64),
+                "provider_call".into(),
+                SINGLE_WORKER_FENCE,
+            )
+            .await
+            .is_err());
+
+        let stranded = db
+            .reserve_external_effect(
+                "r1".into(),
+                "call-2".into(),
+                "b".repeat(64),
+                "provider_call".into(),
+                SINGLE_WORKER_FENCE,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        db.settle_external_effect(
+            effect.clone(),
+            EffectOutcome::Succeeded,
+            Some("response-1".into()),
+            None,
+        )
+        .await
+        .unwrap();
+        // An outcome is recorded once; a later writer cannot rewrite it.
+        assert!(db
+            .settle_external_effect(effect, EffectOutcome::Failed, None, Some("second".into()))
+            .await
+            .is_err());
+        // `unknown` with no reason is an alarm with nothing for a human to act on.
+        assert!(db
+            .settle_external_effect(stranded.clone(), EffectOutcome::Unknown, None, None)
+            .await
+            .is_err());
+        drop(db);
+
+        let reopened = DbStore::init(&path).unwrap();
+        let looked_up = stranded.clone();
+        let swept: (String, Option<String>) = reopened
+            .read(move |c| {
+                Ok(c.query_row(
+                    "SELECT state,reason FROM external_effects WHERE effect_id=?1",
+                    params![looked_up],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )?)
+            })
+            .await
+            .unwrap();
+        assert_eq!(swept.0, "unknown");
+        assert_eq!(
+            swept.1.as_deref(),
+            Some("process_restarted_with_effect_reserved")
+        );
+        let owed = reopened.unknown_external_effects(10).await.unwrap();
+        assert_eq!(owed.len(), 1);
+        assert_eq!(owed[0]["effect_id"], json!(stranded));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// P11-T04's readiness projection is what an operator actually reads, and now that the
     /// duplicate Rust retention surface is retired, `scripts/maintenance.py` is the only writer
     /// of `maintenance_runs`. This proves the projection reports, per action, what that writer
@@ -389,7 +528,7 @@ mod tests {
         let db = DbStore::init(":memory:").unwrap();
         seed_retention_fixture(&db).await;
         let readiness = db.readiness().await.unwrap();
-        assert_eq!(readiness["schema_version"], 17);
+        assert_eq!(readiness["schema_version"], 18);
         assert_eq!(readiness["ready"], true);
         assert!(
             readiness["maintenance"]["last_retention_at"].is_null(),

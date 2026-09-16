@@ -1,5 +1,65 @@
 # PROGRESS — journal
 
+## 2026-09-16T06:10:00Z · P18-T03 — provider calls now reserve and settle a durable effect record
+
+The schema landed this morning with no Rust code writing to it, which is a table, not a guarantee.
+This wires the first real call sites: both `complete_turn` and `stream_turn` in
+`src/memory_agents.rs` now reserve an `external_effects` row *before* the request is dispatched and
+settle it afterwards. Migration 018 is in the chain, so the schema version moved 17 → 18 across the
+guard, the readiness gate, and the assertions in `src/storage.rs` and `src/main.rs`.
+
+The step identity is the durable spend reservation id and the payload digest is
+`safety::fingerprint` over the exact JSON body sent, so the recorded identity is the thing that was
+actually attempted rather than a reconstruction of it. The request payload is now built *before*
+`reserve_spend` in both paths, because a digest taken after dispatch could not have been written
+before it.
+
+Three judgements worth writing down, because each one could have been made dishonestly:
+
+An error before the provider acknowledged the request settles `unknown`, not `failed`. A send that
+returns an error may still have arrived and been billed; only an acknowledged response proves the
+call happened, and nothing proves it did not. Calling that `failed` would be the exact
+assume-it-did-not-happen bug Decision 4 was recorded to prevent. A response that arrived but could
+not be parsed settles `succeeded` with the error as its reason — it happened, it just was not
+usable.
+
+An effect that cannot be attributed to a recorded turn is left unrecorded rather than refused.
+`external_effects.request_id` references `chat_receipts`, so inserting a row for an unrecorded
+request would fail the foreign key and turn a bookkeeping gap into a refused provider call.
+`reserve_external_effect` returns `None` in that case and the dispatch proceeds unrecorded. That is
+a real hole, and it is named below rather than papered over.
+
+`EffectOutcome::Failed` and `unknown_external_effects` are annotated `#[allow(dead_code)]` with
+reasons rather than given fake call sites to satisfy `-D warnings`. No call site can yet *prove* an
+effect never left the process — that needs P18-T04's fence refusal — and the surface that shows a
+human the unknown rows is P18-T05. Both are exercised by the storage test today.
+
+The fence is written as the constant `SINGLE_WORKER_FENCE = 1`. Worker count is still pinned at one
+and no lease is acquired in code, so there is no real fence to record; the constant is documented as
+the placeholder P18-T04 replaces. The idempotency key deliberately excludes the fence, so a steal
+that raises the fence still collides on the same key instead of sailing past uniqueness into a
+second paid call.
+
+Verification, all on the wired tree: `cargo fmt --check` clean; `cargo clippy --all-targets
+--all-features -- -D warnings` clean; `cargo test --locked` — **329 passed, 0 failed** (up from 328,
+the new test being the effect-record one); `python3 tests/test_migrations.py` — `001 -> ... -> 018,
+user_version=18, data/FTS/FKs preserved`. `python3 scripts/check_docs.py` reported one failing
+check, `deployment: live 072f7dd trails HEAD and code differs`, which is the freshness gate and is
+expected to clear on the deploy that follows this commit.
+
+The new Rust test is file-backed rather than in-memory because half of what it proves is the restart
+sweep: it closes the store and reopens it through `DbStore::init` to show a still-`reserved` row
+becoming `unknown` with reason `process_restarted_with_effect_reserved`. It also proves a duplicate
+identity is refused, an outcome is recorded once, a reason-less `unknown` is refused, and an effect
+outside a recorded turn is skipped rather than failing.
+
+P18-T03 stays `doing`. Its `done-when` says *every* non-replayable external effect, and only
+provider calls are wired. What is still owed: enumerating the other candidate effects (outbox
+delivery, file writes, export packets, notifications) and classifying each as provider-idempotent or
+once-only; closing the unattributed-turn hole so a provider call outside a recorded turn is either
+recorded or deliberately exempt; and the fence becoming a real lease value under P18-T04. Marking
+this `done` today would mean claiming a guarantee that holds for one call site.
+
 ## 2026-09-16T05:40:00Z · P18-T03 — external-effect record schema landed, task still `doing`
 
 Opened P18-T03, P18-T04 and P18-T05 and set P18-T03 to `doing`. The reason these tasks exist at

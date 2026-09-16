@@ -1217,9 +1217,16 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - parallel: no
 - depends: P18-T01
 - design: docs/design/leased-multi-worker.md
-- files: migrations/018_external_effects.sql, tests/test_migrations.py, docs/design/leased-multi-worker.md, docs/ARCHITECTURE.md
+- files: migrations/018_external_effects.sql, src/storage/effects.rs, src/storage.rs, src/memory_agents.rs, src/main.rs, tests/test_migrations.py, docs/design/leased-multi-worker.md, docs/ARCHITECTURE.md
 - done-when: every non-replayable external effect is recorded before it is attempted and settled after, keyed by the fence-independent idempotency key named in the design; an effect whose outcome is unknown is durably `unknown` and never auto-retried; a restart sweep records unknown rather than replaying; and the schema refuses a second attempt under the same key from a different fence.
-- verify: cargo test --locked recovery && python3 tests/test_migrations.py
+- verify: cargo test --locked && python3 tests/test_migrations.py
+- note (2026-09-16, Rust half wired): `reserve_external_effect`/`settle_external_effect` land in
+  `src/storage/effects.rs` and both provider dispatch paths in `src/memory_agents.rs` now reserve
+  before dispatch and settle after; migration 018 joined the chain and schema version moved to 18.
+  Kept `doing` because `done-when` says *every* non-replayable effect and only provider calls are
+  wired: the other candidate effects are not yet enumerated or classified, a provider call outside a
+  recorded turn is skipped rather than recorded (the row references `chat_receipts`), and the fence
+  is still the documented `SINGLE_WORKER_FENCE = 1` placeholder until P18-T04 supplies a lease.
 - note (2026-09-16, opened from the Decision 4 record): P18-T01 closed on an approved design only, so the
   no-duplicate-side-effect semantics it defines have no implementation and no task. This is that task.
   It is sequenced before the contention measurement because the "steal after death with no duplicate
