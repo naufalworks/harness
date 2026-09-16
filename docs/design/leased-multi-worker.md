@@ -199,10 +199,36 @@ effect, and cancellation reaching a worker that no longer holds the lease.
 2. ~~**Is multi-worker actually wanted now?**~~ — **decided: yes**, "many writers or soon".
 3. **Lease TTL and heartbeat interval.** Defaults stand (30s TTL, heartbeat well inside it) unless
    changed; these are cheap to tune once real contention numbers exist.
-4. **Behavior for an unknown-outcome external effect.** Still open. The proposal is to surface it
-   for human decision rather than retry, consistent with this project's refusal to invent evidence.
-   Defaulting to retry would risk duplicating a paid provider call or a delivered webhook, so the
-   proposal stands until the owner says otherwise.
+4. ~~**Behavior for an unknown-outcome external effect.**~~ — **decided: surface for human decision
+   now; selective auto-retry later, on evidence.** An effect whose outcome is genuinely unknown is
+   recorded as `unknown` and surfaced, never optimistically retried. Three things make this the only
+   currently implementable answer rather than a preference:
+
+   - **The idempotency key of line 121 does not exist yet.** No code stores or consults one, so
+     "retry" today would mean re-issuing with nothing to deduplicate against — it would duplicate by
+     construction, not by accident.
+   - **The codebase already enforces this split.** Spend-bearing work does not retry on unknown:
+     `src/storage/provider.rs` reserves a `provider_calls` row before the call and settles it after,
+     and `src/storage.rs` sweeps every still-`reserved` row on restart to `failed` /
+     `usage_status='unavailable'` with reason `process_restarted_with_call_reserved`. Replayable
+     internal work does retry: `jobs` carries `attempts`, backs off `30s x attempts` to three tries,
+     then parks at `failed` awaiting an explicit `retry_job`. Blanket auto-retry would contradict the
+     provider path; this decision generalizes it.
+   - **Surfacing has an implementation home; retry does not.** `permission_requests`
+     (`migrations/003_*`) is already the durable stop-and-ask channel.
+
+   The cost is throughput, not correctness, and it is bounded: `recording_outbox` is already
+   at-least-once with idempotent consumers, so outbox delivery never parks. Only genuinely
+   non-replayable effects — paid provider calls, delivered webhooks, external file writes — can.
+
+   **Intended end state (not yet authorized to ship):** classify effects by replay safety and
+   auto-retry only those carrying an idempotency key the receiving provider demonstrably honors,
+   surfacing everything else. Revisiting this requires evidence per effect type — which providers
+   honor the key, whether a webhook receiver dedupes — not a re-argument from first principles.
+
+   **Ordering consequence.** The effect record is a prerequisite for the
+   steal-with-no-duplicate-external-effect test listed above, so it precedes that test and arguably
+   precedes the contention measurement, which does not depend on it.
 
 ## Deferred
 
