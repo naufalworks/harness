@@ -128,6 +128,21 @@ file, a provider call that costs money, a delivered webhook).
 - **`recording_outbox` is at-least-once, so consumers must be idempotent.** Leases do not upgrade it
   to exactly-once, and the design should not pretend otherwise.
 
+**Built (P18-T03, migration 018).** `external_effects` holds this contract in the schema rather than
+in convention: one row per effect, reserved before the attempt and settled after, with
+`(request_id, step_identity, payload_digest)` as a UNIQUE `idempotency_key`. The fence is stored for
+attribution only and is deliberately absent from the key, for the reason above. CHECKs make
+in-flight and settled mutually exclusive in both directions and force an `unknown` outcome to carry
+a reason; triggers refuse a second outcome, an edit to the effect's identity, and deletion. A
+proposed `no_rereserve` trigger was dropped after mutation testing showed `settle_once` already
+refused the write, making it decoration rather than protection.
+
+**Still owed by P18-T03.** No code writes to the table yet: the reserve/settle call sites in the
+provider and tool paths, a restart sweep that moves still-reserved effects to `unknown` alongside
+the existing `provider_calls` sweep, and the surfacing hop into `permission_requests` (which exists
+as a table but is not yet a verified end-to-end ask-a-human path). Until those land, this section
+describes an enforceable record, not an enforced one.
+
 ## Interaction with the existing process lock
 
 This is the sharpest open conflict. `process_lock.rs` grants one process exclusive ownership of the

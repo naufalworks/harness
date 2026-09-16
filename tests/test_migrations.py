@@ -12,7 +12,7 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MIG = ROOT / "migrations"
-CHAIN = ["001_core.sql", "002_recording.sql", "003_agentic.sql", "004_memory_kinds.sql", "005_generation_stream.sql", "006_provenance_edges.sql", "007_privacy_archive.sql", "008_provider_spend.sql", "009_run_cancellation.sql", "010_retention_maintenance.sql", "011_retrieval_receipts.sql", "012_memory_governance.sql", "013_session_workflows.sql", "014_history_search.sql", "015_causal_coverage.sql", "016_run_capsules.sql", "017_worker_leases.sql"]
+CHAIN = ["001_core.sql", "002_recording.sql", "003_agentic.sql", "004_memory_kinds.sql", "005_generation_stream.sql", "006_provenance_edges.sql", "007_privacy_archive.sql", "008_provider_spend.sql", "009_run_cancellation.sql", "010_retention_maintenance.sql", "011_retrieval_receipts.sql", "012_memory_governance.sql", "013_session_workflows.sql", "014_history_search.sql", "015_causal_coverage.sql", "016_run_capsules.sql", "017_worker_leases.sql", "018_external_effects.sql"]
 VERSIONS = [name.split("_", 1)[0] for name in CHAIN]
 LATEST_VERSION = int(VERSIONS[-1])
 OPEN_CONNECTIONS = []
@@ -35,6 +35,7 @@ EXPECTED_TABLES = {
     15: {"deployment_events", "incident_reviews"},
     16: {"run_capsules"},
     17: {"worker_leases"},
+    18: {"external_effects"},
 }
 
 
@@ -636,6 +637,136 @@ def test_014_history_search_constraints():
         raise AssertionError("an unknown import outcome was accepted")
 
 
+def effects_fixture():
+    """A chain-applied database with two real turns to hang effects off."""
+    c = fresh()
+    apply(c, len(CHAIN))
+    now = "2026-01-01T00:00:00Z"
+    c.execute("INSERT INTO sessions(id,scope,created_at) VALUES('s1','global',?)", (now,))
+    for request in ("req", "req2"):
+        c.execute("INSERT INTO messages(id,session_id,role,content,status,created_at) VALUES(?,'s1','user','task','pending',?)", (request, now))
+        c.execute("INSERT INTO chat_receipts(request_id,session_id,scope,model,signature,redacted,state,captured_at,updated_at) VALUES(?,'s1','global','m','sig',0,'captured',?,?)", (request, now, now))
+    return c
+
+
+EFFECT_INSERT = (
+    "INSERT INTO external_effects(effect_id,request_id,step_identity,payload_digest,idempotency_key,"
+    "kind,fence,state,outcome_ref,reason,attempted_at,settled_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)"
+)
+
+
+def test_018_external_effect_constraints():
+    """P18-T03. Decision 4 says an unknown-outcome external effect is surfaced and never
+    optimistically retried. That is only a guarantee if the database holds it.
+
+    The load-bearing property is that the idempotency key excludes the fence. A steal raises
+    the fence, so a fence-bearing key would be a *different* key for the same logical effect
+    and the second holder would sail past uniqueness straight into a duplicate paid call. The
+    fence is recorded because it explains who attempted the effect; it does not identify it.
+    """
+    c = effects_fixture()
+    now = "2026-01-01T00:00:00Z"
+    later = "2026-01-01T00:00:30Z"
+    digest = "a" * 64
+    other_digest = "b" * 64
+    key = "req|step-1|" + digest
+    c.execute(EFFECT_INSERT, ("e1", "req", "step-1", digest, key, "provider_call", 5, "reserved", None, None, now, None))
+
+    refused = [
+        # The steal case, and the whole reason this table exists: a new holder with a higher
+        # fence re-attempting the same logical effect must collide, not spend money twice.
+        (EFFECT_INSERT, ("e2", "req", "step-1", digest, key, "provider_call", 6, "reserved", None, None, now, None)),
+        # In flight and settled are mutually exclusive, in both directions.
+        (EFFECT_INSERT, ("e3", "req2", "step-1", digest, "k-reserved-settled", "webhook", 1, "reserved", None, None, now, later)),
+        (EFFECT_INSERT, ("e4", "req2", "step-1", digest, "k-settled-open", "webhook", 1, "succeeded", None, None, now, None)),
+        # An unknown outcome is the one state a human must act on, so it must say why.
+        (EFFECT_INSERT, ("e5", "req2", "step-1", digest, "k-unknown-mute", "webhook", 1, "unknown", None, None, now, later)),
+        # An effect cannot settle before it was attempted.
+        (EFFECT_INSERT, ("e6", "req2", "step-1", digest, "k-backwards", "webhook", 1, "failed", None, None, later, now)),
+        # Vocabulary the recovery path does not understand would make it guess.
+        (EFFECT_INSERT, ("e7", "req2", "step-1", digest, "k-kind", "telepathy", 1, "reserved", None, None, now, None)),
+        (EFFECT_INSERT, ("e8", "req2", "step-1", digest, "k-state", "webhook", 1, "probably", None, None, now, None)),
+        # A digest that is not a SHA-256 cannot identify a payload.
+        (EFFECT_INSERT, ("e9", "req2", "step-1", "short", "k-digest", "webhook", 1, "reserved", None, None, now, None)),
+        # A fence is a positive, database-issued integer.
+        (EFFECT_INSERT, ("e10", "req2", "step-1", digest, "k-fence", "webhook", 0, "reserved", None, None, now, None)),
+        # An effect cannot belong to a turn that was never recorded.
+        (EFFECT_INSERT, ("e11", "ghost", "step-1", digest, "k-ghost", "webhook", 1, "reserved", None, None, now, None)),
+        # Evidence of money spent or messages delivered is not deletable.
+        ("DELETE FROM external_effects WHERE effect_id='e1'", ()),
+    ]
+    for statement, values in refused:
+        try:
+            c.execute(statement, values)
+        except sqlite3.DatabaseError:
+            continue
+        raise AssertionError(f"external effect constraint was not enforced: {statement}")
+
+    # A genuinely different payload is a different effect and is allowed: the table must not
+    # collapse every effect of a step into one row.
+    c.execute(EFFECT_INSERT, ("e12", "req", "step-1", other_digest, "req|step-1|" + other_digest, "provider_call", 5, "reserved", None, None, now, None))
+
+    # The restart sweep: still-reserved work becomes unknown with a reason, which is the
+    # surfacing path, not a retry.
+    c.execute(
+        "UPDATE external_effects SET state='unknown',reason='process_restarted_with_effect_reserved',settled_at=? WHERE state='reserved'",
+        (later,),
+    )
+    assert c.execute("SELECT count(*) FROM external_effects WHERE state='reserved'").fetchone()[0] == 0
+
+    after_settle = [
+        # "It failed, try again" must not be rewritable into "it never happened".
+        ("UPDATE external_effects SET state='reserved',settled_at=NULL WHERE effect_id='e1'", ()),
+        ("UPDATE external_effects SET state='succeeded' WHERE effect_id='e1'", ()),
+        # Editing the identity would let a duplicate call look like a distinct effect.
+        ("UPDATE external_effects SET idempotency_key='k-laundered' WHERE effect_id='e1'", ()),
+        ("UPDATE external_effects SET payload_digest=? WHERE effect_id='e1'", (other_digest,)),
+        ("UPDATE external_effects SET request_id='req2' WHERE effect_id='e1'", ()),
+    ]
+    for statement, values in after_settle:
+        try:
+            c.execute(statement, values)
+        except sqlite3.DatabaseError:
+            continue
+        raise AssertionError(f"a settled external effect was mutated: {statement}")
+
+    # Recording the provider's own reference for an already-unknown effect is the one useful
+    # update left, and it must still work or a human has nothing to reconcile against.
+    c.execute("UPDATE external_effects SET outcome_ref='provider-call-77' WHERE effect_id='e1'")
+    assert c.execute("SELECT outcome_ref,state FROM external_effects WHERE effect_id='e1'").fetchone() == ("provider-call-77", "unknown")
+    assert c.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_018_triggers_are_load_bearing():
+    """Each guard is mutation-tested: drop it and the write it forbids must then succeed.
+
+    Without this, a trigger that never fires because a CHECK or a foreign key caught the case
+    first would look like a passing assertion while guarding nothing.
+    """
+    now = "2026-01-01T00:00:00Z"
+    later = "2026-01-01T00:00:30Z"
+    digest = "a" * 64
+    cases = [
+        ("external_effects_settle_once", "UPDATE external_effects SET state='succeeded' WHERE effect_id='e1'"),
+        ("external_effects_key_immutable", "UPDATE external_effects SET idempotency_key='k-laundered' WHERE effect_id='e1'"),
+        ("external_effects_no_delete", "DELETE FROM external_effects WHERE effect_id='e1'"),
+    ]
+    for trigger, statement in cases:
+        c = effects_fixture()
+        c.execute(EFFECT_INSERT, ("e1", "req", "step-1", digest, "k1", "provider_call", 5, "reserved", None, None, now, None))
+        c.execute("UPDATE external_effects SET state='failed',reason='provider refused',settled_at=? WHERE effect_id='e1'", (later,))
+        try:
+            c.execute(statement)
+        except sqlite3.DatabaseError:
+            pass
+        else:
+            raise AssertionError(f"{trigger} did not refuse: {statement}")
+        c.execute(f"DROP TRIGGER {trigger}")
+        try:
+            c.execute(statement)
+        except sqlite3.DatabaseError as exc:
+            raise AssertionError(f"{trigger} was not the constraint under test: {exc}")
+
 def main():
     try:
         check_fts5()
@@ -652,6 +783,8 @@ def main():
         test_015_causal_coverage_constraints()
         test_016_run_capsule_constraints()
         test_017_worker_lease_constraints()
+        test_018_external_effect_constraints()
+        test_018_triggers_are_load_bearing()
         print(
             f"migrations OK: {' -> '.join(VERSIONS)}, "
             f"user_version={LATEST_VERSION}, data/FTS/FKs preserved"

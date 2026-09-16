@@ -1,5 +1,53 @@
 # PROGRESS — journal
 
+## 2026-09-16T05:40:00Z · P18-T03 — external-effect record schema landed, task still `doing`
+
+Opened P18-T03, P18-T04 and P18-T05 and set P18-T03 to `doing`. The reason these tasks exist at
+all: P18-T01's `done-when` asked only for an approved design, and it is `done`, so the
+no-duplicate-side-effect semantics that design defines had no implementation and no owner. Decision
+4 was recorded in the design earlier today as surface-now / selective-retry-later; recording a
+decision is not enforcing it, and nothing in the database could tell a restarted worker that an
+effect had already been attempted.
+
+Sequencing was reordered deliberately, with the owner's agreement: the effect record comes before
+the SQLite write-contention measurement, because the "steal after death with no duplicate external
+effect" failure-mode test cannot be written until there is a record to assert against, while the
+contention measurement depends on neither.
+
+`migrations/018_external_effects.sql` adds `external_effects` at user_version 18: reserve before the
+call, settle after, with `(request_id, step_identity, payload_digest)` as a UNIQUE
+`idempotency_key`. The load-bearing property is that the key excludes the fence. A steal raises the
+fence, so a fence-bearing key would be a different key for the same logical effect and the new
+holder would pass uniqueness straight into a duplicate paid call. The fence is recorded because it
+explains which holder attempted an effect; it does not identify the effect. CHECKs make in-flight
+and settled mutually exclusive in both directions and force an `unknown` outcome to carry a reason,
+since `unknown` is the one state a human has to act on. Three triggers refuse a second outcome for a
+settled effect, an edit to the effect's identity, and deletion of the row.
+
+One trigger was removed rather than shipped. A separate `no_rereserve` guard looked reasonable, but
+mutation testing showed that dropping it left the write still refused: `settle_once` already covers
+a settled row moving back to `reserved`. It was decoration, not protection, so it is gone and the
+migration records why. Every remaining trigger is mutation-tested by dropping it and asserting the
+write it guards then succeeds.
+
+Verification, exactly as run: `python3 tests/test_migrations.py` applied 001 -> 018 with
+user_version=18 and data, FTS and foreign keys preserved, including the new
+`test_018_external_effect_constraints` (eleven refusal cases, the restart sweep to `unknown`, and
+five post-settle mutation attempts) and `test_018_triggers_are_load_bearing`. `cargo test --locked
+recovery`, this task's declared verify command, passed its single matching test
+(`cancellation_recovery_finishes_intent_once_without_reclaiming_work`); 327 tests were filtered out
+by that name filter, so this is not a full-suite claim. `scripts/check_docs.py` reported 0 failing
+checks.
+
+The task stays `doing`, not `done`, and this is the honest part: its `done-when` requires that every
+non-replayable effect actually be recorded before it is attempted, and no Rust code writes to this
+table yet. The schema is the enforceable half, landed first for the same reason fencing was landed
+before concurrency — a guarantee added after the fact was absent for everything that already ran.
+Still owed by P18-T03: the reserve/settle call sites in the provider and tool paths, a restart sweep
+in `src/storage.rs` alongside the existing `provider_calls` sweep, and the surfacing hop into
+`permission_requests`. No second worker is enabled, no worker identity exists, and nothing was
+deployed; live production still serves 072f7dd.
+
 ## 2026-09-15T19:28:00Z · P16-T03 — generated coverage metrics untracked, deployed
 
 Autonomous maintenance fix, chosen over the three remaining `todo` tasks. P18-T01, P18-T02 and

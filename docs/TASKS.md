@@ -1209,3 +1209,40 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - verify: bash scripts/verify_release.sh
 - result: Added a digest-pinned extension contract covering provider adapters, tool plugins and benchmark packs. A manifest declares schema, id, version, kind, capabilities, requested host tools, permission mode and payload files; benchmarks/pinned.json records the SHA-256 of the exact reviewed manifest bytes. Admission is fail-closed and returns the first refusal with a stable code, refusing unsupported schema, malformed id or version, unpinned extensions, bytes that drift from the pin, empty or unlisted capabilities, host tools the live registry does not offer, a permission mode wider than the host session, any network grant, payload paths that escape the repository or carry malformed digests, and benchmark packs whose audience review is missing, incomplete or attests a different payload set. Reviews attest the payload set rather than the manifest digest, since a review stored in a manifest cannot attest the bytes containing it. Shipped one benchmark pack pinning the existing strict-replay and remote-runner fixtures, reusing those bytes in place rather than copying them. Enforcement is split deliberately: scripts/check_extensions.py validates the checked-in corpus and parses the capability allowlist and schema string out of the Rust source so the two cannot drift, while host tool admission is asserted only in Rust against the real tool registry because a Python copy of the tool list would rot. Portable continuation packets were already delivered by the export/import packet surface on main and are pinned here only as a declarable capability, not reimplemented. The module is contract plus tests; no runtime loader calls it yet, so it carries a narrow documented allow for the binary-crate dead-code lint, matching the existing pattern in src/tools/mod.rs.
 - result-verify: Sixteen extension tests passed, covering admission of a pinned bounded pack and of a provider adapter without a review, plus every refusal lane including a manifest edited after pinning, a payload swapped beneath an intact review, a tool absent from the registry, a widened permission mode, a network grant, a path escaping the repository and malformed JSON. Two cross-module drift tests assert the permission-mode names against the real tools registry and the pin-ledger kind vocabulary against the checked-in ledger. The offline extension checker passed. The full Rust suite, strict all-feature Clippy, formatting, the real browser-to-Rust-to-SQLite E2E and documentation-claims lanes all passed. No provider, network or cloud call was made and no infrastructure changed.
+
+### P18-T03 · Record external effects durably with an idempotency key
+- status: doing
+- priority: low
+- lane: scale
+- parallel: no
+- depends: P18-T01
+- design: docs/design/leased-multi-worker.md
+- files: migrations/018_external_effects.sql, tests/test_migrations.py, docs/design/leased-multi-worker.md, docs/ARCHITECTURE.md
+- done-when: every non-replayable external effect is recorded before it is attempted and settled after, keyed by the fence-independent idempotency key named in the design; an effect whose outcome is unknown is durably `unknown` and never auto-retried; a restart sweep records unknown rather than replaying; and the schema refuses a second attempt under the same key from a different fence.
+- verify: cargo test --locked recovery && python3 tests/test_migrations.py
+- note (2026-09-16, opened from the Decision 4 record): P18-T01 closed on an approved design only, so the
+  no-duplicate-side-effect semantics it defines have no implementation and no task. This is that task.
+  It is sequenced before the contention measurement because the "steal after death with no duplicate
+  external effect" failure-mode test cannot be written until the effect record exists.
+
+### P18-T04 · Carry and verify the fence on every durable turn write
+- status: todo
+- priority: low
+- lane: scale
+- parallel: no
+- depends: P18-T03
+- design: docs/design/leased-multi-worker.md
+- files: src/recording.rs, src/recording_sql.rs, src/storage.rs, tests/fault_injection.py
+- done-when: every durable turn write carries its lease fence and is refused in the same transaction when the fence is stale; and the five lease failure modes are tested — heartbeat renewal under contention, expiry-then-resume refused on fence, steal after death with no duplicate external effect, cancellation at a non-holder, and clock skew via database-issued times.
+- verify: cargo test --locked recovery && python3 tests/fault_injection.py
+
+### P18-T05 · Measure SQLite write contention before a second writer runs
+- status: todo
+- priority: low
+- lane: scale
+- parallel: no
+- depends: P18-T04
+- design: docs/design/leased-multi-worker.md
+- files: docs/design/leased-multi-worker.md, docs/PROGRESS.md, tests/fault_injection.py
+- done-when: measured SQLITE_BUSY rates and busy-timeout behaviour under real concurrent writers are recorded as evidence, rollout gate 3 is decided on those numbers rather than on expectation, and the worker count stays pinned at one until they exist.
+- verify: bash scripts/verify_local.sh
