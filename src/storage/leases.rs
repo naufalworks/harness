@@ -1,5 +1,5 @@
-//! P18-T04, first slice: worker identity, lease acquisition, heartbeat renewal, release, and the
-//! fence check a durable write has to pass.
+//! P18-T04: worker identity, lease acquisition, heartbeat renewal, release, takeover of a lapsed
+//! lease, and the fence check a durable write has to pass.
 //!
 //! What a lease is for: `chat_receipts.state='generating'` says a turn is being worked on, but not
 //! *by whom*, and not *whether that worker is still alive*. With one worker those questions have
@@ -20,10 +20,13 @@
 //! database's own `now`, and expiry is judged by comparing against it, so skew between workers
 //! cannot extend or revoke ownership.
 //!
-//! Not in this slice, on purpose: stealing a lapsed lease held by *another* worker. Taking over a
-//! turn someone else may still be mid-effect on is the part that needs the external-effect record
-//! to be load-bearing first, and it gets its own failure-mode tests. Until then `acquire` refuses
-//! that case and names the holder, rather than quietly doing the dangerous half.
+//! Takeover is separated from acquisition on purpose. `acquire_in_tx` never takes a turn away from
+//! another worker; `steal_in_tx` is the only path that does, and it is refused unless the lease has
+//! actually lapsed. The dangerous case is not the lease at all but the outside world: a holder that
+//! died between reserving an external effect and settling it leaves an effect nobody can classify.
+//! A takeover there would ask the new holder to redo work that may already have happened, so the
+//! reservation is swept to `unknown` and the steal is refused. The turn then waits for a human,
+//! which is the intended outcome rather than a gap.
 
 use super::DbStore;
 use anyhow::{bail, Result};
@@ -75,12 +78,107 @@ pub struct Lease {
 }
 
 /// Why an acquisition did not happen. `HeldByAnother` is not an error: a worker that finds a turn
-/// already owned should move on, and only the steal path (later in P18-T04) may take a lapsed
-/// lease away from its holder.
+/// already owned should move on, and only `steal_in_tx` may take a lapsed lease away from its
+/// holder.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AcquireRefusal {
     UnknownRequest,
     HeldByAnother { worker_id: String, lapsed: bool },
+}
+
+/// Why a takeover did not happen.
+///
+/// `EffectsNeedDecision` is the important one: the previous holder died with an external effect
+/// reserved and unsettled, so nobody knows whether that effect reached the outside world. Handing
+/// the turn to a new worker would ask it to redo work that may already have happened.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StealRefusal {
+    NoLease,
+    /// The lease has not lapsed. Taking a live worker's turn is not recovery, it is a race.
+    StillLive {
+        worker_id: String,
+    },
+    /// The caller already holds it; `acquire_in_tx` is the path for that.
+    AlreadyHeld,
+    /// Swept to `unknown` by this call. A human decides; nothing is retried automatically.
+    EffectsNeedDecision {
+        effect_ids: Vec<String>,
+    },
+}
+
+/// Take a lapsed lease away from the worker that held it.
+///
+/// A takeover is only safe when the outside world is in a known state. The previous holder may
+/// have died between reserving an external effect and settling it, and in that case the database
+/// cannot say whether the effect happened. Rather than hand the turn to a new worker that would
+/// redo it, those reservations are swept to `unknown` -- carrying the reason a human will read --
+/// and the steal is refused. This is decision 4 applied literally: an effect with an unknown
+/// outcome is surfaced for a decision, never auto-retried.
+///
+/// The sweep is a *write*, and it happens on the refusal path. The caller must commit this
+/// transaction rather than roll it back on refusal, because the evidence a human needs is exactly
+/// what was just written.
+pub fn steal_in_tx(
+    tx: &Transaction<'_>,
+    request_id: &str,
+    worker_id: &str,
+) -> Result<std::result::Result<Lease, StealRefusal>> {
+    let existing: Option<(String, i64, String, bool)> = tx
+        .query_row(
+            &format!(
+                "SELECT worker_id,fence,state,expires_at > {DB_NOW} FROM worker_leases WHERE request_id=?1"
+            ),
+            [request_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()?;
+    let Some((holder, prior, state, unexpired)) = existing else {
+        return Ok(Err(StealRefusal::NoLease));
+    };
+    if holder == worker_id {
+        return Ok(Err(StealRefusal::AlreadyHeld));
+    }
+    if state == "held" && unexpired {
+        return Ok(Err(StealRefusal::StillLive { worker_id: holder }));
+    }
+    let in_flight: Vec<String> = {
+        let mut stmt = tx.prepare(
+            "SELECT effect_id FROM external_effects WHERE request_id=?1 AND state='reserved' ORDER BY attempted_at",
+        )?;
+        let rows = stmt
+            .query_map([request_id], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    if !in_flight.is_empty() {
+        // Settled here rather than by the async settle path because the decision and its evidence
+        // must be one atomic act: a sweep that committed without the refusal, or a refusal without
+        // the sweep, would each leave the operator a different lie.
+        tx.execute(
+            "UPDATE external_effects SET state='unknown',reason=?2,settled_at=?3 WHERE request_id=?1 AND state='reserved'",
+            params![
+                request_id,
+                "lease_lapsed_with_effect_in_flight",
+                super::now()
+            ],
+        )?;
+        return Ok(Err(StealRefusal::EffectsNeedDecision {
+            effect_ids: in_flight,
+        }));
+    }
+    let next = prior + 1;
+    tx.execute(
+        &format!(
+            "UPDATE worker_leases SET worker_id=?2,fence=?3,acquired_at={DB_NOW},renewed_at={DB_NOW},expires_at={ttl},state='held' WHERE request_id=?1",
+            ttl = db_now_plus_ttl()
+        ),
+        params![request_id, worker_id, next],
+    )?;
+    Ok(Ok(Lease {
+        request_id: request_id.to_string(),
+        worker_id: worker_id.to_string(),
+        fence: next,
+    }))
 }
 
 /// Take the lease on a turn inside an existing transaction.

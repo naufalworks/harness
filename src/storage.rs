@@ -122,7 +122,7 @@ mod turns;
 pub use causal_coverage::{DeploymentAnomalies, MAX_COVERAGE_REQUESTS};
 pub use effects::{EffectOutcome, SINGLE_WORKER_FENCE};
 pub use incident_compare::MAX_COMPARED_RUNS;
-pub use leases::{acquire_in_tx, guard_fence, LEASE_TTL_SECONDS};
+pub use leases::{acquire_in_tx, guard_fence, steal_in_tx, AcquireRefusal, LEASE_TTL_SECONDS};
 #[allow(unused_imports)]
 pub use provenance::{IncidentQuery, PROVENANCE_NODE_KINDS, PROVENANCE_RELATIONS};
 
@@ -487,8 +487,8 @@ mod tests {
             .expect("a lapsed lease must not authorize a write");
         assert!(lapsed.contains("lapsed"), "{lapsed}");
 
-        // Taking a lapsed lease away from its holder is the steal path, deliberately not this
-        // slice: the refusal names the holder instead of doing the dangerous half.
+        // `acquire` never takes a turn away from another worker, lapsed or not; it names the
+        // holder. Takeover is `steal_in_tx`, covered by the two tests below.
         assert_eq!(
             acquire("worker-b").await.unwrap_err(),
             leases::AcquireRefusal::HeldByAnother {
@@ -516,6 +516,196 @@ mod tests {
             .await
             .expect("a worker may re-acquire its own lease");
         assert_eq!(reacquired.fence, 3);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    async fn leased_turn() -> (std::path::PathBuf, DbStore) {
+        let dir = std::env::temp_dir().join(format!("harness-steal-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("harness.db").to_string_lossy().to_string();
+        let db = DbStore::init(&path).unwrap();
+        db.run(|c| {
+            c.execute(
+                "INSERT INTO sessions(id,scope,created_at) VALUES('s1','proj',?1)",
+                params![now()],
+            )?;
+            c.execute(
+                "INSERT INTO messages(id,session_id,role,content,status,created_at) VALUES('r1','s1','user','hi','complete',?1)",
+                params![now()],
+            )?;
+            c.execute(
+                "INSERT INTO chat_receipts(request_id,session_id,scope,model,signature,redacted,state,captured_at,updated_at) VALUES('r1','s1','proj','m','sig',0,'generating',?1,?1)",
+                params![now()],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+        (dir, db)
+    }
+
+    async fn acquire_lease(
+        db: &DbStore,
+        worker: &'static str,
+    ) -> std::result::Result<leases::Lease, leases::AcquireRefusal> {
+        db.run(move |c| {
+            let tx = c.transaction()?;
+            let outcome = leases::acquire_in_tx(&tx, "r1", worker)?;
+            tx.commit()?;
+            Ok(outcome)
+        })
+        .await
+        .unwrap()
+    }
+
+    async fn steal_lease(
+        db: &DbStore,
+        worker: &'static str,
+    ) -> std::result::Result<leases::Lease, leases::StealRefusal> {
+        db.run(move |c| {
+            let tx = c.transaction()?;
+            let outcome = leases::steal_in_tx(&tx, "r1", worker)?;
+            // Committed even on refusal: the effects sweep inside a refused steal is the evidence
+            // an operator has to read, so rolling it back would discard the reason for refusing.
+            tx.commit()?;
+            Ok(outcome)
+        })
+        .await
+        .unwrap()
+    }
+
+    async fn guard_lease(db: &DbStore, lease: leases::Lease) -> Option<String> {
+        db.run(move |c| {
+            let tx = c.transaction()?;
+            let refusal = leases::guard_fence(&tx, &lease)
+                .err()
+                .map(|e| e.to_string());
+            tx.commit()?;
+            Ok(refusal)
+        })
+        .await
+        .unwrap()
+    }
+
+    /// Age the lease past expiry using the database's own clock, never the test process's.
+    async fn lapse(db: &DbStore) {
+        db.run(|c| {
+            c.execute(
+                "UPDATE worker_leases SET acquired_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','-60 seconds'),renewed_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','-60 seconds'),expires_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','-30 seconds') WHERE request_id='r1'",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    }
+
+    /// P18-T04: takeover. A lapsed lease does not prove the old holder is gone, only that it
+    /// stopped reporting. Raising the fence is what actually disarms it: the number it remembers
+    /// no longer matches the database, so a write it starts after waking up is refused rather
+    /// than landed beside the new holder's.
+    #[tokio::test]
+    async fn stealing_a_lapsed_lease_raises_the_fence_and_disarms_the_old_holder() {
+        let (dir, db) = leased_turn().await;
+        let dead = acquire_lease(&db, "worker-a")
+            .await
+            .expect("a fresh turn has no holder");
+        assert_eq!(dead.fence, 1);
+
+        // A live lease is not stealable. Taking a working worker's turn is a race, not recovery.
+        assert_eq!(
+            steal_lease(&db, "worker-b").await.unwrap_err(),
+            leases::StealRefusal::StillLive {
+                worker_id: "worker-a".into()
+            }
+        );
+
+        lapse(&db).await;
+        let stolen = steal_lease(&db, "worker-b")
+            .await
+            .expect("a lapsed lease with no effect in flight is recoverable");
+        assert_eq!(stolen.fence, 2);
+        assert_eq!(guard_lease(&db, stolen).await, None);
+        let refused = guard_lease(&db, dead)
+            .await
+            .expect("the old holder must no longer authorize writes");
+        assert!(refused.contains("worker-b"), "{refused}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// P18-T04: the steal-after-death case that actually matters. The lease says the old holder is
+    /// gone; it says nothing about whether the provider call that holder had already dispatched
+    /// reached the outside world. Handing the turn over there would ask the new worker to redo a
+    /// paid effect. So the reservation is swept to `unknown`, the steal is refused, and the turn
+    /// waits for a human -- decision 4 applied literally, with no auto-retry anywhere.
+    #[tokio::test]
+    async fn a_steal_is_refused_when_the_dead_holder_left_an_effect_in_flight() {
+        let (dir, db) = leased_turn().await;
+        let dead = acquire_lease(&db, "worker-a")
+            .await
+            .expect("a fresh turn has no holder");
+        let effect = db
+            .reserve_external_effect(
+                "r1".into(),
+                "call-1".into(),
+                "d".repeat(64),
+                "provider_call".into(),
+                dead.fence,
+            )
+            .await
+            .unwrap()
+            .expect("the turn is recorded, so the effect is attributable");
+        lapse(&db).await;
+
+        assert_eq!(
+            steal_lease(&db, "worker-b").await.unwrap_err(),
+            leases::StealRefusal::EffectsNeedDecision {
+                effect_ids: vec![effect.clone()]
+            }
+        );
+        // The refusal is not the whole guarantee; the durable evidence is.
+        let looked_up = effect.clone();
+        let (state, reason): (String, Option<String>) = db
+            .read(move |c| {
+                Ok(c.query_row(
+                    "SELECT state,reason FROM external_effects WHERE effect_id=?1",
+                    [&looked_up],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )?)
+            })
+            .await
+            .unwrap();
+        assert_eq!(state, "unknown");
+        assert_eq!(
+            reason.as_deref(),
+            Some("lease_lapsed_with_effect_in_flight")
+        );
+
+        // And the effect cannot be quietly redone under a higher fence: the identity deliberately
+        // excludes the fence, so a takeover could never pay for the same call twice.
+        let again = db
+            .reserve_external_effect(
+                "r1".into(),
+                "call-1".into(),
+                "d".repeat(64),
+                "provider_call".into(),
+                2,
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(again.contains("unknown outcome"), "{again}");
+
+        // Ownership did not move: refusing a steal must leave the recorded holder and fence alone,
+        // or the turn would look recovered while its effect is still unclassified.
+        assert_eq!(
+            count(
+                &db,
+                "SELECT count(*) FROM worker_leases WHERE worker_id='worker-a' AND fence=1"
+            )
+            .await,
+            1
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 

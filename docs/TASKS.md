@@ -1293,6 +1293,23 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
   taken), the remaining four failure-mode tests, the honest gap that a write arriving with no
   remembered lease -- HTTP cancellation and the restart recovery sweep -- proceeds unfenced,
   and replacing `SINGLE_WORKER_FENCE = 1` with the lease fence.
+- note (2026-09-16, slice 2 landed; takeover): `steal_in_tx` in `src/storage/leases.rs` is now the
+  only path that moves a lease between workers, and it is refused unless the lease has actually
+  lapsed -- taking a live worker's turn is a race, not recovery. Wiring it into `claim_recording`
+  also fixed a regression slice 1 introduced: a turn the restart sweep resets to `captured` still
+  carries the dead worker's lease row, so a fresh process was never the holder and the turn was
+  permanently unclaimable.
+  The safety gate is the external-effect record, not the lease. If the dead holder left a
+  reservation unsettled, nobody can say whether that effect reached the outside world, so the
+  reservation is swept to `unknown` with reason `lease_lapsed_with_effect_in_flight`, the steal is
+  refused, and the turn waits for a human -- decision 4 applied literally, no auto-retry. The sweep
+  and the refusal commit together because a sweep without the refusal, or a refusal without the
+  sweep, would each mislead the operator. Mutation-checked: removing the in-flight refusal makes
+  the test fail.
+  Two of the five failure modes are now covered (expiry-then-resume, steal after death with no
+  duplicate external effect). Still owed: heartbeat renewal under contention, cancellation at a
+  non-holder, clock skew as its own test, the unfenced no-remembered-lease paths, fencing *every*
+  durable turn write, and replacing `SINGLE_WORKER_FENCE = 1` with the lease fence.
 
 ### P18-T05 · Measure SQLite write contention before a second writer runs
 - status: todo

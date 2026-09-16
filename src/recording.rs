@@ -509,6 +509,26 @@ impl DbStore {
             // lease says nobody owns it -- the exact ambiguity a second worker cannot resolve.
             let lease = match crate::storage::acquire_in_tx(&tx, &request, &worker_id)? {
                 Ok(lease) => lease,
+                // A turn the restart sweep reset to `captured` still carries the dead worker's
+                // lease row, so a fresh process is never the holder. Without a takeover that turn
+                // would be permanently unclaimable. Stealing is attempted only once the lease has
+                // lapsed, and `steal_in_tx` refuses it outright if the old holder left an external
+                // effect in flight -- in that case the turn waits for a human, which is the point.
+                Err(crate::storage::AcquireRefusal::HeldByAnother { lapsed: true, .. }) => {
+                    match crate::storage::steal_in_tx(&tx, &request, &worker_id)? {
+                        Ok(lease) => {
+                            tx.execute(sql::EVENT, params![request, "lease_stolen", now()])?;
+                            lease
+                        }
+                        Err(refusal) => {
+                            // Committed, not rolled back: on the effects path `steal_in_tx` has
+                            // just recorded the unknown outcomes a human needs to see.
+                            tx.execute(sql::EVENT, params![request, "lease_steal_refused", now()])?;
+                            tx.commit()?;
+                            bail!("cannot take over the lease on {request}: {refusal:?}");
+                        }
+                    }
+                }
                 Err(refusal) => bail!("cannot take the lease on {request}: {refusal:?}"),
             };
             tx.execute(sql::EVENT,params![request,"generation_started",now()])?;

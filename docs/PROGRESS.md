@@ -1,5 +1,40 @@
 # PROGRESS — journal
 
+## 2026-09-16T07:55:00Z · A takeover is gated on the outside world, not on the lease
+
+P18-T04 slice 2 adds the steal path. The lease was the easy half: `steal_in_tx` raises the fence,
+which is what actually disarms the previous holder, because the number it remembers no longer
+matches the database and any write it starts after waking up is refused instead of landed beside
+the new holder's. A lapsed lease is only evidence that a worker stopped reporting, so a live lease
+is never stealable.
+
+The hard half is that the lease says nothing about the outside world. A holder that died between
+reserving an external effect and settling it leaves an effect nobody can classify, and handing that
+turn to a new worker asks it to redo work that may already have happened and already been paid for.
+So the reservation is swept to `unknown`, the steal is refused, and the turn waits for a human.
+That is decision 4 applied literally rather than restated: nothing retries an unknown effect
+automatically. The sweep is a write on the refusal path, so it commits with the refusal -- a sweep
+without the refusal and a refusal without the sweep each tell the operator a different lie.
+
+One regression found by wiring, not by testing: slice 1 made a restart-recovered turn permanently
+unclaimable. The sweep resets the receipt to `captured`, but the lease row still names the dead
+worker, so a fresh process with a new identity was refused by `acquire_in_tx` forever. The takeover
+path is what closes that, which is why it is wired into the claim rather than left as an API for
+later.
+
+A borrow-checker error on the in-flight query was a real fix, not a workaround: the mapped-rows
+temporary outlived the prepared statement, so the collected vector is now bound before the block
+ends.
+
+Evidence: 332 Rust tests (two new lease tests), strict Clippy across all targets and features with
+no new allows, migrations 001 -> 018 at user_version=18, 19 SQL contracts, 0 failing doc checks.
+The effects-in-flight refusal is mutation-checked: replacing it with a permissive branch makes
+`a_steal_is_refused_when_the_dead_holder_left_an_effect_in_flight` fail.
+
+Still open, and stated rather than implied: three of the five failure modes are untested, the
+no-remembered-lease write paths are still unfenced, and `SINGLE_WORKER_FENCE = 1` is still a
+constant. Worker count stays pinned at one.
+
 ## 2026-09-16T07:40:00Z · A lease is not a timeout: P18-T04 slice 1 fences the turn writes
 
 `chat_receipts.state='generating'` says a turn is being worked on, but not by whom and not
