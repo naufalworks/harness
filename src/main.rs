@@ -25,6 +25,7 @@ mod ingest;
 mod limits; // P12-T04 bounds that two modules must agree on, defined once
 mod memory_agents;
 mod patch; // P12-T04 explicit absent/null/value semantics for PATCH bodies
+mod plugins; // P18-T02 digest-pinned bounded extensions: providers, plugins, benchmark packs
 mod process_lock;
 mod processes; // P14-T01 live process-group handles so an explicit cancel can stop blocked work
 mod recording;

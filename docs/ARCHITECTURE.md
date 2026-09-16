@@ -156,6 +156,14 @@ A source and all chunk jobs are inserted in one transaction. Idempotency is per 
 
 The single worker processes up to 1,000 outstanding jobs with a 45-second provider limit and up to three attempts. Live extraction sends exact user events as evidence plus separately labelled, untrusted current-plan context. Plan/assistant/tool text cannot be cited. Explicit corrections are deterministically marked high priority, and decisions/procedures remain review-only. A failed job can be retried in the UI. Invalid model output is a failed job, not a successful extraction of zero memories.
 
+## Extensions
+
+Provider adapters, tool plugins and benchmark packs are admitted by digest pin, not by signature. Each manifest declares `harness.extension/v1`, an id, a kind, and the capabilities it wants; `benchmarks/pinned.json` records the SHA-256 of the exact manifest bytes that were reviewed. There are no third-party extensions, so a signature would only prove the single key in this repo signed it; a pin proves the stronger property actually needed today, that the bytes admitted are the bytes reviewed. The schema string exists so a later `v2` can add signatures without reinterpreting a v1 manifest.
+
+Admission is fail-closed and returns the first refusal with a stable code. An extension is refused when its schema is unsupported, its id or version is malformed, it has no pin, its bytes drift from the pin, it declares no capability or one outside the allowlist, it names a tool the live registry does not offer, it requests a permission mode wider than the host session, it requests network access, or a payload path escapes the repository or carries a malformed digest. A benchmark pack additionally must carry an audience review, and that review attests the payload set, never the manifest digest, since a review stored inside a manifest cannot attest the bytes containing it.
+
+Enforcement is split deliberately. The offline checker validates the checked-in corpus: pins present, digests matching, payload files existing and hashing as declared, no orphan pins, no network grant, and the capability allowlist and schema string parsed out of the Rust source so the two cannot drift. Host tool admission is asserted only in Rust, against the real tool registry, because a second copy of the tool list in Python would rot.
+
 ## Compatibility
 
 This is a custom service, not a standards-compatible OpenAI proxy. The main-agent adapter supports OpenAI-style function tool calls and records complete assistant/tool replay. Extraction and compaction roles are deliberately text-only and reject tool calls. Provider-specific errors and unsupported-tool fallback never fabricate success.

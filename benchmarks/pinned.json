@@ -1,0 +1,12 @@
+{
+  "schema": "harness.extension-pins/v1",
+  "note": "P18-T02. An extension is admitted because its manifest bytes match the digest pinned here, not because it is signed. Repinning is the review step: change a manifest and this digest must be updated deliberately, which is what makes 'the bytes admitted are the bytes reviewed' checkable offline. A future harness.extension/v2 can add signatures without reinterpreting a v1 manifest.",
+  "pins": {
+    "memory-recall-v1": {
+      "kind": "benchmark_pack",
+      "manifest_sha256": "da940c3cdbb31df49f061d734db86ec31b473961474a3c557698fa4d3befd377",
+      "reviewed_by": "owner",
+      "reviewed_on": "2026-09-16"
+    }
+  }
+}

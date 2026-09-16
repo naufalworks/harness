@@ -1,0 +1,28 @@
+{
+  "schema": "harness.extension/v1",
+  "id": "memory-recall-v1",
+  "version": "1.0.0",
+  "kind": "benchmark_pack",
+  "description": "Checked-in regression capsules: the strict-replay request set and the fixture-only remote-runner plan. Both are already the evidence P17-T03 and P17-T05 verify against; pinning them here makes the pack portable without copying the bytes.",
+  "capabilities": [
+    "benchmark.capsule_replay"
+  ],
+  "tools": [],
+  "permission_mode": "ask",
+  "network": false,
+  "files": [
+    {
+      "path": "tests/capsules/strict_replay_requests.json",
+      "sha256": "9a7e9e8aa29e2f040d60ed4f08b032b9e3042a68495608bc69ad9289c196c697"
+    },
+    {
+      "path": "tests/experiments/remote_runner.json",
+      "sha256": "c3f22e259fd6ee0530f143b639d9553cae824c9dbc468388c070a89276a22961"
+    }
+  ],
+  "review": {
+    "audience": "owner",
+    "reviewed_by": "owner",
+    "payload_sha256": "d98c0f06ca3f831e63be300e1947c5bd5ed0d86d40299155bb09a1609581ac12"
+  }
+}

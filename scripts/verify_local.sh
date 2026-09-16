@@ -65,6 +65,11 @@ run_python_suite integration-smoke tests/integration_smoke.py
 run_python_suite recording-integration tests/recording_integration.py
 run_suite shell-syntax bash -n scripts/deploy.sh scripts/release.sh scripts/setup_browser_tests.sh scripts/verify_browser.sh scripts/verify_e2e.sh scripts/verify_local.sh scripts/verify_release.sh
 run_suite supply-chain python3 scripts/check_supply_chain.py
+# P18-T02. Checks the checked-in extension corpus: every manifest is pinned, the
+# pinned digest matches the bytes on disk, payload files exist and hash as declared,
+# no pin is orphaned, and no manifest claims network access or an unlisted
+# capability. Host *tool* admission is asserted in Rust against the real registry.
+run_suite extension-contracts python3 scripts/check_extensions.py
 # P16-T03. Runs after rust-tests, which is what writes tests/coverage_eval/metrics.json: this
 # gate validates that evidence and refuses it when it is missing, stale relative to the
 # fixtures, internally inconsistent, or outside a declared budget.
