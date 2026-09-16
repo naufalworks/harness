@@ -16,7 +16,17 @@ serde_json = "1.0"
 url = "2.5"
 tungstenite = "0.30"
 dotenvy = "0.15"
-reqwest = { version = "0.12", features = ["json"] }
+# P18: TLS comes from rustls, not the platform's OpenSSL. reqwest's default
+# features pull in native-tls -> openssl-sys, whose build script needs a target
+# OpenSSL discoverable through pkg-config. pkg-config cannot cross-compile, so
+# that dependency made `cargo check --target aarch64-unknown-linux-gnu` fail in
+# the release-evidence CI job while the host build stayed green. rustls is pure
+# Rust over `ring`, which this crate already depends on for SHA-256, so this
+# removes a C toolchain from the cross build instead of adding a sysroot to
+# work around it. No code used a native-tls-specific API. `charset` and `http2`
+# are restored explicitly because disabling default features would otherwise
+# drop them.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "charset", "http2"] }
 anyhow = "1.0"
 base64 = "0.22"
 rusqlite = { version = "0.32", features = ["bundled", "hooks"] }

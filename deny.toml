@@ -27,6 +27,12 @@ allow = [
     "MPL-2.0",
     "OpenSSL",
     "BSL-1.0",
+    # P18: reached through rustls -> webpki-roots, which packages Mozilla's CA
+    # root store. CDLA-Permissive-2.0 is a permissive *data* licence: it carries
+    # no copyleft obligation and imposes no condition on the binary that embeds
+    # the root list. It is listed separately rather than folded into the general
+    # set because it applies to bundled data, not to code.
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.9
 # harness itself carries no `license` field and is never published to a
