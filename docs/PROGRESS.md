@@ -3047,3 +3047,51 @@ behavior verified.
 One consequence for P18 planning: no additional node or capacity was needed to fix this. The
 build got cheaper. Multi-worker capacity remains a separate decision, to be made on the fencing
 design's merits rather than because the queue looked slow.
+
+## Fencing before concurrency, and two tests that passed for the wrong reason
+
+The owner approved multiple writers and picked Resolution B over the recommended single-writer
+Resolution A, with one hard constraint: no race conditions. That approval is what unblocked
+P18-T01, whose `done-when` required an *approved* design rather than an implemented one.
+
+Resolution B is the more demanding choice, so the order of work matters. B removes the
+single-writer `process_lock` invariant that every current side-effect guarantee quietly rests on,
+and moves correctness entirely onto leases plus fencing. A fencing guarantee added *after*
+concurrent writers are already running is a guarantee that was absent for every turn executed
+until that moment. So the schema landed first, with the worker count still pinned at one:
+`migrations/017_worker_leases.sql` (schema 17) adds `worker_leases`, one row per turn, with a
+per-request monotonic fence, a bounded lease term, and four triggers that refuse a fence decrease,
+a handover that reuses a fence, a row delete, and moving a lease to a different turn. The delete
+trigger is the least obvious and the most important: deleting a lease row would reset the next
+fence to 1 and thereby re-authorize a pre-crash writer's in-flight writes. Enforcement is in the
+schema rather than in worker code, so a stalled, buggy, or future worker cannot bypass it.
+
+The tests for those triggers passed on the first run, which is exactly when a test deserves the
+least trust. Running a mutation check -- drop each trigger, then re-issue the write it guards and
+confirm it now succeeds -- showed that two of the four assertions had never exercised their
+trigger at all:
+
+- The "fence must not decrease" case set `fence=0`, which the `fence > 0` CHECK rejected first.
+- The "lease cannot be moved" case targeted a `request_id` with no `chat_receipts` row, so a
+  foreign key rejected it first.
+
+Both would have kept passing if the triggers were deleted outright. The same flaw affected the
+CHECK cases, which were failing on a missing foreign key rather than on the constraint named in
+the test. The fix was to make each refusal attributable to exactly one mechanism: seed a second
+real turn so the foreign key is satisfied, start the lease at fence 5 so a decrease to 3 is still
+positive and only the monotonic trigger can refuse it, and move the lease to that real second
+turn so neither the foreign key nor the primary key can. All four triggers now fail the mutation
+check when dropped, which is the only evidence that they are load-bearing.
+
+The schema bump also surfaced a version ceiling worth noting: `src/storage.rs` gated accepted
+databases on `1..=16`, so a migrated schema-17 database was refused with "unsupported schema
+version 17" by the recovery path. The full suite caught it (`cargo test --locked`: 327 passed).
+That ceiling is a deliberate fail-closed design and was widened, not removed.
+
+What is explicitly *not* done: there is no worker identity, lease client, or heartbeat, and no code
+path admits a second writer. Rollout gates 3 and 4 remain, and Resolution B still owes evidence on
+SQLite write contention and busy-timeout behaviour under real concurrency -- "fast" and
+"contended" are the two claims most likely to conflict, and measuring that is cheaper than
+debugging a duplicated provider call later. Extra UpCloud capacity is available if that evidence
+shows it is needed, but adding a node before the fencing obligations are met would buy throughput
+at the cost of the one constraint the owner set.

@@ -1166,23 +1166,35 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 ## P18 · Optional platform evolution
 
 ### P18-T01 · Design leased multi-worker execution
-- status: todo
+- status: done
 - priority: low
 - lane: scale
 - parallel: no
 - depends: P10-T02, P11-T02, P17-T03
 - design: docs/ROADMAP.md#p18-optional-platform-evolution
-- files: docs/ARCHITECTURE.md, migrations/*, src/recording.rs
+- files: docs/ARCHITECTURE.md, migrations/*, src/recording.rs, migrations/017_worker_leases.sql, docs/design/leased-multi-worker.md, tests/test_migrations.py
 - done-when: an approved design defines leases, fencing, recovery and no-duplicate-side-effect semantics before any second worker or instance is enabled.
 - verify: cargo test --locked recovery && python3 tests/test_migrations.py
-- note (2026-09-16, design drafted, approval pending): a proposed design is written up in
-  `docs/design/leased-multi-worker.md` covering the lease unit and term, database-issued fencing
-  tokens, the three recovery cases, and idempotency keys for external effects. Status stays `todo`
-  because the `done-when` requires an *approved* design, and approval is an owner decision rather
-  than something implementation can satisfy. Two blocking questions are recorded there: whether the
-  single-writer `process_lock` guarantee is kept (recommended) or replaced by leases plus fencing,
-  and whether a second worker is wanted at all given that P18 is optional and nothing observed so
-  far demands one. No lease table, worker identity, or second worker exists.
+- note (2026-09-16, design approved by the owner, fencing schema landed): the design in
+  `docs/design/leased-multi-worker.md` is approved. The owner chose **Resolution B** (multiple
+  writers) over the recommended A, stating that many writers are acceptable "or soon" and that the
+  hard constraint is no race conditions, with the system robust, fast and optimized. That answers
+  both blocking questions: multi-worker is wanted, and the single-writer `process_lock` guarantee
+  will be narrowed to worker identity rather than kept. Because B moves correctness entirely onto
+  leases plus fencing, the fencing schema was landed first, under rollout gate 2, with the worker
+  count still pinned at one: `migrations/017_worker_leases.sql` adds `worker_leases` with a
+  per-request monotonic fence and four triggers that refuse a fence decrease, a handover that
+  reuses a fence, a row delete (which would reset the fence and re-authorize a pre-crash writer),
+  and moving a lease between turns. Enforcement lives in the schema, not in worker code, so a
+  stalled or buggy worker cannot bypass it. No second worker is enabled and no worker identity
+  exists yet; rollout gates 3 and 4 remain, and Resolution B still owes evidence on SQLite write
+  contention and busy-timeout behaviour before a second writer runs.
+- result-verify: Migration chain 001->017 applies with user_version=17 and data, FTS and foreign
+  keys preserved; the full 327-test Rust suite passes, including the recovery and cancellation
+  lanes named by this task's verify command. Each of the four lease triggers was mutation-tested by
+  dropping it and confirming the write it guards then succeeds, which caught two assertions that
+  had been passing for the wrong reason (a `fence > 0` CHECK and a foreign key) instead of
+  exercising the trigger under test. No second worker was enabled and no concurrent writer ran.
 
 ### P18-T02 · Add portable providers, plugins and benchmark packs
 - status: done

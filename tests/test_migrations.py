@@ -12,7 +12,7 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MIG = ROOT / "migrations"
-CHAIN = ["001_core.sql", "002_recording.sql", "003_agentic.sql", "004_memory_kinds.sql", "005_generation_stream.sql", "006_provenance_edges.sql", "007_privacy_archive.sql", "008_provider_spend.sql", "009_run_cancellation.sql", "010_retention_maintenance.sql", "011_retrieval_receipts.sql", "012_memory_governance.sql", "013_session_workflows.sql", "014_history_search.sql", "015_causal_coverage.sql", "016_run_capsules.sql"]
+CHAIN = ["001_core.sql", "002_recording.sql", "003_agentic.sql", "004_memory_kinds.sql", "005_generation_stream.sql", "006_provenance_edges.sql", "007_privacy_archive.sql", "008_provider_spend.sql", "009_run_cancellation.sql", "010_retention_maintenance.sql", "011_retrieval_receipts.sql", "012_memory_governance.sql", "013_session_workflows.sql", "014_history_search.sql", "015_causal_coverage.sql", "016_run_capsules.sql", "017_worker_leases.sql"]
 VERSIONS = [name.split("_", 1)[0] for name in CHAIN]
 LATEST_VERSION = int(VERSIONS[-1])
 OPEN_CONNECTIONS = []
@@ -34,6 +34,7 @@ EXPECTED_TABLES = {
     14: {"history_documents", "history_privacy_events", "export_bundles", "export_items", "import_receipts", "import_decisions"},
     15: {"deployment_events", "incident_reviews"},
     16: {"run_capsules"},
+    17: {"worker_leases"},
 }
 
 
@@ -460,6 +461,77 @@ def test_016_run_capsule_constraints():
         raise AssertionError(f"run capsule constraint was not enforced: {statement}")
 
 
+def test_017_worker_lease_constraints():
+    """P18-T01. Fencing is only a guarantee if the database enforces it.
+
+    A TTL cannot stop a worker that stalls past its expiry and then wakes up believing it
+    still owns the turn. Only a fence can, and only if the fence cannot be lowered, reused
+    across a handover, or reset by deleting the row. These are checked at the schema level
+    rather than in worker code so that a buggy or stalled worker cannot bypass them.
+    """
+    c = fresh()
+    apply(c, len(CHAIN))
+    now = "2026-01-01T00:00:00Z"
+    later = "2026-01-01T00:00:30Z"
+    c.execute("INSERT INTO sessions(id,scope,created_at) VALUES('s1','global',?)", (now,))
+    c.execute("INSERT INTO messages(id,session_id,role,content,status,created_at) VALUES('req','s1','user','task','pending',?)", (now,))
+    c.execute("INSERT INTO chat_receipts(request_id,session_id,scope,model,signature,redacted,state,captured_at,updated_at) VALUES('req','s1','global','m','sig',0,'captured',?,?)", (now, now))
+    # A second real turn, so the "cannot be moved" case fails on the trigger rather than on a
+    # foreign key, and the CHECK cases fail on the CHECK rather than on a missing receipt.
+    c.execute("INSERT INTO messages(id,session_id,role,content,status,created_at) VALUES('req2','s1','user','task','pending',?)", (now,))
+    c.execute("INSERT INTO chat_receipts(request_id,session_id,scope,model,signature,redacted,state,captured_at,updated_at) VALUES('req2','s1','global','m','sig',0,'captured',?,?)", (now, now))
+    insert = "INSERT INTO worker_leases(request_id,worker_id,fence,acquired_at,renewed_at,expires_at,state) VALUES(?,?,?,?,?,?,?)"
+    # Starts at 5 so a decrease can be tested with a still-positive fence; a decrease to 0 would
+    # be caught by the `fence > 0` CHECK and would prove nothing about monotonicity.
+    c.execute(insert, ("req", "worker-a", 5, now, now, later, "held"))
+
+    refused = [
+        # A stalled worker must not be able to walk the fence backwards.
+        ("UPDATE worker_leases SET fence=3 WHERE request_id='req'", ()),
+        # A handover that reuses the fence would let two workers present the same authorization.
+        ("UPDATE worker_leases SET worker_id='worker-b' WHERE request_id='req'", ()),
+        # Deleting would reset the fence to 1 and re-authorize a pre-crash writer.
+        ("DELETE FROM worker_leases WHERE request_id='req'", ()),
+        # A lease belongs to the turn it was minted for, even when the destination turn exists.
+        ("UPDATE worker_leases SET request_id='req2' WHERE request_id='req'", ()),
+        # Unknown lifecycle states would make recovery guess.
+        ("UPDATE worker_leases SET state='maybe' WHERE request_id='req'", ()),
+        # A fence is a positive, database-issued integer.
+        (insert, ("req2", "worker-a", 0, now, now, later, "held")),
+        # A lease cannot expire before it was last renewed.
+        (insert, ("req2", "worker-a", 1, now, later, now, "held")),
+        # A lease cannot exist for a turn that was never recorded.
+        (insert, ("ghost", "worker-a", 1, now, now, later, "held")),
+        # One holder per turn: a second row for the same request must collide on the primary key.
+        (insert, ("req", "worker-b", 2, now, now, later, "held")),
+    ]
+    for statement, values in refused:
+        try:
+            c.execute(statement, values)
+        except sqlite3.DatabaseError:
+            continue
+        raise AssertionError(f"worker lease constraint was not enforced: {statement}")
+
+    # Renewal keeps the same fence: extending a lease you already hold is not a handover.
+    c.execute("UPDATE worker_leases SET renewed_at=?,expires_at=?,state='held' WHERE request_id='req'", (later, "2026-01-01T00:01:00Z"))
+    assert c.execute("SELECT fence FROM worker_leases WHERE request_id='req'").fetchone()[0] == 5
+
+    # A legitimate steal after expiry succeeds and raises the fence, which is what makes the
+    # previous holder's in-flight writes refusable.
+    c.execute("UPDATE worker_leases SET worker_id='worker-b',fence=6,acquired_at=?,renewed_at=?,expires_at=?,state='stolen' WHERE request_id='req'", (later, later, "2026-01-01T00:01:30Z"))
+    worker, fence = c.execute("SELECT worker_id,fence FROM worker_leases WHERE request_id='req'").fetchone()
+    assert (worker, fence) == ("worker-b", 6), f"steal did not take effect: {(worker, fence)}"
+
+    # Losing a race is an ordinary outcome, not an error: the conditional claim simply affects
+    # no rows when the lease is still held and unexpired.
+    claim = (
+        "UPDATE worker_leases SET worker_id='worker-c',fence=fence+1,state='stolen' "
+        "WHERE request_id='req' AND state<>'held'"
+    )
+    c.execute("UPDATE worker_leases SET state='held' WHERE request_id='req'")
+    assert c.execute(claim).rowcount == 0, "a held lease must not be claimable"
+
+
 def test_014_history_search_constraints():
     """P15-T04. The four invariants migration 014 exists to hold:
 
@@ -579,6 +651,7 @@ def main():
         test_014_history_search_constraints()
         test_015_causal_coverage_constraints()
         test_016_run_capsule_constraints()
+        test_017_worker_lease_constraints()
         print(
             f"migrations OK: {' -> '.join(VERSIONS)}, "
             f"user_version={LATEST_VERSION}, data/FTS/FKs preserved"

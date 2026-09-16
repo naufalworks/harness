@@ -2,11 +2,15 @@
 
 ## Status
 
-**Proposed — not approved, not implemented.** P18-T01 is a design gate: its `done-when` requires an
-approved design that defines leases, fencing, recovery, and no-duplicate-side-effect semantics
-*before* any second worker or instance is enabled. Nothing in this document is built yet, and no
-code path currently admits a second worker. The owner decisions in the last section are the
-blocking items.
+**Approved (2026-09-16). Schema landed; no second worker enabled.** The owner approved multiple
+writers and selected **Resolution B**, with one hard constraint: no race conditions, and the system
+robust, fast and optimized. Rollout gate 2 is complete — `migrations/017_worker_leases.sql` adds the
+`worker_leases` table, a per-request monotonic fence, and triggers that enforce fencing at the
+schema level — with the worker count still pinned at one. Gates 3 and 4 are outstanding: no worker
+identity, lease client, heartbeat, or second worker exists yet, and no code path admits one.
+
+Fencing was deliberately landed *before* any concurrency. A guarantee added after concurrent writers
+are already running is a guarantee that was absent for every turn executed until then.
 
 ## Thesis
 
@@ -136,9 +140,23 @@ database; a second worker cannot start today, by construction. Two coherent reso
   its worker identity", and correctness moves entirely onto leases plus fencing. Broader blast
   radius; requires proving SQLite write contention and busy-timeout behavior under real concurrency.
 
-Recommendation: **A first.** It is the smaller, reversible step and it keeps the load-bearing
-invariant intact while the lease and fencing machinery earns trust. B should require its own
-approved design and its own evidence.
+Recommendation was **A first**. **The owner chose B**, accepting multiple writers provided there are
+no race conditions. That choice is recorded rather than quietly reinterpreted, and it raises the
+evidence bar rather than lowering it: because B removes the single-writer invariant every current
+side-effect guarantee rests on, correctness now depends entirely on leases plus fencing being
+correct. Two obligations follow before any second writer runs, and neither is satisfied by the
+schema alone:
+
+- **SQLite write contention must be measured, not assumed.** WAL permits one writer at a time;
+  concurrent writers serialize and can return `SQLITE_BUSY`. Busy-timeout behavior under real
+  contention has to be demonstrated, since "fast" and "contended" are the claims most likely to
+  conflict here.
+- **Every durable write on behalf of a turn must carry its fence** and be refused in the same
+  transaction if stale. Until that is true of every write path, adding a writer would create exactly
+  the race the owner ruled out.
+
+Staging through A is therefore skipped as a rollout step, but its safety property is not: the worker
+count stays at one until the obligations above are met with evidence.
 
 ## Failure modes this design must be tested against
 
@@ -153,6 +171,18 @@ approved design and its own evidence.
 Each becomes a test before any second worker is enabled. The task's own `verify` command
 (`cargo test --locked recovery && python3 tests/test_migrations.py`) is the floor, not the ceiling.
 
+Landed so far, at the schema level (`tests/test_migrations.py::test_017_worker_lease_constraints`):
+a fence cannot decrease; a handover cannot reuse a fence; a lease row cannot be deleted, which would
+reset the fence and re-authorize a pre-crash writer; a lease cannot be moved between turns; states
+are constrained so recovery never guesses; and a held, unexpired lease is not claimable, with the
+lost race affecting zero rows rather than raising an error. Each trigger was mutation-tested by
+dropping it and confirming the guarded write then succeeds — which caught two assertions that had
+been passing for the wrong reason.
+
+Still untested, because they need a lease client rather than a schema: heartbeat renewal under write
+contention, clock-skew comparisons using database-issued time, steal-with-no-duplicate-external-
+effect, and cancellation reaching a worker that no longer holds the lease.
+
 ## Rollout gates
 
 1. Design approved (this document).
@@ -164,14 +194,15 @@ Each becomes a test before any second worker is enabled. The task's own `verify`
 
 ## Decisions needed from the owner
 
-1. **Resolution A or B** for the process-lock conflict. This is the load-bearing choice; the
-   recommendation is A.
-2. **Is multi-worker actually wanted now?** The roadmap marks P18 optional and this task low
-   priority. The honest position is that nothing currently observed demands a second worker, and
-   the safety surface it opens is large. Deferring is a legitimate outcome of this design gate.
-3. **Lease TTL and heartbeat interval** if the defaults above are not acceptable.
-4. **Behavior for an unknown-outcome external effect:** surface for human decision (proposed) or
-   fail the turn outright.
+1. ~~**Resolution A or B**~~ — **decided: B**, multiple writers under WAL, on the explicit condition
+   that there are no race conditions.
+2. ~~**Is multi-worker actually wanted now?**~~ — **decided: yes**, "many writers or soon".
+3. **Lease TTL and heartbeat interval.** Defaults stand (30s TTL, heartbeat well inside it) unless
+   changed; these are cheap to tune once real contention numbers exist.
+4. **Behavior for an unknown-outcome external effect.** Still open. The proposal is to surface it
+   for human decision rather than retry, consistent with this project's refusal to invent evidence.
+   Defaulting to retry would risk duplicating a paid provider call or a delivered webhook, so the
+   proposal stands until the owner says otherwise.
 
 ## Deferred
 
