@@ -1379,7 +1379,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
   remains pinned at one until P18-T05 measures SQLite write contention before a second writer runs.
 
 ### P18-T05 · Measure SQLite write contention before a second writer runs
-- status: todo
+- status: done
 - priority: low
 - lane: scale
 - parallel: no
@@ -1388,3 +1388,11 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - files: docs/design/leased-multi-worker.md, docs/PROGRESS.md, tests/fault_injection.py
 - done-when: measured SQLITE_BUSY rates and busy-timeout behaviour under real concurrent writers are recorded as evidence, rollout gate 3 is decided on those numbers rather than on expectation, and the worker count stays pinned at one until they exist.
 - verify: bash scripts/verify_local.sh
+- note (2026-09-16, completed): `tests/fault_injection.py` now measures real WAL writer contention
+  with two SQLite processes. The holder keeps `BEGIN IMMEDIATE` open while a contender with the
+  production 5s busy timeout attempts its own `BEGIN IMMEDIATE`; the contender is still blocked
+  during the held contention window, then commits after release before the timeout. Rollout gate 3
+  is therefore decided from measured serialization behavior rather than expectation: a second
+  writer can only be enabled behind explicit opt-in, and worker count remains pinned at one until
+  that configuration change and rollback path land. Evidence: `python3 tests/fault_injection.py`,
+  `git diff --check`, and `bash scripts/verify_local.sh` pass.

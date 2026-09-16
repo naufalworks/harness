@@ -1,5 +1,11 @@
 # PROGRESS — journal
 
+## 2026-09-16T12:55:00Z · P18-T05 SQLite contention measurement recorded
+
+P18-T05 adds a disposable two-process WAL contention fixture to `tests/fault_injection.py`. One process holds `BEGIN IMMEDIATE` with the production 5s busy timeout configured; the contender is still blocked during the held contention window, then commits after the holder releases before the busy timeout. That records the behavior gate 3 needed: SQLite serializes writers under WAL rather than allowing true parallel writes, and the current timeout lets a waiting writer proceed when contention clears promptly.
+
+Evidence: `python3 tests/fault_injection.py`, `git diff --check`, and `bash scripts/verify_local.sh` pass. P18-T05 is now `done`; worker count remains pinned at one until the separate opt-in worker-count configuration and rollback path land.
+
 ## 2026-09-16T12:50:00Z · P18-T04 durable-write audit closed
 
 P18-T04 slice 8 audited the remaining durable turn-write paths against the lease-fence checklist. Worker-owned step, activity, permission request, permission expiry, provider-effect reservation/settlement, context save, answer completion, failure verdicts, once-only tool effects, archive deletion outcomes, and residual multi-file LSP rollback artifacts now either present the remembered lease and guard it in the same transaction, or are documented non-holder control-plane paths (`request_cancellation`, `finalize_cancellation`, restart recovery, outbox flushing) that are not allowed to impersonate a worker-held fence. The partial-filesystem receipt item is closed by the existing residual LSP rollback artifact path: failed rollback outputs every file still changed as `Artifact::FileChange`, and `finish_step` persists those artifacts under the held fence even when the step failed.

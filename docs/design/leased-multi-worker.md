@@ -199,7 +199,11 @@ schema alone:
 - **SQLite write contention must be measured, not assumed.** WAL permits one writer at a time;
   concurrent writers serialize and can return `SQLITE_BUSY`. Busy-timeout behavior under real
   contention has to be demonstrated, since "fast" and "contended" are the claims most likely to
-  conflict here.
+  conflict here. P18-T05 added that disposable measurement to `tests/fault_injection.py`: one
+  process holds `BEGIN IMMEDIATE`, a second writer with the production 5s busy timeout remains
+  blocked while the holder owns the write lock, then commits after release. The observed wait is
+  bounded below by the held contention window and below the busy timeout, so rollout gate 3 may
+  proceed behind opt-in without treating WAL as parallel writes.
 - **Every durable write on behalf of a turn must carry its fence** and be refused in the same
   transaction if stale. Until that is true of every write path, adding a writer would create exactly
   the race the owner ruled out.
@@ -237,8 +241,10 @@ the lease. P18-T04 remains open for the complete durable-write and once-only-eff
 
 1. Design approved (this document).
 2. Lease table, fencing, and the failure-mode tests land with the worker count still pinned at one.
-3. A second worker is enabled only behind explicit opt-in, defaulting off, mirroring how the remote
-   runner and extension admission are already gated.
+3. ~~A second worker is enabled only behind explicit opt-in, defaulting off, mirroring how the remote
+   runner and extension admission are already gated.~~ **Decided after P18-T05:** the opt-in gate may
+   remain, but worker count still stays pinned at one until the explicit worker-count configuration
+   change lands with rollback instructions.
 4. Documented rollback: pin back to one worker, which must be a configuration change, not a
    migration revert.
 

@@ -6,6 +6,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 from contextlib import closing
 from pathlib import Path
 
@@ -160,6 +161,81 @@ def backpressure_and_recovery(root: Path) -> None:
     check(path).close()
 
 
+def sqlite_write_contention(root: Path) -> None:
+    path = root / "contention.db"
+    schema(path)
+    with sqlite3.connect(path, isolation_level=None) as db:
+        db.execute("CREATE TABLE contention_marker(id INTEGER PRIMARY KEY, worker TEXT NOT NULL)")
+
+    holder_ready = root / "holder.ready"
+    release_holder = root / "holder.release"
+    holder_script = """
+import pathlib, sqlite3, sys, time
+path = sys.argv[1]
+ready = pathlib.Path(sys.argv[2])
+release = pathlib.Path(sys.argv[3])
+conn = sqlite3.connect(path, isolation_level=None)
+conn.execute('PRAGMA foreign_keys=ON')
+conn.execute('PRAGMA journal_mode=WAL')
+conn.execute('PRAGMA synchronous=FULL')
+conn.execute('PRAGMA busy_timeout=5000')
+conn.execute('BEGIN IMMEDIATE')
+conn.execute("INSERT INTO contention_marker(worker) VALUES('holder')")
+ready.write_text('ready')
+deadline = time.monotonic() + 10
+while not release.exists() and time.monotonic() < deadline:
+    time.sleep(0.01)
+if not release.exists():
+    raise SystemExit('release signal timed out')
+conn.execute('COMMIT')
+conn.close()
+"""
+    contender_script = """
+import sqlite3, sys, time
+path = sys.argv[1]
+conn = sqlite3.connect(path, isolation_level=None)
+conn.execute('PRAGMA foreign_keys=ON')
+conn.execute('PRAGMA journal_mode=WAL')
+conn.execute('PRAGMA synchronous=FULL')
+conn.execute('PRAGMA busy_timeout=5000')
+start = time.monotonic()
+conn.execute('BEGIN IMMEDIATE')
+waited = time.monotonic() - start
+conn.execute("INSERT INTO contention_marker(worker) VALUES('contender')")
+conn.execute('COMMIT')
+conn.close()
+print(f"waited={waited:.3f}")
+"""
+    holder = subprocess.Popen([sys.executable, "-c", holder_script, str(path), str(holder_ready), str(release_holder)])
+    try:
+        for _ in range(500):
+            if holder_ready.exists():
+                break
+            if holder.poll() is not None:
+                raise AssertionError(f"holder exited early: {holder.returncode}")
+            time.sleep(0.01)
+        else:
+            raise AssertionError("holder did not acquire write lock")
+
+        contender = subprocess.Popen([sys.executable, "-c", contender_script, str(path)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        time.sleep(0.25)
+        assert contender.poll() is None, "contender acquired the writer lock before contention was released"
+        release_holder.write_text("release")
+        stdout, stderr = contender.communicate(timeout=10)
+        assert contender.returncode == 0, stderr
+        waited = float(stdout.strip().split("=", 1)[1])
+        assert waited >= 0.20, waited
+        assert waited < 5.0, waited
+    finally:
+        release_holder.write_text("release")
+        holder.wait(timeout=10)
+    assert holder.returncode == 0, holder.returncode
+
+    with check(path) as db:
+        rows = db.execute("SELECT worker FROM contention_marker ORDER BY id").fetchall()
+        assert rows == [("holder",), ("contender",)], rows
+
+
 def main() -> None:
     with tempfile.TemporaryDirectory(prefix="harness-fault-injection-") as directory:
         root = Path(directory)
@@ -167,8 +243,9 @@ def main() -> None:
         ambiguous_admission(root)
         disk_and_readonly(root)
         wal_and_integrity_failures(root)
+        sqlite_write_contention(root)
         backpressure_and_recovery(root)
-    print("Fault injection passed: crash atomicity, ambiguous admission, ENOSPC/read-only, WAL/integrity rejection, queue limits, and running-job recovery")
+    print("Fault injection passed: crash atomicity, ambiguous admission, ENOSPC/read-only, WAL/integrity rejection, SQLite write contention, queue limits, and running-job recovery")
 
 
 if __name__ == "__main__":
