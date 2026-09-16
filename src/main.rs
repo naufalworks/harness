@@ -685,7 +685,7 @@ mod tests {
         assert_eq!(payload["ready"], true);
         assert_eq!(payload["commit"], BUILD_COMMIT);
         assert_eq!(payload["binary_sha256"].as_str().unwrap().len(), 64);
-        assert_eq!(payload["schema_version"], 19);
+        assert_eq!(payload["schema_version"], 20);
         assert_eq!(payload["database"]["quick_check"], "ok");
         assert_eq!(payload["database"]["queue"]["jobs_pending"], 0);
         assert_eq!(payload["workers"]["recording"], true);

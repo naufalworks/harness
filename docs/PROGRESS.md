@@ -1,5 +1,22 @@
 # PROGRESS — journal
 
+## 2026-09-16T10:22:00Z · Archive deletion now records intent and outcome
+
+P18-T04 slice 6 makes `delete_archive` truthful around the ciphertext-removal boundary. The
+archive path now appends a `delete_archive_intent` privacy event before attempting to remove the
+file, then records whether bytes were actually removed (`delete_archive_succeeded`) or were already
+missing (`delete_archive_missing`) before preserving the legacy `delete_archive` event. Turn-owned
+callers can route through a lease-guarded variant so intent and outcome writes both present the
+held fence.
+
+Migration 020 widens the append-only `privacy_events` action constraint without discarding existing
+history. Focused archive coverage now proves normal deletion, idempotence, append-only privacy
+events, and missing-ciphertext outcome reporting. Evidence on the current tree: `cargo fmt`,
+`cargo test --locked archive`, `python3 tests/test_migrations.py`, and
+`python3 tests/test_sql_contracts.py` pass. P18-T04 remains `doing` for partial filesystem receipts,
+the remaining durable-write audit, and multi-worker out-of-turn provider refusal. Worker count
+remains pinned at one.
+
 ## 2026-09-16T09:30:00Z · Commands and remote browser input are once-only effects
 
 P18-T04 slice 5 moves tool dispatch behind the external-effect ledger. Every `bash` call and

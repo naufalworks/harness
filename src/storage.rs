@@ -122,7 +122,9 @@ mod turns;
 pub use causal_coverage::{DeploymentAnomalies, MAX_COVERAGE_REQUESTS};
 pub use effects::{EffectOutcome, ExternalEffectReservation};
 pub use incident_compare::MAX_COMPARED_RUNS;
-pub use leases::{acquire_in_tx, guard_fence, steal_in_tx, AcquireRefusal, LEASE_TTL_SECONDS};
+pub use leases::{
+    acquire_in_tx, guard_fence, steal_in_tx, AcquireRefusal, Lease, LEASE_TTL_SECONDS,
+};
 #[allow(unused_imports)]
 pub use provenance::{IncidentQuery, PROVENANCE_NODE_KINDS, PROVENANCE_RELATIONS};
 
@@ -150,7 +152,7 @@ impl DbStore {
                     "legacy or unknown database: use scripts/migrate_legacy.py into a NEW database"
                 );
             }
-        } else if !(1..=19).contains(&version) {
+        } else if !(1..=20).contains(&version) {
             bail!("unsupported schema version {version}");
         }
         conn.execute_batch(
@@ -212,6 +214,11 @@ impl DbStore {
         }
         if version < 19 {
             conn.execute_batch(include_str!("../migrations/019_tool_effect_kinds.sql"))?;
+        }
+        if version < 20 {
+            conn.execute_batch(include_str!(
+                "../migrations/020_archive_delete_outcomes.sql"
+            ))?;
         }
         conn.execute(
             "UPDATE provider_calls SET state='failed',usage_status='unavailable',reason='process_restarted_with_call_reserved',finished_at=?1 WHERE state='reserved'",
@@ -336,7 +343,7 @@ impl DbStore {
             let last_checkpoint:Option<String>=c.query_row("SELECT finished_at FROM maintenance_runs WHERE action='wal_checkpoint' ORDER BY id DESC LIMIT 1",[],|r|r.get(0)).optional()?;
             let last_retention:Option<String>=c.query_row("SELECT finished_at FROM maintenance_runs WHERE action='retention' ORDER BY id DESC LIMIT 1",[],|r|r.get(0)).optional()?;
             let last_compaction:Option<String>=c.query_row("SELECT finished_at FROM maintenance_runs WHERE action='compaction' ORDER BY id DESC LIMIT 1",[],|r|r.get(0)).optional()?;
-            Ok(json!({"ready":schema_version==19&&quick_check=="ok","schema_version":schema_version,
+            Ok(json!({"ready":schema_version==20&&quick_check=="ok","schema_version":schema_version,
                 "quick_check":quick_check,"queue":{"jobs_pending":pending_jobs,"jobs_running":running_jobs,
                 "jobs_failed":failed_jobs,"turns_waiting":waiting_turns,"turns_running":running_turns},
                 "maintenance":{"journal_mode":journal_mode,"last_wal_checkpoint_at":last_checkpoint,
@@ -1253,7 +1260,7 @@ mod tests {
         let db = DbStore::init(":memory:").unwrap();
         seed_retention_fixture(&db).await;
         let readiness = db.readiness().await.unwrap();
-        assert_eq!(readiness["schema_version"], 19);
+        assert_eq!(readiness["schema_version"], 20);
         assert_eq!(readiness["ready"], true);
         assert!(
             readiness["maintenance"]["last_retention_at"].is_null(),

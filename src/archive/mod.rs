@@ -15,7 +15,7 @@
 //! The `&Connection` methods are the primitives. The `*_via` wrappers are the only path the
 //! HTTP layer uses, so every archive write runs inside a `DbStore` closure on the serialized
 //! writer instead of opening a second connection to the same database file.
-use crate::storage::DbStore;
+use crate::storage::{guard_fence, DbStore, Lease};
 use anyhow::{anyhow, bail, Context, Result};
 use ring::{
     aead, digest,
@@ -231,6 +231,20 @@ impl ArchiveStore {
         db.run(move |c| store.delete_archive(c, &archive_id)).await
     }
 
+    /// P18-T04: turn-owned archive deletion is a filesystem side effect, so callers that execute
+    /// it inside a durable turn can require the same held lease before recording intent and outcome.
+    #[allow(dead_code)]
+    pub async fn delete_archive_via_lease(
+        self: &Arc<Self>,
+        db: &DbStore,
+        archive_id: String,
+        lease: Lease,
+    ) -> Result<()> {
+        let store = Arc::clone(self);
+        db.run(move |c| store.delete_archive_with_lease(c, &archive_id, &lease))
+            .await
+    }
+
     pub fn archive_exact(
         &self,
         conn: &Connection,
@@ -345,6 +359,26 @@ impl ArchiveStore {
     }
 
     pub fn delete_archive(&self, conn: &Connection, archive_id: &str) -> Result<()> {
+        self.delete_archive_inner(conn, archive_id, None)
+    }
+
+    /// P18-T04: lease-guarded primitive for any future recorded-turn archive deletion path.
+    #[allow(dead_code)]
+    pub fn delete_archive_with_lease(
+        &self,
+        conn: &Connection,
+        archive_id: &str,
+        lease: &Lease,
+    ) -> Result<()> {
+        self.delete_archive_inner(conn, archive_id, Some(lease))
+    }
+
+    fn delete_archive_inner(
+        &self,
+        conn: &Connection,
+        archive_id: &str,
+        lease: Option<&Lease>,
+    ) -> Result<()> {
         let row: (String, String, Option<String>) = conn.query_row(
             "SELECT source_id,relative_path,deleted_at FROM exact_archives WHERE id=?",
             [archive_id],
@@ -353,16 +387,38 @@ impl ArchiveStore {
         if row.2.is_some() {
             return Ok(());
         }
-        let path = self.root.join(&row.1);
-        if path.exists() {
-            fs::remove_file(&path)?;
-        }
         let now = chrono::Utc::now().to_rfc3339();
+        {
+            let tx = conn.unchecked_transaction()?;
+            if let Some(lease) = lease {
+                guard_fence(&tx, lease)?;
+            }
+            tx.execute("INSERT INTO privacy_events(id,source_id,archive_id,action,created_at) VALUES(?,?,?,?,?)", params![Uuid::new_v4().to_string(), row.0, archive_id, "delete_archive_intent", now])?;
+            tx.commit()?;
+        }
+        let path = self.root.join(&row.1);
+        let removed = match fs::remove_file(&path) {
+            Ok(()) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => {
+                return Err(error).with_context(|| format!("delete archive {}", path.display()))
+            }
+        };
+        let finished_at = chrono::Utc::now().to_rfc3339();
         let tx = conn.unchecked_transaction()?;
+        if let Some(lease) = lease {
+            guard_fence(&tx, lease)?;
+        }
         tx.execute(
             "UPDATE exact_archives SET deleted_at=? WHERE id=? AND deleted_at IS NULL",
-            params![now, archive_id],
+            params![finished_at, archive_id],
         )?;
+        let outcome = if removed {
+            "delete_archive_succeeded"
+        } else {
+            "delete_archive_missing"
+        };
+        tx.execute("INSERT INTO privacy_events(id,source_id,archive_id,action,created_at) VALUES(?,?,?,?,?)", params![Uuid::new_v4().to_string(), row.0, archive_id, outcome, finished_at])?;
         tx.execute("INSERT INTO privacy_events(id,source_id,archive_id,action,created_at) VALUES(?,?,?,?,?)", params![Uuid::new_v4().to_string(), row.0, archive_id, "delete_archive", now])?;
         tx.commit()?;
         Ok(())
@@ -450,6 +506,9 @@ mod tests {
         }
         let conn = Connection::open_in_memory()?;
         conn.execute_batch(include_str!("../../migrations/007_privacy_archive.sql"))?;
+        conn.execute_batch(include_str!(
+            "../../migrations/020_archive_delete_outcomes.sql"
+        ))?;
         Ok((dir, conn, current, previous))
     }
 
@@ -492,7 +551,10 @@ mod tests {
             [],
             |row| row.get(0),
         )?;
-        assert_eq!(actions, "forget,delete_source,purge_index,delete_archive");
+        assert_eq!(
+            actions,
+            "forget,delete_source,purge_index,delete_archive_intent,delete_archive_succeeded,delete_archive"
+        );
         let state: (Option<String>, Option<String>, Option<String>) = conn.query_row("SELECT forgotten_at,source_deleted_at,index_purged_at FROM source_privacy_state WHERE source_id='source-2'", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
         assert!(state.0.is_some() && state.1.is_some() && state.2.is_some());
         assert!(store
@@ -501,6 +563,30 @@ mod tests {
             .to_string()
             .contains("deleted"));
         assert!(conn.execute("DELETE FROM privacy_events", []).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn archive_delete_records_missing_ciphertext_truthfully() -> Result<()> {
+        let (dir, conn, current, _) = fixture()?;
+        let store = ArchiveStore::open(&dir.join("archive"), &current, None)?;
+        let id = store.archive_exact(&conn, "source-missing", b"original")?;
+        let path: String = conn.query_row(
+            "SELECT relative_path FROM exact_archives WHERE id=?",
+            [&id],
+            |row| row.get(0),
+        )?;
+        fs::remove_file(dir.join("archive").join(path))?;
+        store.delete_archive(&conn, &id)?;
+        let actions: String = conn.query_row(
+            "SELECT group_concat(action,',') FROM privacy_events ORDER BY seq",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(
+            actions,
+            "delete_archive_intent,delete_archive_missing,delete_archive"
+        );
         Ok(())
     }
 

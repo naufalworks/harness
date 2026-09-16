@@ -12,7 +12,7 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MIG = ROOT / "migrations"
-CHAIN = ["001_core.sql", "002_recording.sql", "003_agentic.sql", "004_memory_kinds.sql", "005_generation_stream.sql", "006_provenance_edges.sql", "007_privacy_archive.sql", "008_provider_spend.sql", "009_run_cancellation.sql", "010_retention_maintenance.sql", "011_retrieval_receipts.sql", "012_memory_governance.sql", "013_session_workflows.sql", "014_history_search.sql", "015_causal_coverage.sql", "016_run_capsules.sql", "017_worker_leases.sql", "018_external_effects.sql", "019_tool_effect_kinds.sql"]
+CHAIN = ["001_core.sql", "002_recording.sql", "003_agentic.sql", "004_memory_kinds.sql", "005_generation_stream.sql", "006_provenance_edges.sql", "007_privacy_archive.sql", "008_provider_spend.sql", "009_run_cancellation.sql", "010_retention_maintenance.sql", "011_retrieval_receipts.sql", "012_memory_governance.sql", "013_session_workflows.sql", "014_history_search.sql", "015_causal_coverage.sql", "016_run_capsules.sql", "017_worker_leases.sql", "018_external_effects.sql", "019_tool_effect_kinds.sql", "020_archive_delete_outcomes.sql"]
 VERSIONS = [name.split("_", 1)[0] for name in CHAIN]
 LATEST_VERSION = int(VERSIONS[-1])
 OPEN_CONNECTIONS = []

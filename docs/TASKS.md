@@ -1343,6 +1343,16 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
   recovery test, and fault injection pass. P18-T04 remains `doing`: partial filesystem receipts,
   `delete_archive`, the remaining durable-write audit, and multi-worker out-of-turn refusal remain.
   Worker count remains pinned at one.
+- note (2026-09-16, slice 6 implemented; archive deletion outcome): `delete_archive` now records
+  `delete_archive_intent` before the ciphertext remove, then records either
+  `delete_archive_succeeded` or `delete_archive_missing` before preserving the legacy
+  `delete_archive` event for existing readers. Migration 020 widens the append-only privacy-event
+  action constraint without discarding history, and focused tests cover normal deletion,
+  idempotence, append-only privacy events, and missing-ciphertext outcome reporting. Evidence:
+  `cargo fmt`, `cargo test --locked archive`, `python3 tests/test_migrations.py`, and
+  `python3 tests/test_sql_contracts.py` pass. P18-T04 remains `doing`: partial filesystem receipts,
+  the remaining durable-write audit, and multi-worker out-of-turn refusal remain. Worker count
+  remains pinned at one.
 
 ### P18-T05 · Measure SQLite write contention before a second writer runs
 - status: todo
