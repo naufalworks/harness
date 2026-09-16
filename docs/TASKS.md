@@ -1265,7 +1265,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
   external effect" failure-mode test cannot be written until the effect record exists.
 
 ### P18-T04 · Carry and verify the fence on every durable turn write
-- status: doing
+- status: done
 - priority: low
 - lane: scale
 - parallel: no
@@ -1363,6 +1363,20 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
   and `cargo test --locked storage::tests::external_effects_are_recorded_before_dispatch_and_swept_to_unknown_on_restart`
   pass. P18-T04 remains `doing`: partial filesystem receipts and the remaining durable-write audit
   remain. Worker count remains pinned at one.
+- note (2026-09-16, slice 8 landed; audit closed): the remaining durable-write audit found no
+  worker-owned turn write without either the remembered lease and same-transaction `guard_fence`, or
+  an explicit non-holder control-plane exemption. Step begin/finish, activity writes, permission
+  request/expiry, provider-effect reservation/settlement, context save, answer completion, failure
+  verdicts, once-only tool effects, archive deletion outcomes, and failed LSP residual artifacts are
+  fenced or recorded truthfully. `request_cancellation`, `finalize_cancellation`, restart recovery,
+  and outbox flushing remain non-holder control-plane paths and do not impersonate a worker-held
+  fence. The partial filesystem receipt item is closed by the LSP residual artifact path: every file
+  still changed after a failed rollback is returned as `Artifact::FileChange` and persisted by
+  `finish_step` under the held fence. Evidence: `cargo fmt`, `cargo test --locked recovery`,
+  `cargo test --locked storage::tests::durable_steps_without_a_remembered_lease_write_nothing storage::tests::a_stale_remembered_lease_cannot_finish_a_durable_step storage::tests::cancellation_at_a_non_holder_is_honored_without_moving_the_lease`,
+  `cargo test --locked lsp_tool::tests::workspace_rename_records_a_residual_file_when_rollback_fails`,
+  `python3 tests/fault_injection.py`, and `git diff --check` pass. P18-T04 is done; worker count
+  remains pinned at one until P18-T05 measures SQLite write contention before a second writer runs.
 
 ### P18-T05 · Measure SQLite write contention before a second writer runs
 - status: todo

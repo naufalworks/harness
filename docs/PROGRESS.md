@@ -1,5 +1,11 @@
 # PROGRESS — journal
 
+## 2026-09-16T12:50:00Z · P18-T04 durable-write audit closed
+
+P18-T04 slice 8 audited the remaining durable turn-write paths against the lease-fence checklist. Worker-owned step, activity, permission request, permission expiry, provider-effect reservation/settlement, context save, answer completion, failure verdicts, once-only tool effects, archive deletion outcomes, and residual multi-file LSP rollback artifacts now either present the remembered lease and guard it in the same transaction, or are documented non-holder control-plane paths (`request_cancellation`, `finalize_cancellation`, restart recovery, outbox flushing) that are not allowed to impersonate a worker-held fence. The partial-filesystem receipt item is closed by the existing residual LSP rollback artifact path: failed rollback outputs every file still changed as `Artifact::FileChange`, and `finish_step` persists those artifacts under the held fence even when the step failed.
+
+Evidence: `cargo fmt`, `cargo test --locked recovery`, `cargo test --locked storage::tests::durable_steps_without_a_remembered_lease_write_nothing storage::tests::a_stale_remembered_lease_cannot_finish_a_durable_step storage::tests::cancellation_at_a_non_holder_is_honored_without_moving_the_lease`, `cargo test --locked lsp_tool::tests::workspace_rename_records_a_residual_file_when_rollback_fails`, `python3 tests/fault_injection.py`, and `git diff --check` pass. P18-T04 is now `done`; worker count remains pinned at one until P18-T05 measures SQLite write contention before a second writer runs.
+
 ## 2026-09-16T12:40:00Z · Multi-worker provider policy now refuses out-of-turn dispatch
 
 P18-T04 slice 7 closes the out-of-turn provider policy without pretending background work is a recorded turn. `MemoryAgents` now has an opt-in `HARNESS_MULTI_WORKER_PROVIDER_POLICY=refuse_out_of_turn` guard: when enabled, any provider dispatch that has a spend store but no task-local request id is refused before spend reservation, so no synthetic receipt, provider row, or external-effect row is invented. Ordinary single-worker operation keeps the existing exemption.

@@ -169,11 +169,13 @@ dispatch outside a turn would fail closed on paths that cannot currently duplica
 refusal belongs at the point where a worker has identity, so P18-T04 owns it: once a lease exists,
 an out-of-turn dispatch in multi-worker mode is refused rather than exempted.
 
-**Still owed (now P18-T04/T05).** Provider-effect reservation and settlement now present the exact
+**Closed by P18-T04; P18-T05 remains.** Provider-effect reservation and settlement now present the exact
 lease remembered by the worker and guard that fence in the same transaction as the effect write;
-the `SINGLE_WORKER_FENCE` placeholder is gone. The once-only tool effects above are now recorded. Residual multi-file filesystem changes are now returned as failed-step artifacts. `delete_archive`
-now records intent/outcome, and opt-in multi-worker provider policy refuses out-of-turn dispatch before spend reservation; the surfacing hop that shows an operator the `unknown` rows (`unknown_external_effects` exists
-and is unused) lands with P18-T05.
+the `SINGLE_WORKER_FENCE` placeholder is gone. The once-only tool effects above are now recorded.
+Residual multi-file filesystem changes are returned as failed-step artifacts, `delete_archive` records
+intent/outcome, and opt-in multi-worker provider policy refuses out-of-turn dispatch before spend
+reservation. The remaining surfacing hop that shows an operator the `unknown` rows
+(`unknown_external_effects` exists and is unused) lands with P18-T05.
 
 ## Interaction with the existing process lock
 
