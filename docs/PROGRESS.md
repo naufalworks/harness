@@ -2915,3 +2915,49 @@ previous release ran on, so the schema-aware rollback policy in `docs/ARCHITECTU
 auto-restore the previous binary without a schema question — which is precisely the case where
 the extra verified copy P15-T04's deployment took is not needed. `agent-monitor.service` was
 left `active` and untouched.
+
+### P18-T02 · Digest-pinned bounded extension contracts
+
+Merged `9f98309` into `main` fast-forward from `4c59578`, pushed, and deployed as
+`deploy-20260916T034446Z-9f98309` (pid 681499, release sha256
+`86ad594e6bea253a31c6806657cedbf5cc67ea5b7cef5594843ca632986cc19c`, schema 16). The
+post-deploy strict gate reported `0 failing check(s)` with `deployment: live binary matches
+HEAD (9f98309)`.
+
+The owner chose digest pinning over signing. That is the substantive decision in this task, so
+it is recorded rather than buried: with no third-party extensions, a signature would only prove
+that the single key in this repository signed the manifest, which is ceremony. A pin proves the
+property actually wanted — the bytes admitted are the bytes reviewed — and it is checkable
+offline with no key material to store, rotate or leak. The `harness.extension/v1` schema string
+exists so a later `v2` can add a signature block without reinterpreting a v1 manifest, so this
+is a deferral, not a dead end. The `done-when` line in `docs/TASKS.md` said "signed"; it was
+amended in place with a `done-when-change` note instead of being silently satisfied.
+
+Admission is fail-closed and returns the first refusal with a stable code. The refusal lanes
+that carry real weight are the two that survive a careless review: a manifest edited *after*
+being pinned is refused on digest drift, and a payload swapped beneath an intact review block is
+refused because a review attests the payload set, never the manifest digest. The second falls
+out of a deliberate asymmetry — a review stored inside a manifest cannot attest the bytes that
+contain it, so attesting the sorted `path sha256` set is the only honest option.
+
+Enforcement is split on purpose, and the split is the interesting part. `scripts/check_extensions.py`
+validates the checked-in corpus and *parses* the capability allowlist and schema string out of
+`src/plugins/mod.rs`, so the checker cannot drift from the code it is guarding. Host tool
+admission is asserted only in Rust, against the real `tools::Registry::standard()`, because a
+second copy of the tool list in Python would rot into a lie the first time a tool is renamed.
+Two tests exist solely to catch that class of drift: one checks the permission-mode names
+against the registry, the other checks the pin-ledger `kind` vocabulary against the checked-in
+ledger.
+
+Two things are disclosed rather than smoothed over. First, `src/plugins/mod.rs` carries a
+narrow module-level `#[allow(dead_code)]`: it is contract plus tests, and no runtime loader
+calls `admit` yet. Wiring a loader with no extensions to load would have added untested surface
+and pulled `api.yaml`, the API schema test and the HTTP-surface inventory into a task that did
+not need them; the allow is commented with the condition for removing it. Second, the
+`process_lock` test failed once mid-verification and then passed three times in isolation, on a
+file this branch does not touch (`git diff main -- src/process_lock.rs` is empty). It is a
+pre-existing flake under parallel execution, not a regression introduced here, and it is
+recorded so the next person who sees it does not re-debug it from scratch.
+
+`coverage`, `signature`, `cross-target` and `public-smoke` remain `[SKIP]` locally and stay
+CI-owned; nothing here changes that.
