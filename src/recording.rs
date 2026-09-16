@@ -486,7 +486,9 @@ impl DbStore {
         .await
     }
     pub async fn claim_recording(&self) -> Result<Option<Generation>> {
-        self.run(|c| {
+        let worker_id = self.worker_identity().as_str().to_string();
+        let claimed = self
+            .run(move |c| {
             let tx=c.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let row:Option<(String,String,String,String,String,i64)>=tx.query_row(
                 "SELECT r.request_id,r.session_id,r.scope,r.model,m.content,m.seq FROM chat_receipts r JOIN messages m ON m.id=r.request_id WHERE r.state='captured' ORDER BY m.seq LIMIT 1",[],
@@ -502,14 +504,34 @@ impl DbStore {
             while events.first().is_some_and(|e|e.role!="user") {events.remove(0);}
             events.push(Event{id:request.clone(),role:"user".into(),content:prompt.clone()});
             if tx.execute(sql::CLAIM,params![request,now()])?!=1 {bail!("recording was not captured");}
+            // Ownership is taken in the same transaction as the claim. A claim that committed
+            // without a lease would leave a turn whose state says "being worked on" and whose
+            // lease says nobody owns it -- the exact ambiguity a second worker cannot resolve.
+            let lease = match crate::storage::acquire_in_tx(&tx, &request, &worker_id)? {
+                Ok(lease) => lease,
+                Err(refusal) => bail!("cannot take the lease on {request}: {refusal:?}"),
+            };
             tx.execute(sql::EVENT,params![request,"generation_started",now()])?;
             tx.commit()?;
-            Ok(Some(Generation{request,session,scope,model,prompt,events}))
-        }).await
+            Ok(Some((Generation{request,session,scope,model,prompt,events}, lease)))
+        }).await?;
+        // Remembered after the commit: the fence this process must present on every later write
+        // for this turn. Re-reading the row at write time would authorize a holder the database
+        // has already moved past, which is the stale writer this exists to refuse.
+        Ok(claimed.map(|(turn, lease)| {
+            self.remember_lease(lease);
+            turn
+        }))
     }
     pub async fn save_recording_context(&self, request: String, context: Value) -> Result<()> {
+        // `None` means this process never claimed the turn: cancellation arriving over HTTP and
+        // the restart recovery sweep are not lease holders and are not treated as one.
+        let lease = self.held_lease(&request);
         self.run(move |c| {
             let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            if let Some(lease) = &lease {
+                crate::storage::guard_fence(&tx, lease)?;
+            }
             if tx.execute(sql::CONTEXT, params![request, context.to_string(), now()])? != 1 {
                 bail!("context cannot be saved in this state");
             }
@@ -520,9 +542,16 @@ impl DbStore {
         .await
     }
     pub async fn complete_recording(&self, request: String, answer: String) -> Result<()> {
+        let lease = self.held_lease(&request);
+        let finished = request.clone();
         self.run(move |c| {
             let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let stamp = now();
+            // The fence is checked in the same transaction as the answer write, so a holder whose
+            // lease was taken over cannot land an answer next to the new holder's.
+            if let Some(lease) = &lease {
+                crate::storage::guard_fence(&tx, lease)?;
+            }
             if cancel_pending_tx(&tx, &request, &stamp)? {
                 tx.commit()?;
                 return Ok(());
@@ -566,7 +595,9 @@ impl DbStore {
             tx.commit()?;
             Ok(())
         })
-        .await
+        .await?;
+        self.release_held_lease(&finished).await;
+        Ok(())
     }
     pub async fn fail_recording(&self, request: String, code: &'static str) -> Result<()> {
         if ![
@@ -580,9 +611,16 @@ impl DbStore {
         {
             bail!("invalid failure code");
         }
+        let lease = self.held_lease(&request);
+        let finished = request.clone();
         self.run(move |c| {
             let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let stamp = now();
+            // A failure verdict is a durable write too: recording "this turn failed" on a turn
+            // another worker now owns would overwrite a live generation with a stale verdict.
+            if let Some(lease) = &lease {
+                crate::storage::guard_fence(&tx, lease)?;
+            }
             if cancel_pending_tx(&tx, &request, &stamp)? {
                 tx.commit()?;
                 return Ok(());
@@ -615,7 +653,9 @@ impl DbStore {
             tx.commit()?;
             Ok(())
         })
-        .await
+        .await?;
+        self.release_held_lease(&finished).await;
+        Ok(())
     }
     pub async fn flush_recording_outbox(&self) -> Result<usize> {
         self.run(|c| {
@@ -913,11 +953,35 @@ pub async fn worker(
         match store.claim_recording().await {
             Ok(Some(turn)) => {
                 let id = turn.request.clone();
+                // The lease taken by the claim. Renewed while the turn runs so a live worker's
+                // ownership does not lapse mid-generation, which is what would invite a takeover
+                // of a turn that is still making progress.
+                let lease = store.held_lease(&id);
                 let db = store.clone();
                 let provider = agents.clone();
                 // Observe panics as well as returned errors; no HTTP request owns this work.
-                let result =
-                    tokio::spawn(async move { generate(&db, &provider, turn).await }).await;
+                let mut task = tokio::spawn(async move { generate(&db, &provider, turn).await });
+                let result = loop {
+                    // A third of the TTL: two consecutive missed heartbeats still leave the lease
+                    // valid, so a single slow tick does not cost a working turn its ownership.
+                    let beat = std::time::Duration::from_secs(
+                        (crate::storage::LEASE_TTL_SECONDS as u64).div_ceil(3),
+                    );
+                    tokio::select! {
+                        finished = &mut task => break finished,
+                        _ = tokio::time::sleep(beat) => {
+                            if let Some(lease) = &lease {
+                                // A lost lease is reported, not acted on: the generation is not
+                                // aborted here because its durable writes are already refused by
+                                // the fence check, and tearing down a turn that may still be
+                                // mid-effect is the steal path's decision, not the heartbeat's.
+                                if !matches!(store.renew_lease(lease).await, Ok(true)) {
+                                    eprintln!("{{\"event\":\"lease_renewal_failed\"}}");
+                                }
+                            }
+                        }
+                    }
+                };
                 if !matches!(result, Ok(Ok(()))) {
                     eprintln!("{{\"event\":\"generation_worker_failed\"}}");
                     if store.fail_recording(id, "worker_failed").await.is_err() {

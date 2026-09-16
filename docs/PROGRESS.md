@@ -1,5 +1,46 @@
 # PROGRESS — journal
 
+## 2026-09-16T07:40:00Z · A lease is not a timeout: P18-T04 slice 1 fences the turn writes
+
+`chat_receipts.state='generating'` says a turn is being worked on, but not by whom and not
+whether that worker is still alive. With one worker those questions have the same answer
+forever; with two, a worker that stalls past its expiry and then wakes up still believes it
+owns the turn, and its writes look exactly like the new holder's.
+
+A TTL cannot fix that. It only decides when someone else *may* take over -- it cannot reach
+into a stalled process and stop it. What stops it is the fence: the lease mints a strictly
+increasing number, the holder remembers the number it acquired, and every durable write
+re-checks the remembered number against the stored one *inside the same transaction as the
+write*. Checking before opening the transaction would leave the same race one layer down.
+
+Landed: `WorkerIdentity` (host, pid and a per-start nonce, so a restarted process cannot
+present the previous run's identity), acquisition inside `claim_recording`'s existing
+transaction, heartbeat renewal at a third of the 30s TTL, release on completion and failure,
+and `guard_fence` on `save_recording_context`, `complete_recording` and `fail_recording`.
+Every timestamp is issued by SQLite, never by the worker, so clock skew between workers cannot
+extend or revoke ownership.
+
+Two things were decided by evidence rather than preference. First, the module compiled entirely
+as dead code, which strict Clippy rejects; rather than paper over eight items with
+`#[allow(dead_code)]`, the module was made live, and the two functions that had no caller yet
+(an out-of-claim acquire and a lease reader) were deleted rather than kept as speculative API.
+Threading `&Lease` through the public signatures was measured first and deferred: 65 call sites,
+mostly tests. Second, the test contradicted the design on one point -- re-acquiring a lease the
+same worker still holds is allowed and mints a *higher* fence, because a write from before may
+still be in flight and two live authorizations on one turn is the thing being prevented. The
+assertion was wrong, not the code, and now asserts the real guarantee.
+
+Deliberately not done: stealing a lapsed lease from another worker. Acquire refuses that case
+and names the holder instead of doing the dangerous half, because taking over a turn that may
+be mid-effect needs the external-effect record to be load-bearing first. And the honest gap: a
+write arriving with no remembered lease -- HTTP cancellation, the restart recovery sweep --
+still proceeds unfenced, because those paths never claimed the turn.
+
+Evidence: 330 Rust tests, strict all-feature Clippy with no new allows, migrations 001->018 at
+`user_version=18`, 19 SQL contracts, zero failing documentation checks. The expiry test was
+mutation-checked -- replacing the lapse refusal with `if false` makes it fail -- and the source
+was restored.
+
 ## 2026-09-16T07:05:00Z · P18-T03 closes on an enumerated effect set, not on a claim about "every" effect
 
 The task said *every* non-replayable external effect is recorded. Only provider dispatch was, so

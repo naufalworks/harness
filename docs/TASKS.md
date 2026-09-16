@@ -1265,7 +1265,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
   external effect" failure-mode test cannot be written until the effect record exists.
 
 ### P18-T04 · Carry and verify the fence on every durable turn write
-- status: todo
+- status: doing
 - priority: low
 - lane: scale
 - parallel: no
@@ -1279,6 +1279,20 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
   `delete_archive`, replacing `SINGLE_WORKER_FENCE = 1` with the lease's fence, and refusing an
   out-of-turn provider dispatch in multi-worker mode instead of exempting it. The classification
   table in the design doc is the checklist.
+- note (2026-09-16, slice 1 landed; stopping before the steal path): worker identity, lease
+  acquisition inside the claim transaction, heartbeat renewal, release, and an in-transaction
+  fence check on the three durable turn writes (`save_recording_context`, `complete_recording`,
+  `fail_recording`) are wired in `src/storage/leases.rs` and `src/recording.rs`. The lease is
+  taken in the same transaction as the claim, because a claim that committed without a lease
+  would leave a turn whose state says it is being worked on and whose ownership says nobody
+  holds it. Times are SQLite-issued so a skewed worker clock cannot manufacture or revoke
+  ownership, and the expiry-then-resume failure mode is tested and mutation-checked: removing
+  the lapse refusal makes the test fail.
+  Kept `doing` because `done-when` says *every* durable turn write and all five failure modes.
+  Still owed: the steal path (a lapsed lease held by another worker is refused today, not
+  taken), the remaining four failure-mode tests, the honest gap that a write arriving with no
+  remembered lease -- HTTP cancellation and the restart recovery sweep -- proceeds unfenced,
+  and replacing `SINGLE_WORKER_FENCE = 1` with the lease fence.
 
 ### P18-T05 · Measure SQLite write contention before a second writer runs
 - status: todo

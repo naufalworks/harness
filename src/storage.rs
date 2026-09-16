@@ -23,6 +23,14 @@ pub struct DbStore {
     read_conns: Arc<Mutex<VecDeque<Connection>>>,
     pub commit_notify: tokio::sync::broadcast::Sender<()>,
     permits: Arc<Semaphore>,
+    /// Identity of this process as a worker. Minted once per start: a restarted process must not
+    /// be able to present the previous run's identity, or a lease would survive the crash of the
+    /// worker that took it.
+    worker: leases::WorkerIdentity,
+    /// Leases this process currently believes it holds, keyed by request. A durable write is
+    /// authorized by re-checking the remembered fence against the stored one inside the writing
+    /// transaction, so a holder whose lease was taken over is refused rather than merged.
+    held_leases: Arc<Mutex<std::collections::HashMap<String, leases::Lease>>>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Proposal {
@@ -106,6 +114,7 @@ mod effects;
 mod history;
 mod incident_compare;
 mod jobs;
+mod leases;
 mod memories;
 mod provenance;
 mod provider;
@@ -113,6 +122,7 @@ mod turns;
 pub use causal_coverage::{DeploymentAnomalies, MAX_COVERAGE_REQUESTS};
 pub use effects::{EffectOutcome, SINGLE_WORKER_FENCE};
 pub use incident_compare::MAX_COMPARED_RUNS;
+pub use leases::{acquire_in_tx, guard_fence, LEASE_TTL_SECONDS};
 #[allow(unused_imports)]
 pub use provenance::{IncidentQuery, PROVENANCE_NODE_KINDS, PROVENANCE_RELATIONS};
 
@@ -242,6 +252,8 @@ impl DbStore {
             read_conns: Arc::new(Mutex::new(readers)),
             commit_notify,
             permits: Arc::new(Semaphore::new(32)),
+            worker: leases::WorkerIdentity::for_this_process(),
+            held_leases: Arc::new(Mutex::new(std::collections::HashMap::new())),
         })
     }
     pub async fn run<T, F>(&self, f: F) -> Result<T>
@@ -389,6 +401,122 @@ mod tests {
         db.read(move |c| Ok(c.query_row(sql, [], |r| r.get::<_, i64>(0))?))
             .await
             .unwrap()
+    }
+
+    /// P18-T04: a TTL alone cannot stop a stalled worker -- it only says when someone else *may*
+    /// take over. The fence is what refuses the stalled worker's writes, and it is re-checked in
+    /// the same transaction as the write. Resuming mints a *higher* fence, so the number the
+    /// worker was carrying before the lapse no longer authorizes anything. Expiry here is forced
+    /// through database-issued times, because a worker's own clock must not be able to decide
+    /// whether it still owns a turn.
+    #[tokio::test]
+    async fn a_lapsed_lease_refuses_its_holders_writes_and_resuming_mints_a_higher_fence() {
+        let dir = std::env::temp_dir().join(format!("harness-leases-{}", uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("harness.db").to_string_lossy().to_string();
+        let db = DbStore::init(&path).unwrap();
+        db.run(|c| {
+            c.execute(
+                "INSERT INTO sessions(id,scope,created_at) VALUES('s1','proj',?1)",
+                params![now()],
+            )?;
+            c.execute(
+                "INSERT INTO messages(id,session_id,role,content,status,created_at) VALUES('r1','s1','user','hi','complete',?1)",
+                params![now()],
+            )?;
+            c.execute(
+                "INSERT INTO chat_receipts(request_id,session_id,scope,model,signature,redacted,state,captured_at,updated_at) VALUES('r1','s1','proj','m','sig',0,'generating',?1,?1)",
+                params![now()],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+        let acquire = |worker: &'static str| {
+            let db = db.clone();
+            async move {
+                db.run(move |c| {
+                    let tx = c.transaction()?;
+                    let outcome = leases::acquire_in_tx(&tx, "r1", worker)?;
+                    tx.commit()?;
+                    Ok(outcome)
+                })
+                .await
+                .unwrap()
+            }
+        };
+        let guard = |lease: leases::Lease| {
+            let db = db.clone();
+            async move {
+                db.run(move |c| {
+                    let tx = c.transaction()?;
+                    let refusal = leases::guard_fence(&tx, &lease)
+                        .err()
+                        .map(|e| e.to_string());
+                    tx.commit()?;
+                    Ok(refusal)
+                })
+                .await
+                .unwrap()
+            }
+        };
+
+        let first = acquire("worker-a")
+            .await
+            .expect("a fresh turn has no holder");
+        assert_eq!(first.fence, 1);
+        assert_eq!(guard(first.clone()).await, None);
+        assert!(db.renew_lease(&first).await.unwrap());
+
+        // Age the lease past its expiry using the database's clock, not the test's.
+        db.run(|c| {
+            c.execute(
+                "UPDATE worker_leases SET acquired_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','-60 seconds'),renewed_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','-60 seconds'),expires_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','-30 seconds') WHERE request_id='r1'",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+        // A heartbeat cannot resurrect a lapsed lease; that would make expiry meaningless.
+        assert!(!db.renew_lease(&first).await.unwrap());
+        let lapsed = guard(first.clone())
+            .await
+            .expect("a lapsed lease must not authorize a write");
+        assert!(lapsed.contains("lapsed"), "{lapsed}");
+
+        // Taking a lapsed lease away from its holder is the steal path, deliberately not this
+        // slice: the refusal names the holder instead of doing the dangerous half.
+        assert_eq!(
+            acquire("worker-b").await.unwrap_err(),
+            leases::AcquireRefusal::HeldByAnother {
+                worker_id: "worker-a".into(),
+                lapsed: true
+            }
+        );
+
+        let resumed = acquire("worker-a")
+            .await
+            .expect("its own lease is resumable");
+        assert_eq!(resumed.fence, 2);
+        assert_eq!(guard(resumed).await, None);
+        // The pre-lapse fence is dead even though the same worker resumed: a write still in flight
+        // from before the lapse is refused, and the refusal says who owns the turn now.
+        let stale = guard(first)
+            .await
+            .expect("the old fence must not authorize a write");
+        assert!(stale.contains("fence 2"), "{stale}");
+
+        // Re-acquiring a lease this worker still holds is allowed, but it does not hand back the
+        // same number: a write started under the previous fence may still be in flight, and two
+        // live authorizations on one turn is the thing being prevented.
+        let reacquired = acquire("worker-a")
+            .await
+            .expect("a worker may re-acquire its own lease");
+        assert_eq!(reacquired.fence, 3);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// P18-T03: `provider_calls` records what a call cost; this records whether it may have
