@@ -3095,3 +3095,36 @@ SQLite write contention and busy-timeout behaviour under real concurrency -- "fa
 debugging a duplicated provider call later. Extra UpCloud capacity is available if that evidence
 shows it is needed, but adding a node before the fencing obligations are met would buy throughput
 at the cost of the one constraint the owner set.
+
+## The process-lock "flake" was ownership outliving the owner
+
+CI went red on `process_lock::tests::a_live_owner_excludes_a_second_process_lock` while the same
+commit passed 327/327 locally. The tempting move was to re-run until green, since this test had
+been intermittently failing for a while and was already filed as a flake. That would have been the
+wrong call twice over: the owner's one hard constraint for multi-worker is no race conditions, and
+this is a race in the exact component that decides who owns the database.
+
+The panic payload named the real problem. After the first owner is dropped, re-acquiring is
+refused with "database is already owned by another live Harness process" -- so something still
+held the kernel lock after the owner was gone. Release was implicit in closing the descriptor, and
+a `flock` lock belongs to the *open file description*, not to the descriptor. Any child process
+forked while the lock was held inherits that description and keeps the lock alive after the owner
+drops its own copy. Under a parallel test binary that spawns child processes, the timing decides
+whether the lock is still held -- hence the intermittency, and hence why a busier CI runner failed
+where a quiet local machine passed.
+
+This is not only a test problem. Harness spawns child processes for tools while holding the
+process lock. If one of those outlives the parent, the lock file stays locked and the next start
+is refused for a database that nothing actually owns: a self-inflicted outage that clears only
+when an unrelated child happens to exit. Fixing the test would have hidden that.
+
+The fix is to release explicitly: `Drop` now issues `LOCK_UN`, which acts on the description
+itself and therefore releases the lock even when the description is shared. The metadata-file
+semantics are unchanged -- still diagnostic data, never authority.
+
+The regression test reproduces the hazard without needing a child process or a timing window:
+`dup` produces a second descriptor onto the same open file description, which is precisely what an
+inherited child holds. Dropping the owner and re-acquiring must succeed while that duplicate is
+still open. A mutation check confirmed the test is load-bearing -- with release reverted to relying
+on close, it fails with the exact CI error; with `LOCK_UN` in place it passes. The full suite is
+now 328/328.

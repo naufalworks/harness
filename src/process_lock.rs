@@ -14,6 +14,13 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 /// The adjacent metadata file may survive a crash, but the kernel lock never does. A new
 /// process can therefore recover stale ownership without guessing whether a recorded PID is
 /// still alive, while a live owner cannot be displaced or mistaken for stale metadata.
+///
+/// Release is explicit rather than implicit in closing the file. A `flock` lock belongs to the
+/// open file description, not to the descriptor, so any child process that was forked while the
+/// lock was held inherits that description and keeps the lock alive after the owner drops its
+/// own descriptor. Relying on close alone therefore makes ownership outlive the owner: a restart
+/// is refused with "already owned by another live Harness process" when no owner exists.
+/// `LOCK_UN` acts on the description itself, so it releases the lock even when it is shared.
 pub struct ProcessLock {
     _file: Option<File>,
 }
@@ -68,6 +75,17 @@ impl ProcessLock {
     }
 }
 
+#[cfg(unix)]
+impl Drop for ProcessLock {
+    fn drop(&mut self) {
+        if let Some(file) = self._file.as_ref() {
+            // Best effort: if this fails the descriptor still closes, which is the previous
+            // behaviour. There is no recovery action available from a destructor.
+            unsafe { flock(file.as_raw_fd(), LOCK_UN) };
+        }
+    }
+}
+
 fn normalized_database_path(database: &str) -> Result<PathBuf> {
     let input = Path::new(database);
     if input.exists() {
@@ -101,8 +119,15 @@ const LOCK_EX: i32 = 2;
 #[cfg(unix)]
 const LOCK_NB: i32 = 4;
 #[cfg(unix)]
+const LOCK_UN: i32 = 8;
+#[cfg(unix)]
 extern "C" {
     fn flock(fd: i32, operation: i32) -> i32;
+}
+#[cfg(all(unix, test))]
+extern "C" {
+    fn dup(fd: i32) -> i32;
+    fn close(fd: i32) -> i32;
 }
 
 #[cfg(test)]
@@ -149,6 +174,30 @@ mod tests {
         let second = directory.join("other.db");
         let _first = ProcessLock::acquire(first.to_str().unwrap()).unwrap();
         let _second = ProcessLock::acquire(second.to_str().unwrap()).unwrap();
+        std::fs::remove_dir_all(directory).ok();
+    }
+
+    /// Ownership must not outlive the owner just because some other descriptor still refers to
+    /// the same open file description. A child process forked while the lock was held inherits
+    /// exactly that state, and `dup` reproduces it deterministically in-process. Without an
+    /// explicit `LOCK_UN` on release, the lock survives the owner and a restart is refused with
+    /// "already owned by another live Harness process" when in fact nothing owns the database.
+    #[test]
+    fn releasing_ownership_does_not_depend_on_every_descriptor_being_closed() {
+        let (directory, database) = fixture();
+        let owner = ProcessLock::acquire(database.to_str().unwrap()).unwrap();
+        let inherited = unsafe { dup(owner._file.as_ref().unwrap().as_raw_fd()) };
+        assert!(
+            inherited >= 0,
+            "dup must succeed for this test to mean anything"
+        );
+
+        drop(owner);
+
+        let reacquired = ProcessLock::acquire(database.to_str().unwrap());
+        unsafe { close(inherited) };
+        reacquired.expect("a database with no live owner must be claimable again");
+
         std::fs::remove_dir_all(directory).ok();
     }
 }
