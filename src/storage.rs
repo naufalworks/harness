@@ -150,7 +150,7 @@ impl DbStore {
                     "legacy or unknown database: use scripts/migrate_legacy.py into a NEW database"
                 );
             }
-        } else if !(1..=18).contains(&version) {
+        } else if !(1..=19).contains(&version) {
             bail!("unsupported schema version {version}");
         }
         conn.execute_batch(
@@ -209,6 +209,9 @@ impl DbStore {
         }
         if version < 18 {
             conn.execute_batch(include_str!("../migrations/018_external_effects.sql"))?;
+        }
+        if version < 19 {
+            conn.execute_batch(include_str!("../migrations/019_tool_effect_kinds.sql"))?;
         }
         conn.execute(
             "UPDATE provider_calls SET state='failed',usage_status='unavailable',reason='process_restarted_with_call_reserved',finished_at=?1 WHERE state='reserved'",
@@ -333,7 +336,7 @@ impl DbStore {
             let last_checkpoint:Option<String>=c.query_row("SELECT finished_at FROM maintenance_runs WHERE action='wal_checkpoint' ORDER BY id DESC LIMIT 1",[],|r|r.get(0)).optional()?;
             let last_retention:Option<String>=c.query_row("SELECT finished_at FROM maintenance_runs WHERE action='retention' ORDER BY id DESC LIMIT 1",[],|r|r.get(0)).optional()?;
             let last_compaction:Option<String>=c.query_row("SELECT finished_at FROM maintenance_runs WHERE action='compaction' ORDER BY id DESC LIMIT 1",[],|r|r.get(0)).optional()?;
-            Ok(json!({"ready":schema_version==18&&quick_check=="ok","schema_version":schema_version,
+            Ok(json!({"ready":schema_version==19&&quick_check=="ok","schema_version":schema_version,
                 "quick_check":quick_check,"queue":{"jobs_pending":pending_jobs,"jobs_running":running_jobs,
                 "jobs_failed":failed_jobs,"turns_waiting":waiting_turns,"turns_running":running_turns},
                 "maintenance":{"journal_mode":journal_mode,"last_wal_checkpoint_at":last_checkpoint,
@@ -345,7 +348,9 @@ impl DbStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent_loop::{NewStep, StepOutcome};
     use crate::memory_agents::{ModelUsage, SpendLimits};
+    use crate::tools::Artifact;
     use rusqlite::TransactionBehavior;
     use std::collections::HashSet;
     /// One finished turn ('complete') and one live turn ('generating'), both with old rows, so a
@@ -598,6 +603,107 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+
+    /// P18-T04: worker-owned step writes fail closed unless this process can present the exact
+    /// lease it acquired. Refusal happens before either half of the step/event pair is written.
+    #[tokio::test]
+    async fn durable_steps_without_a_remembered_lease_write_nothing() {
+        let (dir, db) = leased_turn().await;
+        let error = db
+            .begin_step(NewStep {
+                request: "r1".into(),
+                session: "s1".into(),
+                kind: "tool_call",
+                tool_name: Some("read".into()),
+                tool_call_id: Some("call-1".into()),
+                input: json!({"path":"README.md"}),
+                event: "tool_started",
+                payload: json!({"tool":"read"}),
+            })
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("no remembered lease"), "{error}");
+        assert_eq!(count(&db, "SELECT count(*) FROM turn_steps").await, 0);
+        assert_eq!(count(&db, "SELECT count(*) FROM activity_events").await, 0);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// P18-T04: a worker that wakes after takeover must not finish its old running step. The
+    /// rejected transaction leaves the step running and creates no event or file-change receipt.
+    #[tokio::test]
+    async fn a_stale_remembered_lease_cannot_finish_a_durable_step() {
+        let (dir, db) = leased_turn().await;
+        let stale = acquire_lease(&db, "worker-a")
+            .await
+            .expect("a fresh turn is claimable");
+        db.remember_lease(stale);
+        let step = db
+            .begin_step(NewStep {
+                request: "r1".into(),
+                session: "s1".into(),
+                kind: "tool_call",
+                tool_name: Some("write".into()),
+                tool_call_id: Some("call-1".into()),
+                input: json!({"path":"note.txt"}),
+                event: "tool_started",
+                payload: json!({"tool":"write"}),
+            })
+            .await
+            .unwrap();
+        lapse(&db).await;
+        let replacement = steal_lease(&db, "worker-b")
+            .await
+            .expect("a lapsed lease is stealable");
+        assert_eq!(replacement.fence, 2);
+
+        let error = db
+            .finish_step(StepOutcome {
+                step,
+                request: "r1".into(),
+                session: "s1".into(),
+                status: "complete",
+                output: json!({"ok":true}),
+                bytes: 2,
+                truncated: false,
+                tokens_in: None,
+                tokens_out: None,
+                error_code: None,
+                event: "tool_completed",
+                payload: json!({"tool":"write"}),
+                artifacts: vec![Artifact::FileChange {
+                    path: "note.txt".into(),
+                    action: "created",
+                    before_hash: None,
+                    after_hash: Some("a".repeat(64)),
+                    diff: "+ok".into(),
+                    plus: 1,
+                    minus: 0,
+                }],
+            })
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("fence 2"), "{error}");
+        assert_eq!(
+            count(
+                &db,
+                "SELECT count(*) FROM turn_steps WHERE status='running'"
+            )
+            .await,
+            1
+        );
+        assert_eq!(
+            count(
+                &db,
+                "SELECT count(*) FROM activity_events WHERE kind='tool_completed'"
+            )
+            .await,
+            0
+        );
+        assert_eq!(count(&db, "SELECT count(*) FROM file_changes").await, 0);
+        std::fs::remove_dir_all(dir).ok();
     }
 
     /// P18-T04 failure mode: ordinary SQLite write contention may delay a heartbeat, but a delay
@@ -1147,7 +1253,7 @@ mod tests {
         let db = DbStore::init(":memory:").unwrap();
         seed_retention_fixture(&db).await;
         let readiness = db.readiness().await.unwrap();
-        assert_eq!(readiness["schema_version"], 18);
+        assert_eq!(readiness["schema_version"], 19);
         assert_eq!(readiness["ready"], true);
         assert!(
             readiness["maintenance"]["last_retention_at"].is_null(),

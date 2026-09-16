@@ -18,7 +18,7 @@ sys.path.insert(0,str(ROOT/'scripts'))
 from backup import backup
 from migrate_legacy import migrate
 
-MIGRATIONS=['001_core.sql','002_recording.sql','003_agentic.sql','004_memory_kinds.sql','005_generation_stream.sql','006_provenance_edges.sql','007_privacy_archive.sql','008_provider_spend.sql','009_run_cancellation.sql','010_retention_maintenance.sql','011_retrieval_receipts.sql','012_memory_governance.sql','013_session_workflows.sql','014_history_search.sql','015_causal_coverage.sql','016_run_capsules.sql','017_worker_leases.sql','018_external_effects.sql']
+MIGRATIONS=['001_core.sql','002_recording.sql','003_agentic.sql','004_memory_kinds.sql','005_generation_stream.sql','006_provenance_edges.sql','007_privacy_archive.sql','008_provider_spend.sql','009_run_cancellation.sql','010_retention_maintenance.sql','011_retrieval_receipts.sql','012_memory_governance.sql','013_session_workflows.sql','014_history_search.sql','015_causal_coverage.sql','016_run_capsules.sql','017_worker_leases.sql','018_external_effects.sql','019_tool_effect_kinds.sql']
 # P12-T02: the storage module was split into src/storage.rs plus src/storage/*.rs, so
 # the shipped SQL now lives across those files. The submodules hold the implementation
 # statements and src/storage.rs keeps its `mod tests` fixtures, some of which share a

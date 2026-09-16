@@ -685,7 +685,7 @@ mod tests {
         assert_eq!(payload["ready"], true);
         assert_eq!(payload["commit"], BUILD_COMMIT);
         assert_eq!(payload["binary_sha256"].as_str().unwrap().len(), 64);
-        assert_eq!(payload["schema_version"], 18);
+        assert_eq!(payload["schema_version"], 19);
         assert_eq!(payload["database"]["quick_check"], "ok");
         assert_eq!(payload["database"]["queue"]["jobs_pending"], 0);
         assert_eq!(payload["workers"]["recording"], true);
@@ -1836,6 +1836,7 @@ mod tests {
             })
             .await
             .unwrap();
+        store.claim_recording().await.unwrap().unwrap();
         let step = store
             .begin_step(agent_loop::NewStep {
                 request: request.clone(),
@@ -1991,6 +1992,7 @@ mod tests {
             })
             .await
             .unwrap();
+        store.claim_recording().await.unwrap().unwrap();
 
         // A model call whose stored message array is far larger than the 2 KB preview.
         let wall = "x".repeat(4096);
@@ -2328,6 +2330,7 @@ mod tests {
             })
             .await
             .unwrap();
+        store.claim_recording().await.unwrap().unwrap();
         let step = store
             .begin_step(agent_loop::NewStep {
                 request: request.clone(),
@@ -2660,6 +2663,7 @@ mod tests {
             })
             .await
             .unwrap();
+        store.claim_recording().await.unwrap().unwrap();
         let step = store
             .begin_step(agent_loop::NewStep {
                 request: request.clone(),

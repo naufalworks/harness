@@ -152,8 +152,8 @@ provider adapter is added without a record, or if an exemption outlives the func
 | --- | --- | --- |
 | `chat/completions` (buffered and streamed) | once-only — costs money, cannot be replayed | recorded (P18-T03) |
 | `GET /models` | replayable read — no charge, no delivery | exempt, named in the contract test |
-| `write`, `edit`, `ast_edit` tools | content-addressed: the same payload rewrites the same bytes, so a replay converges | needs a record only to report a *partial* write; deferred to P18-T04 with the fence |
-| `bash`, `browser` tools | once-only — arbitrary commands and navigations, no idempotency to lean on | **not recorded**; the sharpest remaining hole, owed by P18-T04 |
+| `write`, `edit`, `ast_edit` tools | content-addressed: the same payload rewrites the same bytes, so a replay converges | single-file publication is atomic; failed multi-file LSP rollback now returns artifacts for every file still changed (P18-T04) |
+| `bash`, browser `click`/`type`/`press` | once-only — commands and remote input have no idempotency to lean on | reserved before dispatch and settled after under the held fence (P18-T04); browser reads remain exempt |
 | `lsp` tool | server-local, no durable external state | out of scope |
 | exact archives, export packets | content-addressed by digest; rewriting identical bytes is harmless. `delete_archive` is not | archive writes out of scope; deletion owed by P18-T04 |
 | `recording_outbox` flush | internal database write only (it inserts jobs); at-least-once by design | covered by fencing, not by this table |
@@ -171,8 +171,8 @@ an out-of-turn dispatch in multi-worker mode is refused rather than exempted.
 
 **Still owed (now P18-T04/T05).** Provider-effect reservation and settlement now present the exact
 lease remembered by the worker and guard that fence in the same transaction as the effect write;
-the `SINGLE_WORKER_FENCE` placeholder is gone. The once-only tool effects above remain unrecorded,
-and the surfacing hop that shows an operator the `unknown` rows (`unknown_external_effects` exists
+the `SINGLE_WORKER_FENCE` placeholder is gone. The once-only tool effects above are now recorded. Residual multi-file filesystem changes are now returned as failed-step artifacts. `delete_archive`
+and the multi-worker out-of-turn refusal remain P18-T04 work; the surfacing hop that shows an operator the `unknown` rows (`unknown_external_effects` exists
 and is unused) lands with P18-T05.
 
 ## Interaction with the existing process lock

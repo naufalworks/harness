@@ -263,6 +263,17 @@ pub(super) fn apply_workspace(
     new_name: &str,
     changes: Vec<PendingChange>,
 ) -> ToolResult {
+    let mut writer =
+        |path: &Path, step: &str, content: &str| atomic_write(&ctx.root, path, step, content);
+    apply_workspace_with(ctx, new_name, changes, &mut writer)
+}
+
+pub(super) fn apply_workspace_with(
+    ctx: &ToolCtx,
+    new_name: &str,
+    changes: Vec<PendingChange>,
+    writer: &mut dyn FnMut(&Path, &str, &str) -> std::io::Result<()>,
+) -> ToolResult {
     for change in &changes {
         let current = match read_text(&change.path) {
             Ok(text) => text,
@@ -281,17 +292,14 @@ pub(super) fn apply_workspace(
     }
     let mut applied = Vec::new();
     for (index, change) in changes.iter().enumerate() {
-        if let Err(error) = atomic_write(&ctx.root, &change.path, &ctx.step_id, &change.after) {
+        if let Err(error) = writer(&change.path, &ctx.step_id, &change.after) {
             let mut rollback_errors = Vec::new();
             for applied_index in applied.iter().rev().copied() {
                 let prior: &PendingChange = &changes[applied_index];
                 if let Some(before) = prior.before.as_deref() {
-                    if let Err(rollback) = atomic_write(
-                        &ctx.root,
-                        &prior.path,
-                        &format!("{}-rollback", ctx.step_id),
-                        before,
-                    ) {
+                    if let Err(rollback) =
+                        writer(&prior.path, &format!("{}-rollback", ctx.step_id), before)
+                    {
                         rollback_errors.push(format!("{}: {rollback}", prior.display));
                     }
                 }
@@ -301,10 +309,28 @@ pub(super) fn apply_workspace(
             } else {
                 format!("rollback also failed for {}", rollback_errors.join(", "))
             };
-            return ToolResult::err(
+            let mut result = ToolResult::err(
                 "write_failed",
                 format!("{}: {error}; {rollback}", change.display),
             );
+            // A failed rollback is itself a filesystem outcome. Persist every file that still
+            // differs from its pre-rename bytes even though the overall tool step failed.
+            for applied_index in applied.iter().copied() {
+                let prior: &PendingChange = &changes[applied_index];
+                if let Ok(current) = read_text(&prior.path) {
+                    if prior.before.as_deref() != Some(current.as_str()) {
+                        let residual = crate::tools::edit_tools::describe(
+                            &ctx.root,
+                            prior.path.clone(),
+                            "modify",
+                            prior.before.clone(),
+                            current,
+                        );
+                        result = result.with_artifact(residual.artifact());
+                    }
+                }
+            }
+            return result;
         }
         applied.push(index);
     }

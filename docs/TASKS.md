@@ -1334,6 +1334,15 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
   P18-T04 remains `doing`: once-only `bash`/side-effecting-browser effects, partial-write reporting,
   `delete_archive`, the remaining durable-write audit, and the multi-worker out-of-turn policy are
   still open. Worker count remains pinned at one.
+- note (2026-09-16, slice 5 implemented; tool effects): every `bash` call and browser
+  `click`/`type`/`press` now reserves a fence-independent external-effect identity before dispatch
+  under the held lease and settles it before the durable step. Browser `open`, `snapshot`,
+  `screenshot`, and `close` remain outside the ledger. Migration 019 widens the enforced kind set
+  without discarding existing effect history. Focused tests prove the classification and an actual
+  bash reservation/settlement; the full 340-test suite, strict Clippy, migration/SQL contracts,
+  recovery test, and fault injection pass. P18-T04 remains `doing`: partial filesystem receipts,
+  `delete_archive`, the remaining durable-write audit, and multi-worker out-of-turn refusal remain.
+  Worker count remains pinned at one.
 
 ### P18-T05 · Measure SQLite write contention before a second writer runs
 - status: todo

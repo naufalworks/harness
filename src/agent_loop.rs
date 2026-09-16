@@ -10,7 +10,7 @@
 use crate::{
     memory_agents::{self, GenerationSink, MemoryAgents, ModelTurn, ToolCall},
     safety,
-    storage::{DbStore, ScopeConfig},
+    storage::{DbStore, EffectOutcome, ScopeConfig},
     subagent,
     tools::{Artifact, PermissionMode, Registry, ToolResult, ToolStatus, MAX_OUTPUT},
 };
@@ -652,11 +652,68 @@ impl Ctx<'_> {
                 )
                 .await;
         }
+        // P18-T04: commands and browser input can escape the database. Reserve their stable
+        // turn/step/payload identity before dispatch so a crash or takeover cannot silently run
+        // the same logical effect twice. Browser reads remain outside this ledger.
+        let effect_kind = tool_effect_kind(&self.registry, &call.name, &args);
+        let effect = if let Some(kind) = effect_kind {
+            let digest =
+                safety::fingerprint(&json!({"tool":call.name,"arguments":args}).to_string());
+            Some(
+                self.store
+                    .reserve_external_effect(
+                        self.request.clone(),
+                        step.clone(),
+                        digest,
+                        kind.into(),
+                        self.store.held_lease(&self.request),
+                    )
+                    .await?
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "side-effecting tool call on generating turn was not recorded"
+                        )
+                    })?,
+            )
+        } else {
+            None
+        };
         let registry = self.registry.clone();
         let name = call.name.clone();
-        let result =
+        let invoked =
             tokio::task::spawn_blocking(move || registry.invoke(tool_ctx.as_ref(), &name, args))
+                .await;
+        let result = match invoked {
+            Ok(result) => result,
+            Err(error) => {
+                if let Some(effect) = effect {
+                    self.store
+                        .settle_external_effect(
+                            effect,
+                            EffectOutcome::Unknown,
+                            Some(step),
+                            Some(format!(
+                                "tool worker stopped before reporting an outcome: {error}"
+                            )),
+                        )
+                        .await?;
+                }
+                return Err(error.into());
+            }
+        };
+        if let Some(effect) = effect {
+            let reason = result
+                .error_code
+                .map(|code| format!("tool returned {code}"));
+            self.store
+                .settle_external_effect(
+                    effect,
+                    EffectOutcome::Succeeded,
+                    Some(step.clone()),
+                    reason,
+                )
                 .await?;
+        }
         self.finish_tool(step, call, result, None).await
     }
 
@@ -1070,6 +1127,17 @@ fn tool_names(tools: &[Value]) -> Vec<String> {
         .collect()
 }
 
+/// External-effect coverage is deliberately narrower than the permission capability: bash always
+/// dispatches a process, while browser snapshots and navigation are reads and only anchored input
+/// operations can change remote state.
+fn tool_effect_kind(registry: &Registry, name: &str, args: &Value) -> Option<&'static str> {
+    registry.get(name).and_then(|tool| match name {
+        "bash" => Some("bash_command"),
+        "browser" if tool.side_effecting_for(args) => Some("browser_input"),
+        _ => None,
+    })
+}
+
 fn exhausted(
     steps: i64,
     max_steps: i64,
@@ -1406,6 +1474,66 @@ mod tests {
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             Ok(rows)
         }).await.unwrap()
+    }
+
+    #[test]
+    fn only_bash_and_browser_input_enter_the_tool_effect_ledger() {
+        let registry = Registry::standard();
+        assert_eq!(
+            tool_effect_kind(&registry, "bash", &json!({"command":"printf ok"})),
+            Some("bash_command")
+        );
+        for operation in ["open", "snapshot", "screenshot", "close"] {
+            assert_eq!(
+                tool_effect_kind(&registry, "browser", &json!({"operation":operation})),
+                None,
+                "browser {operation} is not remote input"
+            );
+        }
+        for operation in ["click", "type", "press"] {
+            assert_eq!(
+                tool_effect_kind(&registry, "browser", &json!({"operation":operation})),
+                Some("browser_input"),
+                "browser {operation} can change remote state"
+            );
+        }
+        assert_eq!(
+            tool_effect_kind(&registry, "write", &json!({"path":"notes.md"})),
+            None,
+            "filesystem writes need truthful local receipts, not the external-effect ledger"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_bash_command_is_reserved_and_settled_once() {
+        let db = DbStore::init(":memory:").unwrap();
+        let root = project(&db, "auto_all", ScopePatch::default()).await;
+        let script = Script::new(vec![
+            calls(vec![(
+                "call-1",
+                "bash",
+                r#"{"command":"printf ok","description":"print ok"}"#,
+            )]),
+            text("The command printed ok."),
+        ]);
+        let agents = provider(script).await;
+        let turn = claim(&db, "print ok").await;
+        let request = turn.request.clone();
+        recording::generate(&db, &agents, turn).await.unwrap();
+
+        let effect: (i64, String, String, i64) = db
+            .read(move |c| {
+                Ok(c.query_row(
+                    "SELECT count(*),state,kind,fence FROM external_effects WHERE request_id=?1 AND kind='bash_command'",
+                    [&request],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                )?)
+            })
+            .await
+            .unwrap();
+        assert_eq!(effect, (1, "succeeded".into(), "bash_command".into(), 1));
+        assert!(permissions(&db).await.is_empty());
+        std::fs::remove_dir_all(root).ok();
     }
 
     #[tokio::test]

@@ -1,5 +1,25 @@
 # PROGRESS — journal
 
+## 2026-09-16T09:30:00Z · Commands and remote browser input are once-only effects
+
+P18-T04 slice 5 moves tool dispatch behind the external-effect ledger. Every `bash` call and
+browser `click`, `type`, or `press` reserves `(request, durable step, payload digest)` under the
+held lease before invocation and settles before the step receipt. Browser reads (`open`, `snapshot`,
+`screenshot`, `close`) remain exempt. A blocking-worker join failure is recorded as `unknown`; a
+returned tool result proves the invocation returned and is settled `succeeded`, with its error code
+retained as the reason when present.
+
+Migration 019 widens the enumerated effect kinds to `bash_command` and `browser_input` while
+preserving existing rows and immutability triggers. The ENOSPC fault test now vacuums reusable
+freelist pages before pinning `max_page_count`, so a table-rebuild migration cannot make that
+simulation silently use free pages instead of exercising `SQLITE_FULL`.
+
+Evidence on the current tree: formatting and strict all-target/all-feature Clippy pass; 340 Rust
+tests pass; recovery passes; fault injection passes; migrations 001→019 reach `user_version=19`
+with data, FTS, and foreign keys preserved; 19 SQL contracts pass; `git diff --check` passes.
+P18-T04 stays `doing` for partial filesystem receipts, `delete_archive`, the remaining durable-write
+audit, and multi-worker out-of-turn provider refusal. Worker count remains pinned at one.
+
 ## 2026-09-16T08:30:00Z · Provider effects now carry the holder's real fence
 
 P18-T04 slice 4 removes the `SINGLE_WORKER_FENCE = 1` production placeholder. Before either

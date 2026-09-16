@@ -91,8 +91,15 @@ impl DbStore {
     async fn insert_step(&self, parent: Option<String>, step: NewStep) -> Result<String> {
         let id = uid();
         let created = id.clone();
+        let lease = self.held_lease(&step.request).ok_or_else(|| {
+            anyhow::anyhow!(
+                "turn {} has no remembered lease: refusing to begin a durable step",
+                step.request
+            )
+        })?;
         self.run(move |c| {
             let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            crate::storage::guard_fence(&tx, &lease)?;
             let seq: i64 = tx.query_row(sql::STEP_NEXT_SEQ, [&step.request], |r| r.get(0))?;
             let stamp = now();
             tx.execute(
@@ -131,8 +138,15 @@ impl DbStore {
     /// `file_changes` rows are written with `applied=1`: the tool has already written the file
     /// by the time it hands back the artifact, so claiming anything else would be a lie.
     pub async fn finish_step(&self, done: StepOutcome) -> Result<()> {
+        let lease = self.held_lease(&done.request).ok_or_else(|| {
+            anyhow::anyhow!(
+                "turn {} has no remembered lease: refusing to finish a durable step",
+                done.request
+            )
+        })?;
         self.run(move |c| {
             let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            crate::storage::guard_fence(&tx, &lease)?;
             let stamp = now();
             if tx.execute(sql::STEP_FINISH, params![done.step, done.status, done.output.to_string(), done.bytes, done.truncated, done.tokens_in, done.tokens_out, done.error_code, stamp])? != 1 {
                 bail!("step {} is no longer running", done.step);
@@ -177,8 +191,15 @@ impl DbStore {
         kind: &'static str,
         payload: Value,
     ) -> Result<()> {
+        let lease = self.held_lease(&request).ok_or_else(|| {
+            anyhow::anyhow!(
+                "turn {request} has no remembered lease: refusing a durable activity write"
+            )
+        })?;
         self.run(move |c| {
-            c.execute(
+            let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            crate::storage::guard_fence(&tx, &lease)?;
+            tx.execute(
                 sql::EVENT,
                 params![
                     request,
@@ -189,6 +210,7 @@ impl DbStore {
                     now()
                 ],
             )?;
+            tx.commit()?;
             Ok(())
         })
         .await
@@ -200,8 +222,15 @@ impl DbStore {
     pub async fn request_permission(&self, ask: NewPermission) -> Result<String> {
         let id = uid();
         let created = id.clone();
+        let lease = self.held_lease(&ask.request).ok_or_else(|| {
+            anyhow::anyhow!(
+                "turn {} has no remembered lease: refusing a durable permission request",
+                ask.request
+            )
+        })?;
         self.run(move |c| {
             let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            crate::storage::guard_fence(&tx, &lease)?;
             let stamp = now();
             let expires = (chrono::Utc::now() + chrono::Duration::seconds(ask.ttl_seconds)).to_rfc3339();
             tx.execute(sql::PERMISSION_CREATE, params![id, ask.request, ask.step, ask.tool, ask.summary, ask.args.to_string(), stamp, expires])?;
@@ -346,8 +375,14 @@ impl DbStore {
         session: String,
         step: String,
     ) -> Result<String> {
+        let lease = self.held_lease(&request).ok_or_else(|| {
+            anyhow::anyhow!(
+                "turn {request} has no remembered lease: refusing a durable permission expiry"
+            )
+        })?;
         self.run(move |c| {
             let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            crate::storage::guard_fence(&tx, &lease)?;
             let stamp = now();
             if tx.execute(sql::PERMISSION_EXPIRE, params![id, stamp])? == 1 {
                 tx.execute(

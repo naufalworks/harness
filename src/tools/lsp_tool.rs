@@ -261,7 +261,7 @@ impl Tool for Lsp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::{PermissionMode, Registry, ToolStatus};
+    use crate::tools::{Artifact, PermissionMode, Registry, ToolStatus};
     use std::io::Cursor;
 
     fn project() -> (PathBuf, ToolCtx) {
@@ -346,6 +346,44 @@ mod tests {
         assert!(std::fs::read_to_string(root.join("src/use.rs"))
             .unwrap()
             .contains("new"));
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn workspace_rename_records_a_residual_file_when_rollback_fails() {
+        let (root, ctx) = project();
+        let planned = plan_workspace(&ctx, &workspace(&root), &expected(&root)).unwrap();
+        let mut calls = 0;
+        let mut writer = |path: &Path, _step: &str, content: &str| {
+            calls += 1;
+            if calls == 1 {
+                std::fs::write(path, content)
+            } else {
+                Err(std::io::Error::other("injected write failure"))
+            }
+        };
+        let result = apply_workspace_with(&ctx, "new", planned, &mut writer);
+        assert_eq!(result.status, ToolStatus::Failed);
+        assert_eq!(result.error_code, Some("write_failed"));
+        assert!(
+            result.content.contains("rollback also failed"),
+            "{}",
+            result.content
+        );
+        assert_eq!(result.artifacts.len(), 1, "{:?}", result.artifacts);
+        assert!(matches!(
+            result.artifacts.first(),
+            Some(Artifact::FileChange {
+                action: "modify",
+                ..
+            })
+        ));
+        assert!(std::fs::read_to_string(root.join("src/lib.rs"))
+            .unwrap()
+            .contains("new"));
+        assert!(std::fs::read_to_string(root.join("src/use.rs"))
+            .unwrap()
+            .contains("old"));
         std::fs::remove_dir_all(root).ok();
     }
 

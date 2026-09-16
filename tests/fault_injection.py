@@ -75,6 +75,9 @@ def disk_and_readonly(root: Path) -> None:
     schema(path)
     with sqlite3.connect(path, isolation_level=None) as db:
         db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        # Table-rebuild migrations can leave reusable freelist pages. Compact first so pinning
+        # max_page_count to page_count really forces the next page allocation to report FULL.
+        db.execute("VACUUM")
         pages = db.execute("PRAGMA page_count").fetchone()[0]
         db.execute(f"PRAGMA max_page_count={pages}")
         try:
