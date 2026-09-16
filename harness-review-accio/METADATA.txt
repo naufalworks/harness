@@ -1,0 +1,4 @@
+worktree=/root/development/harness-review-accio
+branch=review-accio-hardening
+base_commit=9947c0b7798c9d7d42b791b1b29df080043f137f
+saved_at=2026-09-14T16:23:47Z

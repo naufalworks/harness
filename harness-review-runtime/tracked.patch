@@ -1,0 +1,325 @@
+diff --git a/src/main.rs b/src/main.rs
+index 4825710..f8937ae 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -24,6 +24,7 @@ mod process_lock;
+ mod recording;
+ mod recording_sql;
+ mod repo_map; // P3-T04 bounded per-scope file/symbol map
++mod runtime_safety; // P10-T05/P13-T03 child-process cleanup and cooperative shutdown
+ mod safety;
+ mod skills; // P5-T02 skills index and bounded SKILL.md bodies
+ mod storage;
+@@ -1083,7 +1084,8 @@ async fn activity_stream(
+     tokio::spawn(async move {
+         let (mut cursor, mut quiet, mut failures) = (after, tokio::time::Instant::now(), 0u32);
+         // A closed channel is the client hanging up; stop reading the database for a tab that left.
+-        while !tx.is_closed() {
++        // A requested shutdown ends it too: a graceful stop must not wait on a live tab.
++        while !tx.is_closed() && !runtime_safety::is_shutting_down() {
+             match h.store.activity_since(q.session_id.clone(), cursor).await {
+                 // Contention on the database queue is transient and must not look like "turn over":
+                 // hold the cursor, try again, and give up only after the failures stop being a blip.
+@@ -1170,7 +1172,7 @@ async fn generation_stream(
+     let (tx, rx) = tokio::sync::mpsc::channel::<String>(64);
+     tokio::spawn(async move {
+         let (mut cursor, mut quiet, mut failures) = (after, tokio::time::Instant::now(), 0u32);
+-        while !tx.is_closed() {
++        while !tx.is_closed() && !runtime_safety::is_shutting_down() {
+             match h.store.generation_since(q.session_id.clone(), cursor).await {
+                 Err(_) => {
+                     failures += 1;
+@@ -1368,6 +1370,9 @@ async fn main() -> Result<()> {
+     if key.trim().is_empty() {
+         bail!("HARNESS_API_KEY cannot be empty");
+     }
++    // Fail closed: an unparseable command-policy value aborts startup rather than
++    // silently running with a policy the operator asked for turned off.
++    tools::command_policy::install(tools::command_policy::from_env().map_err(anyhow::Error::msg)?);
+     let database = env::var("HARNESS_DB").unwrap_or_else(|_| "data/harness_v2.db".into());
+     if let Some(parent) = std::path::Path::new(&database).parent() {
+         if !parent.as_os_str().is_empty() {
+@@ -1424,16 +1429,43 @@ async fn main() -> Result<()> {
+         hsts,
+     };
+     let listener = tokio::net::TcpListener::bind(addr).await?;
++    let shutdown_store = store.clone();
+     workers.recording.store(true, Ordering::Release);
+     let worker_health = workers.clone();
+     let recording_store = store.clone();
+     let recording_agents = agents.clone();
+-    tokio::spawn(async move { recording::worker(recording_store, recording_agents).await; worker_health.recording.store(false, Ordering::Release); });
++    let recording_handle = tokio::spawn(async move { recording::worker(recording_store, recording_agents).await; worker_health.recording.store(false, Ordering::Release); });
+     workers.extraction.store(true, Ordering::Release);
+     let worker_health = workers.clone();
+-    tokio::spawn(async move { memory_agents::worker(store, agents).await; worker_health.extraction.store(false, Ordering::Release); });
++    let extraction_handle = tokio::spawn(async move { memory_agents::worker(store, agents).await; worker_health.extraction.store(false, Ordering::Release); });
+     println!("harness listening on http://{addr} (authenticated, single-user)");
+-    axum::serve(listener, router(state)).await?;
++    // Cooperative shutdown: stop accepting connections and let the SSE loops end,
++    // then drain the generation worker, record the interrupt and clean up the child
++    // process groups. The interrupt is only recorded once the worker has actually
++    // drained; if it did not finish in time, startup recovery owns that transition
++    // and we do not race a live step.
++    axum::serve(listener, router(state))
++        .with_graceful_shutdown(runtime_safety::shutdown_signal())
++        .await?;
++    runtime_safety::request_shutdown();
++    let drained = tokio::time::timeout(Duration::from_secs(20), recording_handle)
++        .await
++        .is_ok();
++    extraction_handle.abort();
++    if drained {
++        if let Err(error) = shutdown_store.record_shutdown_interrupts().await {
++            eprintln!(
++                "{{\"event\":\"shutdown_recovery_failed\",\"detail\":\"{}\"}}",
++                safety::redact(&error.to_string())
++            );
++        }
++    }
++    let stopped = runtime_safety::terminate_all(Duration::from_secs(5));
++    println!(
++        "{{\"event\":\"shutdown_complete\",\"children_stopped\":{},\"interrupts_recorded\":{}}}",
++        stopped.len(),
++        drained
++    );
+     Ok(())
+ }
+ 
+diff --git a/src/recording.rs b/src/recording.rs
+index 6dbc4a2..97470d1 100644
+--- a/src/recording.rs
++++ b/src/recording.rs
+@@ -343,6 +343,12 @@ impl DbStore {
+         })
+         .await
+     }
++    /// Run the same durable interrupt transition `recover` performs at startup,
++    /// but during a cooperative shutdown. The caller invokes this only after the
++    /// generation worker has drained, so it can never overwrite a live step.
++    pub async fn record_shutdown_interrupts(&self) -> Result<()> {
++        self.run(|c| recover(c)).await
++    }
+     pub async fn flush_recording_outbox(&self) -> Result<usize> {
+         self.run(|c| {
+             let tx=c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+diff --git a/src/tools/bash_tool.rs b/src/tools/bash_tool.rs
+index 22d9efc..3ac45e8 100644
+--- a/src/tools/bash_tool.rs
++++ b/src/tools/bash_tool.rs
+@@ -7,8 +7,11 @@
+ //! without building a tool; it forces an approval even in `auto_all`.
+ use serde_json::{json, Value};
+ 
+-use super::edit_tools::run_capped;
+-use super::{is_dangerous_command, paths, truncate_chars, Tool, ToolCtx, ToolResult, MAX_OUTPUT};
++use super::edit_tools::{run_capped, run_capped_tracked};
++use super::{
++    command_policy, is_dangerous_command, paths, truncate_chars, Tool, ToolCtx, ToolResult,
++    MAX_OUTPUT,
++};
+ 
+ pub const DEFAULT_TIMEOUT: u64 = 120;
+ pub const MAX_TIMEOUT: u64 = 600;
+@@ -125,12 +128,14 @@ fn log_name(step_id: &str) -> String {
+ }
+ 
+ fn foreground(ctx: &ToolCtx, call: &Call, summary: String) -> ToolResult {
+-    let run = run_capped(
++    let run = run_capped_tracked(
+         &call.command,
+         &ctx.root,
+         &ctx.scope,
+         call.timeout,
+         OUTPUT_CAP,
++        &ctx.request_id,
++        &ctx.step_id,
+     );
+     if !run.started {
+         return ToolResult::err("spawn_failed", &run.output);
+@@ -182,11 +187,17 @@ fn background(ctx: &ToolCtx, call: &Call, summary: String) -> ToolResult {
+         .last()
+         .and_then(|t| t.parse::<u32>().ok());
+     match pid {
+-        Some(pid) => ToolResult::ok(summary, json!({
+-            "pid": pid,
+-            "log": display,
+-            "note": format!("started detached; read it with `bash tail -n 50 {display}` and stop it with `bash kill {pid}`"),
+-        }).to_string()),
++        Some(pid) => {
++            // A detached job outlives the turn, so the registry is the only thing
++            // that lets shutdown (or a later cancellation) still stop it instead
++            // of orphaning it.
++            crate::runtime_safety::register(pid, &ctx.request_id, &ctx.step_id);
++            ToolResult::ok(summary, json!({
++                "pid": pid,
++                "log": display,
++                "note": format!("started detached; read it with `bash tail -n 50 {display}` and stop it with `bash kill {pid}`"),
++            }).to_string())
++        }
+         None => ToolResult::err("spawn_failed", format!("could not start the command in the background ({}): {}", spawn.label(), spawn.output)),
+     }
+ }
+@@ -214,6 +225,8 @@ impl Tool for Bash {
+                 "timeout_seconds": call.timeout,
+                 "background": call.background,
+                 "dangerous": is_dangerous_command(&call.command),
++                "classes": command_policy::current().classes(&call.command),
++                "escalated": command_policy::current().escalation(&call.command),
+             }),
+             Err(refusal) => json!({ "command": args.get("command"), "error": refusal.error_code }),
+         }
+@@ -221,8 +234,23 @@ impl Tool for Bash {
+     fn run(&self, ctx: &ToolCtx, args: Value) -> ToolResult {
+         let summary = label(&args);
+         match parse(&args) {
+-            Ok(call) if call.background => background(ctx, &call, summary),
+-            Ok(call) => foreground(ctx, &call, summary),
++            Ok(call) => {
++                // A policy `deny` class overrides every mode and every approval:
++                // running it would be a policy violation, not a preference.
++                if let Some(reason) = command_policy::current().refusal(&call.command) {
++                    return ToolResult::err(
++                        "denied",
++                        format!(
++                            "the {reason} policy refuses this command regardless of mode or approval"
++                        ),
++                    );
++                }
++                if call.background {
++                    background(ctx, &call, summary)
++                } else {
++                    foreground(ctx, &call, summary)
++                }
++            }
+             Err(refusal) => refusal,
+         }
+     }
+diff --git a/src/tools/edit_tools.rs b/src/tools/edit_tools.rs
+index cbd6233..602bd63 100644
+--- a/src/tools/edit_tools.rs
++++ b/src/tools/edit_tools.rs
+@@ -306,6 +306,24 @@ pub(crate) fn apply(ctx: &ToolCtx, verb: &str, change: PendingChange) -> ToolRes
+             ),
+         );
+     }
++    // Final write-time ownership: re-resolve the recorded path immediately before
++    // touching disk. Planning happened before any approval wait, so an ancestor (or
++    // the file itself) could have been swapped for a symlink since; `resolve`
++    // canonicalizes the deepest existing ancestor, so an escape or a redirect to a
++    // different path is refused here instead of being silently written through.
++    match paths::resolve_for_write(&ctx.root, &change.display) {
++        Ok(current) if current == change.path => {}
++        Ok(_) => {
++            return ToolResult::err(
++                "path_denied",
++                format!(
++                    "{} now resolves to a different path; refusing to write",
++                    change.display
++                ),
++            )
++        }
++        Err(e) => return ToolResult::err(e.code(), e.detail()),
++    }
+     if let Some(parent) = change.path.parent() {
+         if let Err(e) = std::fs::create_dir_all(parent) {
+             return ToolResult::err(
+@@ -385,6 +403,21 @@ pub(crate) fn run_capped(
+     scope: &str,
+     seconds: u64,
+     cap: usize,
++) -> Capped {
++    run_capped_tracked(command, cwd, scope, seconds, cap, "", "")
++}
++
++/// Same as [`run_capped`], but registers the spawned process group in
++/// `runtime_safety` so a running command can be killed when its turn is
++/// cancelled or the process shuts down. Empty ids mean "untracked".
++pub(crate) fn run_capped_tracked(
++    command: &str,
++    cwd: &Path,
++    scope: &str,
++    seconds: u64,
++    cap: usize,
++    request_id: &str,
++    step_id: &str,
+ ) -> Capped {
+     let failed = |message: String| Capped {
+         started: false,
+@@ -429,6 +462,11 @@ pub(crate) fn run_capped(
+             return failed(format!("could not start the command: {e}"));
+         }
+     };
++    let pid = child.id();
++    let tracked = !request_id.is_empty();
++    if tracked {
++        crate::runtime_safety::register(pid, request_id, step_id);
++    }
+     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(seconds);
+     let (mut code, mut timed_out) = (None, false);
+     loop {
+@@ -441,7 +479,7 @@ pub(crate) fn run_capped(
+             Err(_) => break,
+         }
+         if std::time::Instant::now() >= deadline {
+-            kill_group(child.id());
++            kill_group(pid);
+             let _ = child.kill();
+             let _ = child.wait();
+             timed_out = true;
+@@ -449,6 +487,9 @@ pub(crate) fn run_capped(
+         }
+         std::thread::sleep(std::time::Duration::from_millis(50));
+     }
++    if tracked {
++        crate::runtime_safety::unregister(pid);
++    }
+     let mut output = std::fs::read_to_string(&log).unwrap_or_default();
+     let _ = std::fs::remove_file(&log);
+     truncate_utf8(&mut output, cap, "\n…[output truncated]");
+diff --git a/src/tools/mod.rs b/src/tools/mod.rs
+index 4997b62..da7fe9d 100644
+--- a/src/tools/mod.rs
++++ b/src/tools/mod.rs
+@@ -9,6 +9,7 @@ use std::path::PathBuf;
+ pub mod ast_edit_tool;
+ pub mod bash_tool;
+ pub mod browser_tool;
++pub mod command_policy;
+ pub mod edit_tools;
+ pub mod fs_tools;
+ pub mod lsp_tool;
+@@ -315,7 +316,11 @@ impl Registry {
+             (_, PermissionMode::Ask) => true,
+             ("bash", PermissionMode::AutoEdit) => true,
+             ("bash", PermissionMode::AutoAll) => {
+-                is_dangerous_command(args.get("command").and_then(Value::as_str).unwrap_or(""))
++                let command = args.get("command").and_then(Value::as_str).unwrap_or("");
++                // An enabled network/install policy escalates even in `auto_all`;
++                // with both policies off this is exactly the historical deny-list.
++                is_dangerous_command(command)
++                    || command_policy::current().escalation(command).is_some()
+             }
+             (_, PermissionMode::AutoEdit | PermissionMode::AutoAll) => false,
+         }
+diff --git a/src/tools/paths.rs b/src/tools/paths.rs
+index 4cc263d..67772ea 100644
+--- a/src/tools/paths.rs
++++ b/src/tools/paths.rs
+@@ -66,6 +66,16 @@ pub fn resolve(root: &Path, input: &str) -> Result<PathBuf, PathError> {
+     canonical_inside(root, root.join(rel))
+ }
+ 
++/// Final write-time ownership check. `resolve` is the single disk gate; this is
++/// the name a mutating caller calls *again* immediately before the write. A diff
++/// may be planned and then wait behind a human approval for minutes, so
++/// re-resolving closes that window: an ancestor (or the file itself) swapped for
++/// a symlink is refused instead of being written through, and the caller can
++/// compare the result against the planned path.
++pub fn resolve_for_write(root: &Path, input: &str) -> Result<PathBuf, PathError> {
++    resolve(root, input)
++}
++
+ fn canonical_inside(root: &Path, full: PathBuf) -> Result<PathBuf, PathError> {
+     // Canonicalize the deepest existing ancestor, then re-append the missing tail.
+     let mut existing = full.clone();

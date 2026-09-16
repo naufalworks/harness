@@ -1,0 +1,4 @@
+worktree=/root/development/harness-review-runtime
+branch=review-runtime-safety
+base_commit=70aee88206cac4310ffd92f64833f4b1eb0b63f9
+saved_at=2026-09-14T16:23:47Z
