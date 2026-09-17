@@ -1,5 +1,9 @@
 # PROGRESS — journal
 
+## 2026-09-17T12:58:41Z · P16-T06 deployed and production-verified
+
+Commit `f4f54f8` was promoted from clean `main` after encrypted backup `/root/workspace/myharness/backups/encrypted/harness-20260917T125528Z-e31d34b8.hbak` passed its restore drill. Deployment `deploy-20260917T125528Z-f4f54f8` is live at schema 20 with PID 9834 and binary SHA-256 `56c7b3c76c4d38bf4a5078a5cba67bf2f1ef32a881596266168c99e779a3e80e`; readiness and authenticated API smoke passed, and malformed non-object JSON was refused with HTTP 400.
+
 ## 2026-09-17T12:54:19Z · P16-T06 verification complete
 
 P16-T06 is done. Focused Rust/Python tests, formatting, documentation contracts, the real-binary fixture, causal/release lanes, properties, fuzzing, rollback, release artifact, SBOM/checksum layout and reproducibility passed. The first performance-budget attempt exceeded its one-second host-time limit under load; an immediate isolated release-quality rerun passed the same benchmark and every remaining lane. No voice-input work was included.
