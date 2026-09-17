@@ -1,5 +1,9 @@
 # PROGRESS — journal
 
+## 2026-09-17T12:11:50Z · P16-T05 deployed and production-verified
+
+Commit `9e7ea06` was promoted from clean `main` after encrypted backup `/root/workspace/myharness/backups/encrypted/harness-20260917T120850Z-a4892721.hbak` passed its restore drill. Deployment `deploy-20260917T120851Z-9e7ea06` is live at schema 20 with PID 4942 and binary SHA-256 `86302129677aa970fe8a59da00e3095f88889d9bb616e1f37301f191279ac93e`; authenticated readiness and API smoke passed, and malformed non-object JSON was refused with HTTP 400.
+
 ## 2026-09-17T12:07:00Z · P16-T05 baseline verified; provider wait selected
 
 The repeatable real-server fixture completed 25 sequential short-chat turns with zero errors and zero timeouts. Total runtime was 82 ms median, 99 ms p95 and 102 ms maximum. Provider wait was the largest measured stage at 59 ms median (72% of total median); verification was 32 ms, context 6 ms and durable publication 4 ms. The bounded artifact records commit `470691a833be813e1c7c3b5bf16a71fc02f7a857`, fixture and binary digests, provider/tool counts, resource measurements and explicit unavailable SQLite decomposition. The strict release suite passed all executable lanes; two MCP-attached attempts were interrupted by bridge restarts, so the successful run was detached and its only pre-promotion failure was the expected deployment-identity check. P16-T06 will first split provider wait by answer versus verification purpose rather than guessing an optimization or threshold.
