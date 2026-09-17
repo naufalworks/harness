@@ -1,5 +1,11 @@
 # PROGRESS — journal
 
+## 2026-09-17T10:49:00Z · P16-T04 deployed and production-verified
+
+Commit `3694eb20e09f5e5b35ba62ad2bba1d0015254d89` was pushed on `feat/runtime-observability-baseline` and promoted with `scripts/deploy.sh` only after the strict release gate passed. Before promotion, the production schema-20 database received a verified encrypted online backup at `/root/workspace/myharness/backups/encrypted/harness-20260917T104602Z-56e6fe39.hbak`; backup creation included its clean-target restore drill.
+
+Deployment `deploy-20260917T104612Z-3694eb2` completed with rollback identity captured. Production is serving commit `3694eb20e09f5e5b35ba62ad2bba1d0015254d89`, binary SHA-256 `740dc4d41705f3718a1787bcabd05cf49e2b7986bf8d4322ff4de3f276165778`, schema 20 and PID 48931. Authenticated readiness and scopes checks passed, malformed JSON was refused with HTTP 400, SQLite quick-check is `ok` in WAL mode, recording/extraction workers are ready, all queues are empty, systemd reports `active` with zero restart count, and the graceful replacement/startup log contains no error or restart-loop signal.
+
 ## 2026-09-17T10:45:00Z · P16-T04 runtime observability baseline verified
 
 P16-T04 is `done` on `feat/runtime-observability-baseline`. Successful recorded turns now emit one bounded, content-free `harness.runtime/v1` JSON event after terminal receipt persistence. It measures monotonic total, context, provider, tool, permission, verification and publication elapsed time, counts provider/tool calls, documents overlap rules, and names SQLite queue/read/write/commit decomposition as unavailable instead of inferring it. The typed report cannot accept prompts, responses, credentials, paths, tool arguments/output, errors or hidden reasoning.
