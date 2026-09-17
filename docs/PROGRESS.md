@@ -1,5 +1,9 @@
 # PROGRESS — journal
 
+## 2026-09-17T12:54:19Z · P16-T06 verification complete
+
+P16-T06 is done. Focused Rust/Python tests, formatting, documentation contracts, the real-binary fixture, causal/release lanes, properties, fuzzing, rollback, release artifact, SBOM/checksum layout and reproducibility passed. The first performance-budget attempt exceeded its one-second host-time limit under load; an immediate isolated release-quality rerun passed the same benchmark and every remaining lane. No voice-input work was included.
+
 ## 2026-09-17T12:43:36Z · P16-T06 repeated evidence captured
 
 The pinned 25-turn disposable baseline for commit `dde5a0a` completed with zero errors/timeouts. Aggregate provider wait was 60/78/105 ms median/p95/max; answer-provider wait was 31/47/55 ms and verification-provider wait was 29/37/50 ms, each with exactly one call per turn. Answer generation is the larger purpose in this fixture, but the 2 ms median gap is small and synthetic-loopback evidence does not justify changing live-provider behavior by itself.

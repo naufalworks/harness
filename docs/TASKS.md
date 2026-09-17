@@ -1121,7 +1121,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - result: 25 real-server synthetic turns completed with zero errors/timeouts. Total median/p95/max was 82/99/102 ms; provider wait was the largest measured stage at 59 ms median (72% of total median), with verification at 32 ms, context at 6 ms and publication at 4 ms. The artifact pins commit `470691a`, fixture digest, binary identity, resource evidence and explicit SQLite decomposition limits. The strict release gate passed every executable lane; its deployment-identity check is closed by the verified promotion recorded below.
 
 ### P16-T06 · Disaggregate provider latency by call purpose
-- status: doing
+- status: done
 - priority: high
 - lane: runtime-observability
 - parallel: no
@@ -1130,6 +1130,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - files: src/runtime_observability.rs, src/agent_loop.rs, scripts/runtime_baseline.py, tests/test_runtime_baseline.py
 - done-when: provider wait is split into bounded answer and verification-call measurements without content or identifiers, totals remain internally consistent, and repeated evidence shows which call purpose is the real optimization target before changing provider behavior.
 - verify: cargo test --locked runtime_observability && python3 tests/test_runtime_baseline.py && bash scripts/verify_release.sh
+- result: The aggregate provider total remains backward-compatible and is now exactly decomposed into bounded answer and verification durations/call counts. A pinned 25-turn real-server synthetic baseline completed with zero errors/timeouts: answer wait was 31/47/55 ms median/p95/max versus verification wait at 29/37/50 ms, with one call of each purpose per turn. Answer wait is the larger synthetic target, but its 2 ms median lead is too small to justify live-provider behavior changes without live-safe evidence.
 
 ## P17 · Memory Wind Tunnel
 
