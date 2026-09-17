@@ -1096,6 +1096,18 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - done-when: missing-edge, earliest-break, graph-size and reviewer-time metrics plus anomaly flags and build/deploy/restart/smoke provenance are durable, bounded and evidence-labeled.
 - verify: python3 tests/test_migrations.py && scripts/verify_e2e.sh
 
+### P16-T04 · Measure request runtime stages with a synthetic baseline
+- status: done
+- priority: high
+- lane: runtime-observability
+- parallel: no
+- depends: P11-T04, P16-T03, P18-T05
+- design: TASK.md#14-first-recommended-implementation-slice, docs/design/runtime-observability.md
+- files: docs/design/runtime-observability.md, src/runtime_observability.rs, src/main.rs, src/recording.rs, src/agent_loop.rs, docs/TASKS.md, docs/PROGRESS.md
+- done-when: one deterministic synthetic-provider turn produces bounded `harness.runtime/v1` timing evidence for total generation, context construction, provider waits, tool execution, permission waiting, verification and durable publication; unavailable measurements remain explicit; emitted evidence contains no prompt, response, token, key, path, tool arguments, tool output or hidden reasoning; repeated fixture samples report count, median, p95 and maximum; existing recording, cancellation, fencing, spend and no-replay behavior is unchanged.
+- verify: cargo test --locked runtime_observability && cargo test --locked agent_loop && bash scripts/verify_release.sh
+- result: bounded content-free `harness.runtime/v1` terminal evidence now records monotonic total, context, provider, tool, permission, verification and durable-publication timings with provider/tool call counts; SQLite queue/read/write/commit decomposition is explicitly unavailable rather than estimated. Focused tests passed (2 runtime-observability, 26 agent-loop), followed by the strict release gate (345 Rust tests plus contract, clippy, release, mocked-browser, real browser-to-server and documentation suites; 0 failures).
+
 ## P17 · Memory Wind Tunnel
 
 ### P17-T01 · Define and validate immutable run capsules

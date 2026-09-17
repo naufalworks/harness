@@ -31,6 +31,7 @@ mod processes; // P14-T01 live process-group handles so an explicit cancel can s
 mod recording;
 mod recording_sql;
 mod repo_map; // P3-T04 bounded per-scope file/symbol map
+mod runtime_observability; // P16-T04 bounded content-free turn timing
 mod safety;
 mod skills; // P5-T02 skills index and bounded SKILL.md bodies
 mod storage;

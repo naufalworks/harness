@@ -55,6 +55,7 @@ pub struct Turn<'a> {
     pub messages: Vec<Value>,
     /// Exact definitions already budgeted and stored in the immutable initial context receipt.
     pub tools: Vec<Value>,
+    pub observer: crate::runtime_observability::RuntimeObserver,
 }
 
 /// A finished turn. `ProviderFailed` is distinct from an `Err` so the caller can record the
@@ -86,6 +87,7 @@ struct Ctx<'a> {
     scope: ScopeConfig,
     registry: Arc<Registry>,
     mode: PermissionMode,
+    observer: crate::runtime_observability::RuntimeObserver,
 }
 
 /// `sink` receives redacted answer text as it becomes publishable. Its accumulated `text()` is
@@ -109,11 +111,13 @@ pub async fn run<S: GenerationSink>(turn: Turn<'_>, sink: &mut S) -> Result<Outc
         scope,
         messages,
         tools,
+        observer,
     } = turn;
     let ctx = Ctx {
         store,
         agents,
         mode: scope.mode(),
+        observer,
         registry: Arc::new(Registry::standard()),
         request,
         session,
@@ -264,6 +268,7 @@ pub async fn run<S: GenerationSink>(turn: Turn<'_>, sink: &mut S) -> Result<Outc
             event: "model_call_started", payload: json!({"attempt":steps+1,"messages":messages.len(),"tool_count":tools.len()}),
         }).await?;
 
+        let provider_started = Instant::now();
         let replied = if tools.is_empty() {
             // P14-T01: a provider call can outlast a cancel request, so the wait is raced against
             // the durable intent. Dropping the abandoned future aborts the in-flight request
@@ -300,6 +305,7 @@ pub async fn run<S: GenerationSink>(turn: Turn<'_>, sink: &mut S) -> Result<Outc
                 Raced::Done(replied) => replied,
             }
         };
+        ctx.observer.provider(provider_started.elapsed());
         if ctx.cancelled().await? {
             ctx.finish_cancelled_step(step).await?;
             return Ok(Outcome::Answer(String::new()));
@@ -490,6 +496,7 @@ impl Ctx<'_> {
     }
 
     async fn verify_answer(&self, answer: &str, evidence: &[VerificationEvidence]) -> Result<()> {
+        let verification_started = Instant::now();
         let selected = select_verification_evidence(evidence);
         let evidence_step_ids = selected
             .iter()
@@ -509,7 +516,8 @@ impl Ctx<'_> {
             input:json!({"model":verification_model,"answer":bounded_answer,"evidence_manifest":manifest}),
             event:"verification_started",payload:json!({"model":verification_model,"evidence_steps":evidence_step_ids.len()}),
         }).await?;
-        match self
+        let provider_started = Instant::now();
+        let verified = self
             .agents
             .verify(
                 &verification_model,
@@ -517,8 +525,9 @@ impl Ctx<'_> {
                 manifest,
                 &evidence_step_ids,
             )
-            .await
-        {
+            .await;
+        self.observer.provider(provider_started.elapsed());
+        match verified {
             Ok(verified) => {
                 let claim_count = verified.report.claims.len();
                 let unverified_claims = verified
@@ -554,6 +563,7 @@ impl Ctx<'_> {
                 self.store.finish_step(outcome).await?;
             }
         }
+        self.observer.verification(verification_started.elapsed());
         Ok(())
     }
 
@@ -624,7 +634,10 @@ impl Ctx<'_> {
                     ttl_seconds: ttl,
                 })
                 .await?;
-            if let Err(reason) = self.await_permission(&permission, &step, deadline).await? {
+            let permission_started = Instant::now();
+            let permission_result = self.await_permission(&permission, &step, deadline).await?;
+            self.observer.permission(permission_started.elapsed());
+            if let Err(reason) = permission_result {
                 // A denial is a tool error, not a dead turn: the model can adapt or ask.
                 let cancelled = reason == "cancelled";
                 let refusal = ToolResult::err(
@@ -680,9 +693,11 @@ impl Ctx<'_> {
         };
         let registry = self.registry.clone();
         let name = call.name.clone();
+        let tool_started = Instant::now();
         let invoked =
             tokio::task::spawn_blocking(move || registry.invoke(tool_ctx.as_ref(), &name, args))
                 .await;
+        self.observer.tool(tool_started.elapsed());
         let result = match invoked {
             Ok(result) => result,
             Err(error) => {

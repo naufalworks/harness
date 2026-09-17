@@ -1,5 +1,17 @@
 # PROGRESS — journal
 
+## 2026-09-17T10:45:00Z · P16-T04 runtime observability baseline verified
+
+P16-T04 is `done` on `feat/runtime-observability-baseline`. Successful recorded turns now emit one bounded, content-free `harness.runtime/v1` JSON event after terminal receipt persistence. It measures monotonic total, context, provider, tool, permission, verification and publication elapsed time, counts provider/tool calls, documents overlap rules, and names SQLite queue/read/write/commit decomposition as unavailable instead of inferring it. The typed report cannot accept prompts, responses, credentials, paths, tool arguments/output, errors or hidden reasoning.
+
+Verification passed before commit: `cargo fmt --all -- --check`; `cargo test --locked runtime_observability` (2 passed); `cargo test --locked agent_loop` (26 passed); `git diff --check`; and `bash scripts/verify_release.sh` (345 Rust tests plus clippy, contracts, release build, mocked browser, real browser-to-server failure-path E2E, and documentation claims; 0 failures). No service was restarted by verification. Coverage/signature/cross-target/public-smoke remained explicitly skipped where the local prerequisites or public URL were absent.
+
+## 2026-09-17T10:24:00Z · P16-T04 runtime observability baseline started
+
+P16-T04 is `doing` on branch `feat/runtime-observability-baseline`. The first slice is deliberately measurement-only: define the timing/privacy contract, instrument one deterministic synthetic-provider turn, report bounded stage durations with explicit unavailable fields, and prove that no request content or credentials enter operational evidence. No production configuration, database, service, provider credential or worker count is changed by this transition.
+
+Planned verification: `cargo test --locked runtime_observability`, `cargo test --locked agent_loop`, and the strict non-deploying `bash scripts/verify_release.sh`; only after those pass will a staged deployment and authenticated smoke/rollback check be considered. The production service remains untouched while the task is `doing`.
+
 ## 2026-09-16T12:55:00Z · P18-T05 SQLite contention measurement recorded
 
 P18-T05 adds a disposable two-process WAL contention fixture to `tests/fault_injection.py`. One process holds `BEGIN IMMEDIATE` with the production 5s busy timeout configured; the contender is still blocked during the held contention window, then commits after the holder releases before the busy timeout. That records the behavior gate 3 needed: SQLite serializes writers under WAL rather than allowing true parallel writes, and the current timeout lets a waiting writer proceed when contention clears promptly.

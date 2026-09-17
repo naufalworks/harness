@@ -12,6 +12,7 @@ use anyhow::{bail, Result};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::time::Instant;
 
 pub struct CaptureInput {
     pub request: String,
@@ -87,16 +88,23 @@ pub struct RecordingGenerationSink<'a> {
     session: String,
     failure: Option<&'static str>,
     buffered: BufferedGeneration,
+    observer: crate::runtime_observability::RuntimeObserver,
 }
 
 impl<'a> RecordingGenerationSink<'a> {
-    pub fn new(store: &'a DbStore, request: String, session: String) -> Self {
+    pub fn new(
+        store: &'a DbStore,
+        request: String,
+        session: String,
+        observer: crate::runtime_observability::RuntimeObserver,
+    ) -> Self {
         Self {
             store,
             request,
             session,
             failure: None,
             buffered: BufferedGeneration::default(),
+            observer,
         }
     }
 
@@ -109,7 +117,8 @@ impl<'a> RecordingGenerationSink<'a> {
         if self.failure.is_some() {
             return;
         }
-        if self
+        let started = Instant::now();
+        let failed = self
             .store
             .append_generation(
                 self.request.clone(),
@@ -119,8 +128,9 @@ impl<'a> RecordingGenerationSink<'a> {
                 None,
             )
             .await
-            .is_err()
-        {
+            .is_err();
+        self.observer.publication(started.elapsed());
+        if failed {
             self.failure = Some("generation_stream_save_failed");
         }
     }
@@ -784,6 +794,9 @@ pub(crate) async fn generate(
     agents: &MemoryAgents,
     turn: Generation,
 ) -> Result<()> {
+    let total_started = Instant::now();
+    let context_started = Instant::now();
+    let observer = crate::runtime_observability::RuntimeObserver::default();
     if store.cancellation_requested(turn.request.clone()).await? {
         store.finalize_cancellation(turn.request).await?;
         return Ok(());
@@ -917,7 +930,13 @@ pub(crate) async fn generate(
     // No provider call is allowed before context persistence succeeds.
     // The sink persists each redacted chunk before delivery, so an incremental answer is durable
     // before any client can observe it.
-    let mut sink = RecordingGenerationSink::new(store, turn.request.clone(), turn.session.clone());
+    observer.context(context_started.elapsed());
+    let mut sink = RecordingGenerationSink::new(
+        store,
+        turn.request.clone(),
+        turn.session.clone(),
+        observer.clone(),
+    );
     let provider_work = agent_loop::run(
         agent_loop::Turn {
             store,
@@ -928,6 +947,7 @@ pub(crate) async fn generate(
             scope,
             messages,
             tools,
+            observer: observer.clone(),
         },
         &mut sink,
     );
@@ -949,6 +969,7 @@ pub(crate) async fn generate(
             return store.fail_recording(turn.request, "provider_failed").await
         }
     };
+    let publication_started = Instant::now();
     if store
         .complete_recording(turn.request.clone(), answer)
         .await
@@ -958,6 +979,8 @@ pub(crate) async fn generate(
             .fail_recording(turn.request, "answer_save_failed")
             .await;
     }
+    observer.publication(publication_started.elapsed());
+    observer.emit(total_started.elapsed(), "complete");
     Ok(())
 }
 
