@@ -1,5 +1,9 @@
 # PROGRESS — journal
 
+## 2026-09-17T12:07:00Z · P16-T05 baseline verified; provider wait selected
+
+The repeatable real-server fixture completed 25 sequential short-chat turns with zero errors and zero timeouts. Total runtime was 82 ms median, 99 ms p95 and 102 ms maximum. Provider wait was the largest measured stage at 59 ms median (72% of total median); verification was 32 ms, context 6 ms and durable publication 4 ms. The bounded artifact records commit `470691a833be813e1c7c3b5bf16a71fc02f7a857`, fixture and binary digests, provider/tool counts, resource measurements and explicit unavailable SQLite decomposition. The strict release suite passed all executable lanes; two MCP-attached attempts were interrupted by bridge restarts, so the successful run was detached and its only pre-promotion failure was the expected deployment-identity check. P16-T06 will first split provider wait by answer versus verification purpose rather than guessing an optimization or threshold.
+
 ## 2026-09-17T11:47:00Z · P16-T05 synthetic runtime baseline started on main
 
 The completed P16-T04 branch was fast-forwarded into `main`, pushed, and deleted locally and remotely so the repository has one active development line. P16-T05 is now `doing` directly on clean `main`: add a reusable disposable-database/loopback-provider benchmark, run at least 25 sequential short-chat samples, record bounded distribution/resource evidence, and use the measured largest median to choose the next optimization. Production remains unchanged during implementation and verification.

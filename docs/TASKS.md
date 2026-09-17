@@ -1109,7 +1109,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - result: bounded content-free `harness.runtime/v1` terminal evidence now records monotonic total, context, provider, tool, permission, verification and durable-publication timings with provider/tool call counts; SQLite queue/read/write/commit decomposition is explicitly unavailable rather than estimated. Focused tests passed (2 runtime-observability, 26 agent-loop), followed by the strict release gate (345 Rust tests plus contract, clippy, release, mocked-browser, real browser-to-server and documentation suites; 0 failures). Commit `3694eb2` was then backed up, restore-drilled, deployed and verified on production at schema 20 with matching served/live identity, ready workers, healthy SQLite, empty queues and zero service restarts.
 
 ### P16-T05 · Collect a repeatable synthetic runtime baseline
-- status: doing
+- status: done
 - priority: high
 - lane: runtime-observability
 - parallel: no
@@ -1118,6 +1118,18 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - files: scripts/runtime_baseline.py, tests/test_runtime_baseline.py, docs/evidence/runtime-baseline.json, docs/design/runtime-observability.md, docs/TASKS.md, docs/PROGRESS.md
 - done-when: a real compiled Harness process, disposable SQLite database and loopback synthetic provider produce at least 25 sequential short-chat samples; the artifact pins commit and fixture digest, reports count/median/p95/max and median total share for every measured stage, reports errors/timeouts, DB/WAL delta, CPU and peak RSS, preserves explicit unavailable measurements, contains no request content or credentials, and identifies the largest measured median without inventing an optimization threshold.
 - verify: python3 tests/test_runtime_baseline.py && python3 scripts/runtime_baseline.py --samples 25 --provider-delay-ms 20 --output docs/evidence/runtime-baseline.json && bash scripts/verify_release.sh
+- result: 25 real-server synthetic turns completed with zero errors/timeouts. Total median/p95/max was 82/99/102 ms; provider wait was the largest measured stage at 59 ms median (72% of total median), with verification at 32 ms, context at 6 ms and publication at 4 ms. The artifact pins commit `470691a`, fixture digest, binary identity, resource evidence and explicit SQLite decomposition limits. The strict release gate passed every executable lane; its deployment-identity check is closed by the verified promotion recorded below.
+
+### P16-T06 · Disaggregate provider latency by call purpose
+- status: todo
+- priority: high
+- lane: runtime-observability
+- parallel: no
+- depends: P16-T05
+- design: docs/design/runtime-observability.md#repeatable-baseline
+- files: src/runtime_observability.rs, src/agent_loop.rs, scripts/runtime_baseline.py, tests/test_runtime_baseline.py
+- done-when: provider wait is split into bounded answer and verification-call measurements without content or identifiers, totals remain internally consistent, and repeated evidence shows which call purpose is the real optimization target before changing provider behavior.
+- verify: cargo test --locked runtime_observability && python3 tests/test_runtime_baseline.py && bash scripts/verify_release.sh
 
 ## P17 · Memory Wind Tunnel
 

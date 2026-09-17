@@ -1,0 +1,107 @@
+{
+  "commit": "470691a833be813e1c7c3b5bf16a71fc02f7a857",
+  "counts": {
+    "provider_calls": {
+      "max": 2,
+      "median": 2,
+      "p95": 2,
+      "sample_count": 25
+    },
+    "tool_calls": {
+      "max": 0,
+      "median": 0,
+      "p95": 0,
+      "sample_count": 25
+    }
+  },
+  "cpu_seconds": 3.198568,
+  "database_bytes_delta": 1241088,
+  "environment": {
+    "architecture": "x86_64",
+    "binary_sha256": "5a469f755d0a9a4307c6f46e60ca75c25f46dd13dcfc04b6151ed803c6573687",
+    "binary_size_bytes": 210995832,
+    "os": "Linux",
+    "os_release": "6.8.0-138-generic",
+    "python": "3.12.3",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)"
+  },
+  "errors": 0,
+  "fixture": {
+    "concurrency": 1,
+    "database": "disposable_sqlite",
+    "provider": "synthetic_loopback",
+    "provider_delay_ms": 20,
+    "samples": 25,
+    "scenario": "short_chat"
+  },
+  "fixture_sha256": "2bf70ca85294f6d3b0edf27cd04cc5bfc1ce49c5f59d6aa1e6fed37b7905dba5",
+  "largest_measured_stage": "provider_ms",
+  "limitations": [
+    "synthetic loopback provider; no live-provider or network-latency claim",
+    "single sequential short-chat scenario on a disposable database",
+    "stage medians may overlap and shares must not be summed",
+    "SQLite queue/read/write/commit decomposition remains unavailable"
+  ],
+  "peak_rss_kib": 227200,
+  "sample_count": 25,
+  "schema": "harness.runtime-baseline/v1",
+  "stages": {
+    "context_ms": {
+      "max_ms": 14,
+      "median_ms": 6,
+      "median_total_share_pct": 7,
+      "p95_ms": 12,
+      "sample_count": 25
+    },
+    "permission_ms": {
+      "max_ms": 0,
+      "median_ms": 0,
+      "median_total_share_pct": 0,
+      "p95_ms": 0,
+      "sample_count": 25
+    },
+    "provider_ms": {
+      "max_ms": 72,
+      "median_ms": 59,
+      "median_total_share_pct": 72,
+      "p95_ms": 71,
+      "sample_count": 25
+    },
+    "publication_ms": {
+      "max_ms": 14,
+      "median_ms": 4,
+      "median_total_share_pct": 5,
+      "p95_ms": 8,
+      "sample_count": 25
+    },
+    "tool_ms": {
+      "max_ms": 0,
+      "median_ms": 0,
+      "median_total_share_pct": 0,
+      "p95_ms": 0,
+      "sample_count": 25
+    },
+    "total_ms": {
+      "max_ms": 102,
+      "median_ms": 82,
+      "median_total_share_pct": 100,
+      "p95_ms": 99,
+      "sample_count": 25
+    },
+    "verification_ms": {
+      "max_ms": 39,
+      "median_ms": 32,
+      "median_total_share_pct": 39,
+      "p95_ms": 38,
+      "sample_count": 25
+    }
+  },
+  "timeouts": 0,
+  "unavailable": [
+    "sqlite_commit_ms",
+    "sqlite_queue_ms",
+    "sqlite_read_ms",
+    "sqlite_write_ms"
+  ],
+  "wal_bytes_delta": -1223672
+}
