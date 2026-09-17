@@ -1,5 +1,9 @@
 # PROGRESS — journal
 
+## 2026-09-17T12:39:00Z · P16-T06 provider-purpose timing started
+
+P16-T06 is now `doing` directly on clean `main`. The runtime event will retain the aggregate provider measurement while adding fixed answer and verification provider durations and call counts, then the same disposable synthetic fixture will determine which call purpose is the measured target. Voice input remains outside the optimization lane and is intentionally skipped.
+
 ## 2026-09-17T12:11:50Z · P16-T05 deployed and production-verified
 
 Commit `9e7ea06` was promoted from clean `main` after encrypted backup `/root/workspace/myharness/backups/encrypted/harness-20260917T120850Z-a4892721.hbak` passed its restore drill. Deployment `deploy-20260917T120851Z-9e7ea06` is live at schema 20 with PID 4942 and binary SHA-256 `86302129677aa970fe8a59da00e3095f88889d9bb616e1f37301f191279ac93e`; authenticated readiness and API smoke passed, and malformed non-object JSON was refused with HTTP 400.

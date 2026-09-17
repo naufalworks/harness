@@ -26,21 +26,23 @@ class RuntimeBaselineTests(unittest.TestCase):
         events = []
         for provider in (20, 21, 22, 23, 24):
             durations = {name: 1 for name in runtime_baseline.STAGES}
-            durations.update(total_ms=40, provider_ms=provider, verification_ms=10)
+            durations.update(total_ms=40, provider_ms=provider, answer_provider_ms=12, verification_provider_ms=provider - 12, verification_ms=10)
             events.append({
                 "schema": runtime_baseline.RUNTIME_SCHEMA,
                 "event": "turn_runtime_finished",
                 "outcome": "complete",
                 "durations": durations,
-                "counts": {"provider_calls": 2, "tool_calls": 0},
+                "counts": {"provider_calls": 2, "answer_provider_calls": 1, "verification_provider_calls": 1, "tool_calls": 0},
                 "unavailable": ["sqlite_queue_ms"],
             })
         report = runtime_baseline.summarize(
             events, {"scenario": "short_chat"}, "a" * 40, 1, 2, 0.5, 100, {"python": "test"}
         )
         self.assertEqual(report["largest_measured_stage"], "provider_ms")
+        self.assertEqual(report["largest_provider_purpose"], "answer_provider_ms")
         self.assertEqual(report["stages"]["provider_ms"]["sample_count"], 5)
         self.assertEqual(report["counts"]["provider_calls"]["median"], 2)
+        self.assertEqual(report["stages"]["provider_ms"]["median_ms"], report["stages"]["answer_provider_ms"]["median_ms"] + report["stages"]["verification_provider_ms"]["median_ms"])
         serialized = json.dumps(report).lower()
         for forbidden in runtime_baseline.FORBIDDEN_FIELDS:
             self.assertNotIn(f'"{forbidden}"', serialized)
@@ -52,6 +54,7 @@ class RuntimeBaselineTests(unittest.TestCase):
         report = runtime_baseline.run(5, 5, binary)
         self.assertEqual(report["sample_count"], 5)
         self.assertEqual(report["largest_measured_stage"], "provider_ms")
+        self.assertIn(report["largest_provider_purpose"], {"answer_provider_ms", "verification_provider_ms"})
         self.assertEqual(report["errors"], 0)
         self.assertEqual(report["timeouts"], 0)
         self.assertEqual(report["unavailable"], [

@@ -21,11 +21,15 @@ pub struct RuntimeObserver {
 struct Counters {
     context_ms: u64,
     provider_ms: u64,
+    answer_provider_ms: u64,
+    verification_provider_ms: u64,
     tool_ms: u64,
     permission_ms: u64,
     verification_ms: u64,
     publication_ms: u64,
     provider_calls: u64,
+    answer_provider_calls: u64,
+    verification_provider_calls: u64,
     tool_calls: u64,
 }
 
@@ -34,6 +38,8 @@ pub struct Durations {
     pub total_ms: u64,
     pub context_ms: u64,
     pub provider_ms: u64,
+    pub answer_provider_ms: u64,
+    pub verification_provider_ms: u64,
     pub tool_ms: u64,
     pub permission_ms: u64,
     pub verification_ms: u64,
@@ -43,6 +49,8 @@ pub struct Durations {
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct Counts {
     pub provider_calls: u64,
+    pub answer_provider_calls: u64,
+    pub verification_provider_calls: u64,
     pub tool_calls: u64,
 }
 
@@ -77,10 +85,20 @@ impl RuntimeObserver {
         );
     }
 
-    pub fn provider(&self, elapsed: Duration) {
+    pub fn answer_provider(&self, elapsed: Duration) {
         let mut inner = self.inner.lock().expect("runtime timing mutex");
         Self::add(&mut inner.provider_ms, elapsed);
+        Self::add(&mut inner.answer_provider_ms, elapsed);
         inner.provider_calls = inner.provider_calls.saturating_add(1);
+        inner.answer_provider_calls = inner.answer_provider_calls.saturating_add(1);
+    }
+
+    pub fn verification_provider(&self, elapsed: Duration) {
+        let mut inner = self.inner.lock().expect("runtime timing mutex");
+        Self::add(&mut inner.provider_ms, elapsed);
+        Self::add(&mut inner.verification_provider_ms, elapsed);
+        inner.provider_calls = inner.provider_calls.saturating_add(1);
+        inner.verification_provider_calls = inner.verification_provider_calls.saturating_add(1);
     }
 
     pub fn tool(&self, elapsed: Duration) {
@@ -132,6 +150,8 @@ impl RuntimeObserver {
                 total_ms: total.as_millis().min(u128::from(u64::MAX)) as u64,
                 context_ms: inner.context_ms,
                 provider_ms: inner.provider_ms,
+                answer_provider_ms: inner.answer_provider_ms,
+                verification_provider_ms: inner.verification_provider_ms,
                 tool_ms: inner.tool_ms,
                 permission_ms: inner.permission_ms,
                 verification_ms: inner.verification_ms,
@@ -139,6 +159,8 @@ impl RuntimeObserver {
             },
             counts: Counts {
                 provider_calls: inner.provider_calls,
+                answer_provider_calls: inner.answer_provider_calls,
+                verification_provider_calls: inner.verification_provider_calls,
                 tool_calls: inner.tool_calls,
             },
             unavailable: vec![
@@ -185,7 +207,8 @@ mod tests {
     fn runtime_observability_report_is_bounded_and_content_free() {
         let observer = RuntimeObserver::default();
         observer.context(Duration::from_millis(3));
-        observer.provider(Duration::from_millis(7));
+        observer.answer_provider(Duration::from_millis(7));
+        observer.verification_provider(Duration::from_millis(4));
         observer.tool(Duration::from_millis(5));
         observer.permission(Duration::from_millis(2));
         observer.verification(Duration::from_millis(4));
@@ -194,7 +217,12 @@ mod tests {
         let value = serde_json::to_value(report).unwrap();
         assert_eq!(value["schema"], SCHEMA);
         assert_eq!(value["durations"]["total_ms"], 30);
-        assert_eq!(value["counts"]["provider_calls"], 1);
+        assert_eq!(value["durations"]["provider_ms"], 11);
+        assert_eq!(value["durations"]["answer_provider_ms"], 7);
+        assert_eq!(value["durations"]["verification_provider_ms"], 4);
+        assert_eq!(value["counts"]["provider_calls"], 2);
+        assert_eq!(value["counts"]["answer_provider_calls"], 1);
+        assert_eq!(value["counts"]["verification_provider_calls"], 1);
         assert_eq!(value["counts"]["tool_calls"], 1);
         let serialized = value.to_string();
         for forbidden in [

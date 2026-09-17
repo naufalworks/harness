@@ -1121,7 +1121,7 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - result: 25 real-server synthetic turns completed with zero errors/timeouts. Total median/p95/max was 82/99/102 ms; provider wait was the largest measured stage at 59 ms median (72% of total median), with verification at 32 ms, context at 6 ms and publication at 4 ms. The artifact pins commit `470691a`, fixture digest, binary identity, resource evidence and explicit SQLite decomposition limits. The strict release gate passed every executable lane; its deployment-identity check is closed by the verified promotion recorded below.
 
 ### P16-T06 · Disaggregate provider latency by call purpose
-- status: todo
+- status: doing
 - priority: high
 - lane: runtime-observability
 - parallel: no

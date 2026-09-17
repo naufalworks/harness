@@ -23,7 +23,8 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 RUNTIME_SCHEMA = "harness.runtime/v1"
 BASELINE_SCHEMA = "harness.runtime-baseline/v1"
-STAGES = ("total_ms", "context_ms", "provider_ms", "tool_ms", "permission_ms", "verification_ms", "publication_ms")
+STAGES = ("total_ms", "context_ms", "provider_ms", "answer_provider_ms", "verification_provider_ms", "tool_ms", "permission_ms", "verification_ms", "publication_ms")
+COUNT_FIELDS = ("provider_calls", "answer_provider_calls", "verification_provider_calls", "tool_calls")
 FORBIDDEN_FIELDS = {"prompt", "response", "token", "authorization", "api_key", "path", "arguments", "output", "reasoning"}
 
 
@@ -60,8 +61,12 @@ def validate_runtime_event(event: dict[str, Any]) -> None:
         raise ValueError("baseline accepts complete turns only")
     if set(event.get("durations", {})) != set(STAGES):
         raise ValueError("runtime duration fields drifted")
-    if set(event.get("counts", {})) != {"provider_calls", "tool_calls"}:
+    if set(event.get("counts", {})) != set(COUNT_FIELDS):
         raise ValueError("runtime count fields drifted")
+    if event["durations"]["provider_ms"] != event["durations"]["answer_provider_ms"] + event["durations"]["verification_provider_ms"]:
+        raise ValueError("provider duration decomposition is inconsistent")
+    if event["counts"]["provider_calls"] != event["counts"]["answer_provider_calls"] + event["counts"]["verification_provider_calls"]:
+        raise ValueError("provider call decomposition is inconsistent")
     serialized = json.dumps(event, sort_keys=True).lower()
     leaked = sorted(field for field in FORBIDDEN_FIELDS if field in serialized)
     if leaked:
@@ -79,8 +84,12 @@ def summarize(events: list[dict[str, Any]], fixture: dict[str, Any], commit: str
         summary["median_total_share_pct"] = round(summary["median_ms"] * 100 / total_median)
     measured = [name for name in STAGES if name != "total_ms"]
     largest = max(measured, key=lambda name: (stages[name]["median_ms"], name))
+    largest_provider_purpose = max(
+        ("answer_provider_ms", "verification_provider_ms"),
+        key=lambda name: (stages[name]["median_ms"], name),
+    )
     counts = {}
-    for name in ("provider_calls", "tool_calls"):
+    for name in COUNT_FIELDS:
         summary = distribution([int(event["counts"][name]) for event in events])
         counts[name] = {
             "sample_count": summary["sample_count"],
@@ -98,6 +107,7 @@ def summarize(events: list[dict[str, Any]], fixture: dict[str, Any], commit: str
         "stages": stages,
         "counts": counts,
         "largest_measured_stage": largest,
+        "largest_provider_purpose": largest_provider_purpose,
         "errors": 0,
         "timeouts": 0,
         "database_bytes_delta": db_delta,

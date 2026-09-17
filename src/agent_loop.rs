@@ -305,7 +305,7 @@ pub async fn run<S: GenerationSink>(turn: Turn<'_>, sink: &mut S) -> Result<Outc
                 Raced::Done(replied) => replied,
             }
         };
-        ctx.observer.provider(provider_started.elapsed());
+        ctx.observer.answer_provider(provider_started.elapsed());
         if ctx.cancelled().await? {
             ctx.finish_cancelled_step(step).await?;
             return Ok(Outcome::Answer(String::new()));
@@ -526,7 +526,8 @@ impl Ctx<'_> {
                 &evidence_step_ids,
             )
             .await;
-        self.observer.provider(provider_started.elapsed());
+        self.observer
+            .verification_provider(provider_started.elapsed());
         match verified {
             Ok(verified) => {
                 let claim_count = verified.report.claims.len();
