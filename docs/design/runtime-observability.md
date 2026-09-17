@@ -74,6 +74,12 @@ The pure distribution helper sorts elapsed samples and reports:
 
 Thresholds are not part of this slice. Baseline measurements must be collected before the owner approves regression budgets.
 
+## Repeatable baseline
+
+P16-T05 runs a compiled Harness process against a disposable SQLite database and a loopback synthetic provider. The short-chat scenario is sequential and uses a fixed provider delay; it makes no claim about internet, live-provider, concurrent, tool-heavy or production latency. The checked-in artifact pins the source commit and a canonical fixture digest, then reports sample count, lower median, nearest-rank p95, maximum and median-total share for each measured stage. Because stages overlap, shares are diagnostic and must not be summed.
+
+The fixture also reports zero/nonzero error and timeout counts, database/WAL byte deltas, child CPU seconds and peak RSS. It repeats the runtime event's unavailable list. No threshold is accepted by this task: the observed largest measured median selects the next investigation, while an owner-approved budget requires representative follow-up evidence.
+
 ## Failure behavior
 
 Operational emission is best-effort. Serialization or stderr failure must not turn a successfully persisted user request into a failure. Durable correctness writes retain their existing fail-closed behavior.

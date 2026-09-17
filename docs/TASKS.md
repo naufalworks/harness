@@ -1108,6 +1108,17 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
 - verify: cargo test --locked runtime_observability && cargo test --locked agent_loop && bash scripts/verify_release.sh
 - result: bounded content-free `harness.runtime/v1` terminal evidence now records monotonic total, context, provider, tool, permission, verification and durable-publication timings with provider/tool call counts; SQLite queue/read/write/commit decomposition is explicitly unavailable rather than estimated. Focused tests passed (2 runtime-observability, 26 agent-loop), followed by the strict release gate (345 Rust tests plus contract, clippy, release, mocked-browser, real browser-to-server and documentation suites; 0 failures). Commit `3694eb2` was then backed up, restore-drilled, deployed and verified on production at schema 20 with matching served/live identity, ready workers, healthy SQLite, empty queues and zero service restarts.
 
+### P16-T05 · Collect a repeatable synthetic runtime baseline
+- status: doing
+- priority: high
+- lane: runtime-observability
+- parallel: no
+- depends: P16-T04
+- design: TASK.md#14-first-recommended-implementation-slice, docs/design/runtime-observability.md#repeatable-baseline
+- files: scripts/runtime_baseline.py, tests/test_runtime_baseline.py, docs/evidence/runtime-baseline.json, docs/design/runtime-observability.md, docs/TASKS.md, docs/PROGRESS.md
+- done-when: a real compiled Harness process, disposable SQLite database and loopback synthetic provider produce at least 25 sequential short-chat samples; the artifact pins commit and fixture digest, reports count/median/p95/max and median total share for every measured stage, reports errors/timeouts, DB/WAL delta, CPU and peak RSS, preserves explicit unavailable measurements, contains no request content or credentials, and identifies the largest measured median without inventing an optimization threshold.
+- verify: python3 tests/test_runtime_baseline.py && python3 scripts/runtime_baseline.py --samples 25 --provider-delay-ms 20 --output docs/evidence/runtime-baseline.json && bash scripts/verify_release.sh
+
 ## P17 · Memory Wind Tunnel
 
 ### P17-T01 · Define and validate immutable run capsules

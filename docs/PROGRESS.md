@@ -1,5 +1,9 @@
 # PROGRESS — journal
 
+## 2026-09-17T11:47:00Z · P16-T05 synthetic runtime baseline started on main
+
+The completed P16-T04 branch was fast-forwarded into `main`, pushed, and deleted locally and remotely so the repository has one active development line. P16-T05 is now `doing` directly on clean `main`: add a reusable disposable-database/loopback-provider benchmark, run at least 25 sequential short-chat samples, record bounded distribution/resource evidence, and use the measured largest median to choose the next optimization. Production remains unchanged during implementation and verification.
+
 ## 2026-09-17T10:49:00Z · P16-T04 deployed and production-verified
 
 Commit `3694eb20e09f5e5b35ba62ad2bba1d0015254d89` was pushed on `feat/runtime-observability-baseline` and promoted with `scripts/deploy.sh` only after the strict release gate passed. Before promotion, the production schema-20 database received a verified encrypted online backup at `/root/workspace/myharness/backups/encrypted/harness-20260917T104602Z-56e6fe39.hbak`; backup creation included its clean-target restore drill.
