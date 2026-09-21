@@ -1432,3 +1432,96 @@ Each new task has: `status`, `priority`, `lane`, `parallel`, `depends`, `design`
   writer can only be enabled behind explicit opt-in, and worker count remains pinned at one until
   that configuration change and rollback path land. Evidence: `python3 tests/fault_injection.py`,
   `git diff --check`, and `bash scripts/verify_local.sh` pass.
+
+
+## P19 · development-mcp history integration
+
+Approved direction: development-mcp records server-observed activity locally and exports it durably to Harness; Harness owns external history and reviewed memory. Conversation text is included only when a supported client supplies it. External ingestion never invokes the agent loop or replays development actions. These are backlog entries, not authorization to execute implementation or deploy. Existing release blockers retain precedence. Paths marked `(new)` are planned artifacts; verification commands describe completion gates, not tests already passed. Cross-repository tasks are coordinated with `/root/workspace/development-mcp`; each task remains a separate branch/worktree and schema changes remain serialized.
+
+### P19-T01 · Establish the external history contract and fixtures
+- status: todo
+- priority: medium
+- lane: history-contract
+- parallel: no
+- depends: —
+- design: docs/TASKS.md#p19--development-mcp-history-integration
+- files: docs/design/external-development-history.md (new), tests/external_history/ (new), docs/RECORDING_PROTOCOL.md
+- done-when: the decided integration is expressed as a versioned contract with representative accepted/rejected fixtures covering event identity, producer identity, project/session/invocation/task correlation, sequence, timestamps, sanitized arguments/results, artifacts, capture coverage, errors and terminal outcomes. Duplicate versus conflicting submissions, acknowledgements after durable commit, late events, unsupported versions and missing conversation context have deterministic meanings. Contract tests reject malformed envelopes and distinguish normal handler return from successful execution; no architecture selection or provider generation is introduced.
+- verify: cargo test --locked && python3 tests/test_external_history_contract.py
+
+### P19-T02 · Enforce external producer scope and recording privacy
+- status: todo
+- priority: medium
+- lane: history-security
+- parallel: no
+- depends: P19-T01
+- design: docs/design/external-development-history.md
+- files: src/api/auth.rs, src/safety.rs, src/storage/scope.rs, src/archive/, tests/external_history/, tests/test_external_history_contract.py (new)
+- done-when: authenticated producers are bound to permitted project scopes; ingestion authority does not grant history read, memory approval or archive access. Policy covers arguments, titles, paths, results, errors and output before persistence/export. Secret-bearing fixtures do not leak into sanitized records, diagnostics or indexes. Exact-content archives remain opt-in and encrypted; retention/deletion rules include artifacts and derived memories. Untrusted identifiers cannot attach events to another scope, and privacy failures never silently permit raw capture.
+- verify: cargo test --locked && python3 tests/test_external_history_contract.py
+
+### P19-T03 · Add durable external history ingestion and receipts
+- status: todo
+- priority: medium
+- lane: history-storage
+- parallel: no
+- depends: P19-T02
+- design: docs/design/external-development-history.md
+- files: migrations/* (next additive migration), src/storage.rs, src/storage/, src/api/routes.rs, src/api/ (external-history handlers, new), tests/test_migrations.py, tests/external_history/
+- done-when: Harness accepts external events through a dedicated bounded ingestion surface and acknowledges only committed records. Producer-scoped event identity deduplicates identical retries and rejects conflicting reuse. Events, receipt state and any extraction intent are transactionally consistent. Existing databases upgrade without rewriting applied migrations; external events neither submit chat turns nor execute tools or provider calls. Restart and lost-acknowledgement fixtures preserve accepted history without duplicate records.
+- verify: python3 tests/test_migrations.py && cargo test --locked && python3 tests/external_history_integration.py
+
+### P19-T04 · Capture isolated development-mcp activity durably
+- status: todo
+- priority: medium
+- lane: mcp-capture
+- parallel: no
+- depends: P19-T03
+- design: docs/design/external-development-history.md
+- files: /root/workspace/development-mcp/src/notion_local_ops_mcp/instrument.py, /root/workspace/development-mcp/src/notion_local_ops_mcp/session.py, /root/workspace/development-mcp/src/notion_local_ops_mcp/server.py, /root/workspace/development-mcp/src/notion_local_ops_mcp/http_compat.py, /root/workspace/development-mcp/src/notion_local_ops_mcp/tasks.py, /root/workspace/development-mcp/src/notion_local_ops_mcp/shell.py, /root/workspace/development-mcp/src/notion_local_ops_mcp/executors.py, /root/workspace/development-mcp/tests/
+- done-when: accepted tool activity is durably admitted before execution and outcomes are committed before publication under the recording-required policy. File operations, commands, rejected requests, errors, cancellation and background-task outcomes retain correlation and explicit coverage. Per-client/session execution context replaces process-wide attribution assumptions; simultaneous clients cannot overwrite each other's recording scope or default cwd. Capture applies P19-T02 policy before local persistence; full-disk and recorder failure refuse new execution, while crash-window outcomes remain unknown/interrupted without action replay. Recording does not depend on an agent manually binding the optional live relay.
+- verify: cd /root/workspace/development-mcp && python3 -m pytest
+
+### P19-T05 · Deliver recorded activity reliably into Harness
+- status: todo
+- priority: medium
+- lane: mcp-delivery
+- parallel: no
+- depends: P19-T04
+- design: docs/design/external-development-history.md
+- files: /root/workspace/development-mcp/src/notion_local_ops_mcp/ (durable exporter and configuration), /root/workspace/development-mcp/tests/, src/api/ (external-history handlers), tests/external_history_integration.py (new)
+- done-when: a bounded durable exporter delivers recorded events with stable identities, retry/backoff and acknowledgement-driven cleanup. Harness downtime does not lose locally committed events while capacity remains; restart, lost acknowledgements, duplicate delivery and out-of-order arrival converge to truthful history. Permanent rejection and backlog exhaustion are visible rather than silently dropped. Network calls remain outside execution-critical delivery waits; retries deliver records only, never rerun tools. Concurrent client sessions and background completions retain their original scope.
+- verify: python3 tests/external_history_integration.py && (cd /root/workspace/development-mcp && python3 -m pytest)
+
+### P19-T06 · Expose evidence-linked external session history
+- status: todo
+- priority: medium
+- lane: history-ux
+- parallel: no
+- depends: P19-T05
+- design: docs/design/external-development-history.md
+- files: src/api/routes.rs, src/api/stream.rs, src/storage/, static/api.js, static/app.js, tests/external_history_integration.py, tests/recording_ui.cjs
+- done-when: authenticated users can discover external sessions by project and producer, inspect ordered activity and terminal outcomes, and open authorized supporting artifacts. Cursor pagination/resume handles concurrent arrivals without treating duplicate delivery as new work. The UI distinguishes local capture from Harness acknowledgement, pending background work, unknown outcomes, redaction, truncation and unavailable conversations. Optional client-supplied messages carry explicit provenance and linkage; no unsupported client transcript access or fabricated dialogue is implied.
+- verify: python3 tests/external_history_integration.py && scripts/verify_browser.sh && scripts/verify_e2e.sh
+
+### P19-T07 · Derive reviewed memory from external development evidence
+- status: todo
+- priority: medium
+- lane: history-memory
+- parallel: no
+- depends: P19-T06
+- design: docs/design/external-development-history.md
+- files: src/ingest.rs, src/recording.rs, src/memory_agents.rs, src/storage/jobs.rs, src/storage/memories.rs, src/storage/provenance.rs, src/api/, tests/external_history/
+- done-when: external history can yield deduplicated evidence-linked memory candidates through the existing review-first workflow, independently of ingestion success and under explicit extraction budgets. Recorded tool content remains untrusted evidence, not instructions. Only approved, active, in-scope memories enter recall; corrections, supersession and deletion preserve truthful provenance. A scoped retrieval surface makes approved context available to development clients without granting unrelated history access or claiming clients automatically use it. Extraction failure leaves durable history intact.
+- verify: cargo test --locked && python3 tests/external_history_integration.py && scripts/verify_browser.sh
+
+### P19-T08 · Qualify integration recovery and operational readiness
+- status: todo
+- priority: medium
+- lane: history-reliability
+- parallel: no
+- depends: P19-T07
+- design: docs/design/external-development-history.md
+- files: tests/fault_injection.py, tests/external_history_integration.py, scripts/verify_release.sh, docs/design/external-development-history.md, docs/RECORDING_PROTOCOL.md, README.md
+- done-when: disposable end-to-end fixtures demonstrate filesystem inspection, edits, commands, test results and background completion flowing through development-mcp into Harness without production changes. Evidence covers simultaneous clients, process crashes, Harness outages, lost acknowledgements, storage exhaustion, oversized output, retention and restore. Capture failures, export backlog age, rejected events and completeness gaps are observable without secret-bearing telemetry. Measured capacity and operating limits are documented; no automatic side-effect replay occurs and unsupported transcript coverage is explicit. The strict non-deploying release gate includes integration coverage and reports missing prerequisites as failures rather than passes.
+- verify: python3 tests/fault_injection.py && python3 tests/external_history_integration.py && bash scripts/verify_release.sh && (cd /root/workspace/development-mcp && python3 -m pytest)

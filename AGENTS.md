@@ -6,7 +6,7 @@ This is the contributor entry point. Read it fully before changing the repositor
 
 Harness is a single-user, loopback-first Rust coding agent with durable SQLite receipts. The agent can inspect and modify a configured project through recorded tools, request permission for side effects, stream redacted output from durable events, recall reviewed memories, and expose causal evidence for its work. Generation and extraction are server-owned background workers; browser tabs do not own accepted work.
 
-P0–P10 are historical, completed phases. The active continuation is P11–P18 in `docs/ROADMAP.md`; exact status and eligibility come only from `docs/TASKS.md`. A historical journal entry is evidence about that run, not current release evidence.
+P0–P10 are historical, completed phases. The active continuation is P11–P19 in `docs/ROADMAP.md`; exact status and eligibility come only from `docs/TASKS.md`. A historical journal entry is evidence about that run, not current release evidence.
 
 ## Read in this order
 
@@ -59,11 +59,15 @@ Do not copy historical test counts or deployment IDs into current claims. Report
 | `src/storage.rs` | `DbStore` and schema initialization; row persistence only |
 | `src/storage/` | `scope.rs` scope limits/plan validation/root canonicalisation, plus `config.rs`, `turns.rs`, `memories.rs`, `jobs.rs`, `provenance.rs`, `provider.rs` |
 | `src/embeddings.rs` | Deterministic local feature-hashing vectors used with FTS5 recall |
+| `src/subagent.rs` | Read-only task sub-agent execution |
+| `src/process_lock.rs` | Single-process-per-database ownership |
+| `src/runtime_observability.rs` | Structured runtime timing and operational events |
+| `src/export/`, `src/experiments/`, `src/plugins/` | History export packets, Wind Tunnel experiments, digest-pinned extension contract |
 | `src/tools/` | Read/grep/glob, edit/write, bash, think/todo, skill/task, AST, LSP, and CDP browser tools |
 | `src/tools/lsp_tool/` | `protocol.rs` caps/argument preparation, `session.rs` framing and teardown, `format.rs` diagnostics/references, `rename.rs` workspace edits |
 | `src/tools/browser_tool/` | `protocol.rs` caps/destination validation, `snapshot.rs` accessibility snapshots, `cdp.rs` socket and browser launch, `session.rs` page lifecycle |
 | `src/archive/` | Opt-in encrypted exact-original archive and privacy actions |
-| `migrations/` | Applied schema chain, currently 001–007 |
+| `migrations/` | Applied schema chain, currently 001–020 |
 | `tools/schemas/` | Model-facing tool definitions |
 | `static/` | Served single-page UI |
 | `tests/` | Rust-adjacent Python contracts, HTTP/fault fixtures, Node/browser E2E |

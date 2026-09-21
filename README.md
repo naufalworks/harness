@@ -63,7 +63,7 @@ implies that bytes were kept.
 | Path | Purpose |
 |---|---|
 | `src/` | Rust service: API/auth, agent loop, tools, recording, memory, provenance, archive |
-| `migrations/` | Append-only SQLite schema, currently migrations 001–008 |
+| `migrations/` | Append-only SQLite schema, currently migrations 001–020 |
 | `static/` | Single-page UI served at `/` |
 | `tests/` | Rust-adjacent contracts, live HTTP/fault suites, mocked and real browser E2E |
 | `scripts/` | Local/release verification, encrypted backup/restore, deployment/rollback, imports |

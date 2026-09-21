@@ -21,6 +21,7 @@ A task may run in parallel only when its `parallel: yes` metadata is present, ev
 | G | Turn traces into measurable diagnosis | P16 | incident UX, metrics, deployment provenance |
 | H | Build the Memory Wind Tunnel | P17 | capsules, replay, experiments, reports |
 | I | Optional scale and ecosystem work | P18 | workers, plugins, portability |
+| J | Record external development history | P19 | contract, capture, delivery, history UX |
 
 Critical tasks in Wave A start first. Independent CI/docs/backup work may proceed beside runtime work. Schema-writing tasks never run in parallel with another schema-writing task.
 
@@ -64,9 +65,19 @@ Define immutable content-addressed run capsules and deterministic assertions; fr
 
 Only after the earlier phases: leased multi-worker execution, multi-instance semantics, plugin/provider SDKs, portable continuation packets across machines, benchmark packs, signed extension manifests, and isolated remote runners. Multi-user tenancy remains a separate product/security decision rather than an accidental consequence of scaling.
 
+## P19 — development-mcp history integration
+
+Accept development activity observed by `development-mcp` as durable Harness history: a versioned
+external-event contract, producer scope and redaction policy, idempotent ingestion with receipts,
+isolated per-session capture in the producer, acknowledgement-driven delivery, evidence-linked
+session history, review-first memory from external evidence, and recovery qualification. External
+ingestion never invokes the agent loop and never replays development actions. Conversation text is
+recorded only when a supported client supplies it; MCP hosts retain full chat history.
+
 ## Coverage contract
 
-The executable P10–P18 tasks cover every accepted audit opportunity from the 2026-09-13 review:
+The executable P10–P18 tasks cover every accepted audit opportunity from the 2026-09-13 review
+(P19 was added later for external development-history integration and is outside that review):
 
 - reliability/correctness: graph closure and projection, process ownership, crash/disk/DB recovery, queues, background jobs, graceful deployment;
 - performance: event-driven streams, DB concurrency/query plans/retention, frontend polling/assets/build footprint;
