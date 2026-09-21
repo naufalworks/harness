@@ -1,5 +1,33 @@
 # PROGRESS — journal
 
+## 2026-09-21T16:12:37Z · P19-T03 availability remediation done
+
+Focused fix on `task/p19-t03-durable-history` after review of `614fcf5` confirmed
+unauthenticated incomplete requests could exhaust the eight shared API permits.
+The handler now checks the producer Bearer credential from headers before permit
+acquisition or body polling. It reuses the configured producer token check; owner,
+missing and invalid credentials receive 401. Full scope/privacy authorization,
+envelope/digest validation and transactional append-only persistence are unchanged.
+
+Regression opens twelve incomplete requests with missing, invalid or owner credentials;
+all return 401 within the test's two-second socket deadline (below the ten-second body
+read timeout). Owner requests and valid producer ingestion/replay remain successful.
+Existing conflict, restart, lost-ack, privacy and failed-write tests remain passing.
+
+Verification completed sequentially with CARGO_BUILD_JOBS=1 RUST_TEST_THREADS=1:
+- `cargo test --locked`: 360 passed, 0 failed.
+- `python3 tests/external_history_integration.py`: 6 passed.
+- `python3 tests/test_external_history_contract.py`: 19 passed.
+- `cargo clippy -- -D warnings`: PASS.
+- `cargo fmt --check`: PASS.
+Logs: `/tmp/p19-t03-remediation.ePWbKD/`.
+
+Reviewed the focused diff. No storage, migration or unrelated components changed.
+The unauthenticated shared-permit finding is resolved; ready for merge review.
+Authenticated producers still share the bounded pool by design. This is not a claim
+of general denial-of-service immunity. No main merge, deployment or P19-T04 work.
+Next: explicit review/merge authorization; create separate remediation commit.
+
 ## 2026-09-21T15:29:21Z · P19-T03 done
 
 Implemented on `task/p19-t03-durable-history`, based on `84f4029`. Dedicated

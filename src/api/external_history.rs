@@ -12,9 +12,6 @@ fn failure(status: StatusCode, code: &'static str) -> Response {
     (status,Json(json!({"error":"External history was not acknowledged.","code":code,"retryable":status==StatusCode::SERVICE_UNAVAILABLE}))).into_response()
 }
 pub(crate) async fn ingest(State(h): State<Harness>, request: Request) -> Response {
-    let Ok(_permit) = h.api_limit.clone().try_acquire_owned() else {
-        return failure(StatusCode::SERVICE_UNAVAILABLE, "ingestion_busy");
-    };
     let token = request
         .headers()
         .get("authorization")
@@ -22,6 +19,14 @@ pub(crate) async fn ingest(State(h): State<Harness>, request: Request) -> Respon
         .and_then(|v| v.strip_prefix("Bearer "))
         .unwrap_or("")
         .to_owned();
+    // Reject absent/invalid producer credentials without polling the body or
+    // reserving capacity shared with authenticated owner requests.
+    if !h.auth.is_external_producer(&token) {
+        return failure(StatusCode::UNAUTHORIZED, "producer_unauthorized");
+    }
+    let Ok(_permit) = h.api_limit.clone().try_acquire_owned() else {
+        return failure(StatusCode::SERVICE_UNAVAILABLE, "ingestion_busy");
+    };
     let body = match tokio::time::timeout(
         std::time::Duration::from_secs(10),
         to_bytes(request.into_body(), 65536),

@@ -96,6 +96,11 @@ impl AuthState {
         Ok(evidence)
     }
 
+    /// Header-only admission check. Scope and privacy still require authorize_external.
+    pub(crate) fn is_external_producer(&self, token: &str) -> bool {
+        self.producers.contains_token(token)
+    }
+
     pub(crate) fn identify(&self, token: &str) -> Option<AuthKind> {
         if self.producers.contains_token(token) {
             return None;

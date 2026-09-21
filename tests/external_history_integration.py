@@ -137,6 +137,35 @@ class ExternalHistory(unittest.TestCase):
         self.assertEqual(self.call(body=self.event(producer_id='second'),token='q'*40)[0],201)
         self.assertEqual(self.count(),3)
 
+    def test_unauthenticated_incomplete_requests_do_not_reserve_capacity(self):
+        # More connections than the eight shared permits; never finish their bodies.
+        sockets = []
+        try:
+            for credential in [None, 'invalid', OWNER] * 4:
+                sock = socket.create_connection(('127.0.0.1', self.port), timeout=2)
+                sock.settimeout(2)  # Well below the ten-second body deadline.
+                sockets.append(sock)
+                auth = '' if credential is None else f'Authorization: Bearer {credential}\r\n'
+                sock.sendall((f'POST /external-history/events HTTP/1.1\r\n'
+                              f'Host: 127.0.0.1:{self.port}\r\n'
+                              f'{auth}Content-Length: 100\r\n\r\n' + '{').encode())
+            for sock in sockets:
+                response = b''
+                while b'\r\n' not in response:
+                    part = sock.recv(1024)
+                    self.assertTrue(part, 'connection closed without HTTP status')
+                    response += part
+                self.assertEqual(response.split(b'\r\n', 1)[0], b'HTTP/1.1 401 Unauthorized')
+            self.assertEqual(self.call('/memory/status', token=OWNER, method='GET')[0], 200)
+            code, receipt = self.call()
+            self.assertEqual(code, 201)
+            self.assertEqual(receipt['state'], 'committed')
+            self.assertEqual(self.call()[0], 200)
+            self.assertEqual(self.count(), 1)
+        finally:
+            for sock in sockets:
+                sock.close()
+
     def test_rejections_and_failed_write_are_not_acknowledged(self):
         for token in [OWNER,'unknown']:
             self.assertEqual(self.call(token=token)[0],401)
