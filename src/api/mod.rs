@@ -6,5 +6,6 @@ pub(crate) mod assets;
 pub(crate) mod auth;
 pub(crate) mod dto;
 pub(crate) mod error;
+pub(crate) mod external_history;
 pub(crate) mod routes;
 pub(crate) mod stream;

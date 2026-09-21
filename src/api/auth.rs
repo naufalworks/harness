@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 mod producer;
+pub(crate) use producer::AuthorizedEvidence;
 
 const AUTH_FAILURE_DELAY: Duration = Duration::from_millis(150);
 const MAX_BROWSER_SESSIONS: usize = 128;

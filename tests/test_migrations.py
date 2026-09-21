@@ -12,7 +12,7 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MIG = ROOT / "migrations"
-CHAIN = ["001_core.sql", "002_recording.sql", "003_agentic.sql", "004_memory_kinds.sql", "005_generation_stream.sql", "006_provenance_edges.sql", "007_privacy_archive.sql", "008_provider_spend.sql", "009_run_cancellation.sql", "010_retention_maintenance.sql", "011_retrieval_receipts.sql", "012_memory_governance.sql", "013_session_workflows.sql", "014_history_search.sql", "015_causal_coverage.sql", "016_run_capsules.sql", "017_worker_leases.sql", "018_external_effects.sql", "019_tool_effect_kinds.sql", "020_archive_delete_outcomes.sql"]
+CHAIN = ["001_core.sql", "002_recording.sql", "003_agentic.sql", "004_memory_kinds.sql", "005_generation_stream.sql", "006_provenance_edges.sql", "007_privacy_archive.sql", "008_provider_spend.sql", "009_run_cancellation.sql", "010_retention_maintenance.sql", "011_retrieval_receipts.sql", "012_memory_governance.sql", "013_session_workflows.sql", "014_history_search.sql", "015_causal_coverage.sql", "016_run_capsules.sql", "017_worker_leases.sql", "018_external_effects.sql", "019_tool_effect_kinds.sql", "020_archive_delete_outcomes.sql", "021_external_history.sql"]
 VERSIONS = [name.split("_", 1)[0] for name in CHAIN]
 LATEST_VERSION = int(VERSIONS[-1])
 OPEN_CONNECTIONS = []
@@ -37,6 +37,7 @@ EXPECTED_TABLES = {
     17: {"worker_leases"},
     18: {"external_effects"},
     19: set(),
+    21: {"external_history_events"},
 }
 
 
@@ -768,10 +769,42 @@ def test_018_triggers_are_load_bearing():
         except sqlite3.DatabaseError as exc:
             raise AssertionError(f"{trigger} was not the constraint under test: {exc}")
 
+def test_021_populated_upgrade_and_receipt_atomicity():
+    c = fresh()
+    apply(c, 20)
+    c.execute("INSERT INTO settings(key,value) VALUES('p19-upgrade-canary','preserved')")
+    c.commit()
+    c.executescript((MIG / "021_external_history.sql").read_text())
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 21
+    assert c.execute("SELECT value FROM settings WHERE key='p19-upgrade-canary'").fetchone()[0] == 'preserved'
+    insert = "INSERT INTO external_history_events VALUES(?,?,?,?,?,?,?,?,?,?,?,?)"
+    row = ('receipt', 'producer', 'event', 'project', 'a'*64, 'instance', 1,
+           'session', 'session.opened', '2026-09-21T00:00:00Z', '2026-09-21T00:00:01Z', '{}')
+    c.execute(insert, row)
+    c.rollback()
+    assert c.execute("SELECT count(*) FROM external_history_events").fetchone()[0] == 0
+    c.execute(insert, row)
+    c.commit()
+    for sql, args in [
+        (insert, ('different-receipt',) + row[1:]),
+        ("UPDATE external_history_events SET envelope='{}'", ()),
+        ("DELETE FROM external_history_events", ()),
+    ]:
+        try:
+            c.execute(sql, args)
+        except sqlite3.DatabaseError:
+            c.rollback()
+        else:
+            raise AssertionError('external history constraint did not refuse mutation')
+    assert c.execute("SELECT receipt_id FROM external_history_events").fetchall() == [('receipt',)]
+    assert not list(c.execute("PRAGMA foreign_key_check"))
+
+
 def main():
     try:
         check_fts5()
         test_full_chain()
+        test_021_populated_upgrade_and_receipt_atomicity()
         test_v2_to_v3()
         test_populated_v3_to_v4()
         test_004_memory_categories_and_embedding_constraints()

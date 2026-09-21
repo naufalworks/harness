@@ -113,7 +113,7 @@ impl Producers {
             )?;
         }
         for key in ["invocation_id", "task_id"] {
-            if let Some(id) = obj.get(key) {
+            if let Some(id) = obj.get(key).filter(|v| !v.is_null()) {
                 scope.key(id.as_str().ok_or("malformed_envelope")?)?;
             }
         }

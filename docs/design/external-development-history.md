@@ -186,3 +186,35 @@ that external-event deletion jobs exist in P19-T02. No new retention period is i
 Existing encrypted archive tests remain the regression proof for encryption/deletion; the
 new test additionally checks disabled versus partial configuration without mutating process
 configuration. Simulated sanitized sinks test privacy output, not database ingestion.
+
+
+## P19-T03 durable ingestion
+
+`POST /external-history/events` accepts one v1 envelope with a producer Bearer
+credential. P19-T02 authorization/privacy checks precede full envelope and SHA-256
+validation. Optional invocation/task IDs may be null for unrelated event types, as
+permitted by the v1 fixtures; required tool/task identities may not be null.
+
+The body is capped at 65,536 bytes with a ten-second read deadline and the existing
+shared API concurrency semaphore. Owner/browser credentials are not producer authority.
+Unreadable, oversized or timed-out bodies return 413; invalid envelopes/privacy/digests
+400; unauthorized producers 401; scope refusal 403; conflicting identity reuse 409;
+storage/concurrency unavailability 503. Errors contain static codes, not submitted text.
+
+Migration 021 stores evidence and its receipt together in an immutable row. The existing
+serialized writer uses an IMMEDIATE transaction and commits before acknowledgement.
+201 means new committed history; 200 means an identical retry. Both return receipt_id,
+ingested_at, state=committed and replay. Retries preserve the original receipt and time,
+including after process restart or a lost HTTP response. Producer-wide event IDs with
+changed digests are conflicts, never updates. Lower sequences are accepted without
+claiming global ordering. Append-only triggers reject updates/deletes.
+
+There is no extraction intent, provider call, tool dispatch or chat submission, and no
+separate outbox consistency window. Restart needs no replay worker: stored rows are final.
+An unacknowledged producer retries its envelope, not the original development operation.
+Existing databases upgrade additively to schema 21; older binaries cannot open schema 21.
+
+Limitations: external read UI, exporters, retention/deletion jobs and volume quotas are
+not introduced. Future audited deletion must reconcile the source policy with immutable
+receipt/tombstone semantics. Pattern-based privacy is not complete DLP. P19-T04, MCP
+capture and client integrations remain out of scope.
