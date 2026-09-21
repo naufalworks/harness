@@ -1483,7 +1483,11 @@ Approved direction: development-mcp records server-observed activity locally and
 - limitations: No extraction dispatch, MCP capture, client integration, external history read UI, volume quota or retention/deletion jobs. Not merged or deployed.
 
 ### P19-T04 · Capture isolated development-mcp activity durably
-- status: todo
+- status: done
+- branch: task/p19-t04-durable-capture (development-mcp, pushed to origin, based on origin/main 278b53d; not merged)
+- commits: 73295b698ea768eb9147b3f999ec70062cf35cfc (journal, policy, session isolation, lifecycle hooks, recovery, tests), 179ad59 (legacy SSE isolation regression, conftest ordering)
+- validation: 19 P19-T04 tests pass; full suite 197 passed / 3 failed; compileall and git diff --check clean. The 3 failures are tests/test_mcp_local_simulation.py::{test_mcp_run_command_stream_end_to_end, test_mcp_run_command_stream_timeout_end_to_end, test_mcp_delegate_task_structured_output_end_to_end}; they reproduce identically on clean 278b53d (no `python` on PATH, no `codex` binary) and pass with a `python` shim. Environment-only, not introduced by P19-T04.
+- known non-blocking risks: executor background store.update transitions are not journaled as outcomes (crash window covered by task-store `interrupted` marking); `required` policy halts tool execution on journal failure by design (`NOTION_LOCAL_OPS_CAPTURE_MODE=off` is the escape hatch); journal has no retention/purge; http_compat.py, shell.py and executors.py listed above were not modified (session identity comes from FastMCP `Context.session_id`, verified for streamable-HTTP and legacy SSE).
 - priority: medium
 - lane: mcp-capture
 - parallel: no

@@ -1,5 +1,23 @@
 # PROGRESS — journal
 
+## 2026-09-21T18:32:00Z · P19-T04 durable capture done, pending merge
+
+`task/p19-t04-durable-capture` in development-mcp, commits `73295b6` and `179ad59`,
+pushed to origin and tracking; origin/main is `278b53d` and untouched. New
+`capture.py` is an append-only SQLite journal (WAL, synchronous=FULL, RAISE(ABORT)
+triggers, 0600) with admissions and outcomes tables and bounded redacted summaries.
+`traced` admits before the handler runs and commits the outcome before returning;
+`NOTION_LOCAL_OPS_CAPTURE_MODE=required` fails closed. Default cwd and relay binding
+are per MCP session (ContextVar-keyed, public signatures unchanged). Startup recovery
+marks prior-boot open admissions `unknown` and non-terminal tasks `interrupted`; nothing
+is replayed.
+
+Validation: 19 new tests pass; full suite 197 passed, 3 failed. The three
+`test_mcp_local_simulation.py` failures reproduce on clean `278b53d` (no `python`
+on PATH, no `codex`) and pass with a `python` shim — environment-only. Non-blocking
+risks recorded in TASKS.md. Not merged, not deployed, bridge not restarted, P19-T05
+not started.
+
 ## 2026-09-21T16:12:37Z · P19-T03 availability remediation done
 
 Focused fix on `task/p19-t03-durable-history` after review of `614fcf5` confirmed
