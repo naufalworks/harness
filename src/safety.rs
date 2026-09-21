@@ -431,13 +431,12 @@ pub(crate) fn external_privacy(body: &[u8]) -> Result<serde_json::Value, &'stati
                     walk(v, depth + 1)?;
                 }
             }
-            Value::Number(n) => {
+            Value::Number(n)
                 if !n
                     .as_i64()
-                    .is_some_and(|n| (-9007199254740991..=9007199254740991).contains(&n))
-                {
-                    return Err("malformed_envelope");
-                }
+                    .is_some_and(|n| (-9007199254740991..=9007199254740991).contains(&n)) =>
+            {
+                return Err("malformed_envelope");
             }
             _ => {}
         }
