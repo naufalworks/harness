@@ -1,5 +1,48 @@
 # PROGRESS — journal
 
+## 2026-09-21 · P19-T01 needs-verify
+
+Completed the external development history contract and fixture corpus on
+`task/p19-t01-external-history`, branched from verified documentation commit ac39669.
+Scope was offline conformance, fixtures and documentation only; no runtime ingestion,
+migrations, deployment or subsequent tasks. Prior timed-out test invocations have no
+captured result and are not counted as a pass or a failure.
+
+Delivered: `docs/design/external-development-history.md` pinning schema
+`harness.external-history/v1`; `tests/test_external_history_contract.py`, a
+dependency-free offline validator; 27 fixtures under `tests/external_history/`
+(17 accepted spanning all 14 event types, 10 rejected spanning 6 declared rejection
+codes); and a `docs/RECORDING_PROTOCOL.md` section pointing at the contract while
+stating plainly that fixture conformance is not evidence of authentication,
+redaction, durable commit or network delivery.
+
+The contract keeps `outcome.transport` independent of `outcome.execution`, so a
+handler returning normally never implies the underlying command succeeded. Event
+identity is `(producer_id, event_id)` with a canonical-JSON SHA-256 `content_digest`,
+making an identical retry idempotent while conflicting reuse of an event ID is
+rejected as `duplicate_event_id_conflict`. Late arrival, crash-window `unknown`
+outcomes, capture gaps and explicitly unavailable conversation are all accepted
+without fabricating dialogue.
+
+Verification (both commands run on this tree):
+`cargo test --locked` → 345 passed, 0 failed. `python3 tests/test_external_history_contract.py`
+→ 18 tests, OK. `git diff --check` → clean.
+
+One defect was found and fixed during finalization rather than papered over: the
+`artifact.recorded` accepted fixture nested its metadata in `payload.artifacts[0]`,
+while the validator and the design doc require `artifact_id`, `media_type`,
+`byte_count`, `digest` and `truncated` at payload top level. An earlier recorded
+green run (task 3baad6a80012, 07:37:58Z) predated a stricter 18-test revision of the
+suite and did not cover this; the stale result was discarded instead of being
+reported as a pass. The fixture was corrected to the documented shape and its digest
+recomputed; no contract rule was weakened to make the suite green.
+
+Limitations: offline structural conformance only. No ingestion endpoint, migration,
+storage, authentication, redaction, archive or exporter exists yet — those remain
+P19-T02, P19-T03 and P19-T05. Nothing here is wired into the running service and
+nothing was deployed. Rust sources are untouched by this task, so the 345-test Rust
+run is a regression gate, not coverage of new Rust behaviour.
+
 ## 2026-09-17T12:58:41Z · P16-T06 deployed and production-verified
 
 Commit `f4f54f8` was promoted from clean `main` after encrypted backup `/root/workspace/myharness/backups/encrypted/harness-20260917T125528Z-e31d34b8.hbak` passed its restore drill. Deployment `deploy-20260917T125528Z-f4f54f8` is live at schema 20 with PID 9834 and binary SHA-256 `56c7b3c76c4d38bf4a5078a5cba67bf2f1ef32a881596266168c99e779a3e80e`; readiness and authenticated API smoke passed, and malformed non-object JSON was refused with HTTP 400.

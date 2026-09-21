@@ -1,0 +1,38 @@
+{
+  "schema_version": "harness.external-history/v1",
+  "event_id": "evt-32",
+  "content_digest": "1c7b6fe61e6bb0c9c40ce0d10d5a3c877b34514515f50c2132611787de33df24",
+  "producer_id": "development-mcp",
+  "producer_instance_id": "inst-01",
+  "producer_sequence": 32,
+  "project_id": "proj-harness",
+  "logical_session_id": "sess-01",
+  "occurred_at": "2026-09-21T06:00:00Z",
+  "event_type": "tool.failed",
+  "invocation_id": "inv-01",
+  "outcome": {
+    "transport": "ok",
+    "execution": "failed",
+    "exit_code": null
+  },
+  "capture": {
+    "conversation": "unavailable",
+    "payload": "summarized",
+    "truncated": false
+  },
+  "payload": {
+    "tool": "read_text",
+    "path": "src/main.rs",
+    "arguments": {
+      "path": "src/main.rs"
+    },
+    "result": {
+      "lines": 2
+    },
+    "artifacts": [],
+    "error": {
+      "category": "validation",
+      "message": "Synthetic rejection"
+    }
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "schema_version": "harness.external-history/v1",
+  "event_id": "evt-0001",
+  "content_digest": "8eda2b23a1d560620f7f8702dc7411a09e95dc1b23facc7fd8c6d772914ac7e3",
+  "producer_id": "development-mcp",
+  "producer_instance_id": "inst-01",
+  "producer_sequence": 1,
+  "project_id": "proj-harness",
+  "logical_session_id": "sess-01",
+  "occurred_at": "2026-09-21T06:00:00Z",
+  "event_type": "tool.maybe",
+  "invocation_id": "inv-01",
+  "outcome": {
+    "transport": "ok",
+    "execution": "succeeded",
+    "exit_code": 0
+  },
+  "capture": {
+    "conversation": "unavailable",
+    "payload": "summarized",
+    "truncated": false
+  },
+  "payload": {
+    "tool": "read_text",
+    "path": "src/main.rs"
+  },
+  "__expect": "unknown_event_type"
+}

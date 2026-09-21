@@ -1,0 +1,27 @@
+{
+  "schema_version": "harness.external-history/v1",
+  "event_id": "evt-0003",
+  "content_digest": "2e133d0639e052c4d3267f4e7d13856122f80cc82125e8cfcda95557d875f0f6",
+  "producer_id": "development-mcp",
+  "producer_instance_id": "inst-01",
+  "producer_sequence": 3,
+  "project_id": "proj-harness",
+  "logical_session_id": "sess-01",
+  "occurred_at": "2026-09-21T06:00:00Z",
+  "event_type": "task.interrupted",
+  "invocation_id": null,
+  "outcome": {
+    "transport": "error",
+    "execution": "unknown",
+    "exit_code": null
+  },
+  "capture": {
+    "conversation": "unavailable",
+    "payload": "summarized",
+    "truncated": false
+  },
+  "payload": {
+    "reason": "producer restarted before completion record"
+  },
+  "task_id": "task-01"
+}

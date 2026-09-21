@@ -37,3 +37,13 @@ Legacy v1 messages are preserved without invented context receipts. Inherited v1
 No raw artifact encryption, streaming chunks, tamper-proof log, power-loss proof beyond SQLite/OS/filesystem guarantees, multi-process coordination, archive search or automatic memory activation. Plaintext sanitized SQLite backups may still be sensitive. A local user/DB editor can alter records; “write once” context is an application/SQLite constraint, not forensic authenticity.
 
 Frontend keeps only request/session/scope identifiers in sessionStorage. It does not persist raw unsent drafts or bearer tokens. Lost-response recovery polls instead of resending. Same-tab explicit Retry same message reuses the original ID and prompt. Leave for later starts a new session without cancelling/resending the old request; saved work remains discoverable in History. Unknown save status is never displayed as successful capture.
+
+
+## External development history (P19-T01 contract only)
+
+The versioned envelope and offline fixture contract are specified in
+[External development history](design/external-development-history.md).
+This is not a deployed ingestion API. P19-T02 and P19-T03 own producer policy
+and durable ingestion respectively. External records must not enter `/chat/submit`
+or trigger provider generation or development-action replay. Fixture conformance
+is not evidence of authentication, redaction, durable commit or network delivery.

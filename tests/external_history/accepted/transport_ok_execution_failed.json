@@ -1,0 +1,27 @@
+{
+  "schema_version": "harness.external-history/v1",
+  "event_id": "evt-0002",
+  "content_digest": "a4bdb59da5eae51d90c0099ee9429366d360c175fc22f75d169bc1451251a26c",
+  "producer_id": "development-mcp",
+  "producer_instance_id": "inst-01",
+  "producer_sequence": 2,
+  "project_id": "proj-harness",
+  "logical_session_id": "sess-01",
+  "occurred_at": "2026-09-21T06:00:00Z",
+  "event_type": "tool.completed",
+  "invocation_id": "inv-01",
+  "outcome": {
+    "transport": "ok",
+    "execution": "failed",
+    "exit_code": 1
+  },
+  "capture": {
+    "conversation": "unavailable",
+    "payload": "summarized",
+    "truncated": false
+  },
+  "payload": {
+    "tool": "run_command",
+    "summary": "test suite returned 1"
+  }
+}

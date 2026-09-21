@@ -1,0 +1,28 @@
+{
+  "schema_version": "harness.external-history/v1",
+  "event_id": "evt-0007",
+  "content_digest": "6cbd25b6be1b667e6a62cd8ec09f2cc6a25e9ab403647a5b65eac19d1f283e3a",
+  "producer_id": "development-mcp",
+  "producer_instance_id": "inst-01",
+  "producer_sequence": 7,
+  "project_id": "proj-harness",
+  "logical_session_id": "sess-01",
+  "occurred_at": "2026-09-21T06:00:00Z",
+  "event_type": "message.observed",
+  "invocation_id": null,
+  "outcome": {
+    "transport": "ok",
+    "execution": "not_applicable",
+    "exit_code": null
+  },
+  "capture": {
+    "conversation": "client_supplied",
+    "payload": "full",
+    "truncated": false
+  },
+  "payload": {
+    "role": "user",
+    "text": "inspect the recording module",
+    "source_client": "fixture-host"
+  }
+}
