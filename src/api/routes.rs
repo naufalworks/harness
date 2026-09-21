@@ -2076,6 +2076,10 @@ pub(crate) fn router(state: Harness) -> Router {
         .route("/app.js", get(js))
         .route("/style.css", get(css))
         .route("/auth/session", post(create_browser_session))
+        .route(
+            "/external-history/events",
+            post(crate::api::external_history::ingest),
+        )
         .merge(api)
         .layer(DefaultBodyLimit::max(64 * 1024))
         .layer(middleware::from_fn_with_state(state.clone(), headers))

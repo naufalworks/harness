@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 mod producer;
+pub(crate) use producer::AuthorizedEvidence;
 
 const AUTH_FAILURE_DELAY: Duration = Duration::from_millis(150);
 const MAX_BROWSER_SESSIONS: usize = 128;
@@ -93,6 +94,11 @@ impl AuthState {
             return Err("redaction_missing");
         }
         Ok(evidence)
+    }
+
+    /// Header-only admission check. Scope and privacy still require authorize_external.
+    pub(crate) fn is_external_producer(&self, token: &str) -> bool {
+        self.producers.contains_token(token)
     }
 
     pub(crate) fn identify(&self, token: &str) -> Option<AuthKind> {

@@ -1,5 +1,74 @@
 # PROGRESS — journal
 
+## 2026-09-21T16:12:37Z · P19-T03 availability remediation done
+
+Focused fix on `task/p19-t03-durable-history` after review of `614fcf5` confirmed
+unauthenticated incomplete requests could exhaust the eight shared API permits.
+The handler now checks the producer Bearer credential from headers before permit
+acquisition or body polling. It reuses the configured producer token check; owner,
+missing and invalid credentials receive 401. Full scope/privacy authorization,
+envelope/digest validation and transactional append-only persistence are unchanged.
+
+Regression opens twelve incomplete requests with missing, invalid or owner credentials;
+all return 401 within the test's two-second socket deadline (below the ten-second body
+read timeout). Owner requests and valid producer ingestion/replay remain successful.
+Existing conflict, restart, lost-ack, privacy and failed-write tests remain passing.
+
+Verification completed sequentially with CARGO_BUILD_JOBS=1 RUST_TEST_THREADS=1:
+- `cargo test --locked`: 360 passed, 0 failed.
+- `python3 tests/external_history_integration.py`: 6 passed.
+- `python3 tests/test_external_history_contract.py`: 19 passed.
+- `cargo clippy -- -D warnings`: PASS.
+- `cargo fmt --check`: PASS.
+Logs: `/tmp/p19-t03-remediation.ePWbKD/`.
+
+Reviewed the focused diff. No storage, migration or unrelated components changed.
+The unauthenticated shared-permit finding is resolved; ready for merge review.
+Authenticated producers still share the bounded pool by design. This is not a claim
+of general denial-of-service immunity. No main merge, deployment or P19-T04 work.
+Next: explicit review/merge authorization; create separate remediation commit.
+
+## 2026-09-21T15:29:21Z · P19-T03 done
+
+Implemented on `task/p19-t03-durable-history`, based on `84f4029`. Dedicated
+`POST /external-history/events` uses the existing producer authorization/privacy
+boundary, bounds body bytes/read time/concurrency, validates the v1 envelope and
+canonical SHA-256 digest, and commits immutable event/receipt rows before returning
+acknowledgement. Migration 021 is additive; existing migrations are unchanged.
+Producer-wide replay preserves original receipts; conflicting reuse never rewrites.
+Tests cover insert/commit abort, concurrency, append-only constraints, producer isolation,
+restart, lost HTTP acknowledgement and absence of chat/tool/provider/extraction dispatch.
+A fixture test caught rejection of nullable unrelated invocation IDs; corrected to match
+the approved contract, including the narrow privacy-boundary compatibility change.
+
+Verification ran sequentially with `CARGO_BUILD_JOBS=1 RUST_TEST_THREADS=1`:
+- `python3 tests/test_migrations.py`: PASS through 021; rerun after adding populated
+  v20 upgrade, rollback and immutable-receipt constraints: PASS.
+- `cargo test --locked`: 360 passed, 0 failed.
+- `python3 tests/external_history_integration.py`: 5 passed; builds current binary.
+- `python3 tests/test_external_history_contract.py`: 19 passed.
+- `cargo clippy --locked --all-targets --all-features -- -D warnings`: PASS.
+- `python3 tests/test_recording_contracts.py`: 25 passed.
+- `python3 tests/test_sql_contracts.py`: 19 passed.
+- `python3 tests/test_agentic_sql.py`: 11 passed.
+- Logs: `/tmp/p19-t03-verify.xCsgrN/`; final migration log `migrations-final.log`.
+
+Reviewed new files and full tracked diff, including migration registration/readiness
+expectations and auth-route isolation. Existing Python SQLite numbered-placeholder
+DeprecationWarnings remain; they did not fail these checks. Full browser/release gates
+were not run and no production service was restarted. Pattern-based privacy is not
+complete DLP; external retention/deletion needs a future audited path. No quotas or
+external read UI are introduced. No extraction intent is created in this task.
+
+Next: branch review and explicit merge authorization. P19-T04 remains unstarted;
+no MCP capture or client integrations. Commit/push follows this entry; no main merge.
+
+## 2026-09-21T14:26:01Z · P19-T03 doing
+
+Started `task/p19-t03-durable-history` from clean main `84f4029`. P19-T01 and P19-T02 are done; the Clippy fix is committed on main. Reviewed P19-T03, external-history v1 and P19-T02 privacy requirements, the serialized DbStore writer, additive migration chain and route authentication separation. Implement a dedicated bounded producer-only ingestion endpoint with full envelope/digest validation, atomic durable events/receipts, producer-wide replay/conflict handling and restart/lost-ack tests. No MCP capture, client integration, provider calls or P19-T04 work. Extraction execution is outside this task; do not enqueue the existing provider-backed extraction worker.
+
+Verification pending: `python3 tests/test_migrations.py && cargo test --locked && python3 tests/external_history_integration.py`, plus P19 contracts and relevant regressions, with `CARGO_BUILD_JOBS=1 RUST_TEST_THREADS=1`. No deployment or main merge authorized.
+
 ## 2026-09-21T13:50:17Z · P19-T02 done
 
 Completed the producer scope and recording privacy boundary on `task/p19-t02-producer-privacy`, based on `2cd1cb9`. Reviewed the complete change set, including new producer module and privacy fixtures: only P19-T02 runtime, tests, design and task records changed. Producer credentials remain separate from owner/browser authority, project grants are exact allowlists, and correlation keys include producer/project identity. Bounded recursive privacy checks reject recognized secrets, known credentials, ambiguous JSON and failed privacy-state checks without returning raw evidence. Archive opt-in/encryption remain separate; partial configuration now fails startup. Documented retention/deletion rules include artifacts and derived memories.

@@ -1469,7 +1469,7 @@ Approved direction: development-mcp records server-observed activity locally and
 - limitations: Authorization/privacy preparation only; full envelope/digest validation and durable acceptance remain P19-T03. Secret detection is conservative pattern matching, not complete DLP. External retention/deletion rules are policy for future consumers, not implemented external storage jobs. Not deployed or merged to main.
 
 ### P19-T03 · Add durable external history ingestion and receipts
-- status: todo
+- status: done
 - priority: medium
 - lane: history-storage
 - parallel: no
@@ -1478,6 +1478,9 @@ Approved direction: development-mcp records server-observed activity locally and
 - files: migrations/* (next additive migration), src/storage.rs, src/storage/, src/api/routes.rs, src/api/ (external-history handlers, new), tests/test_migrations.py, tests/external_history/
 - done-when: Harness accepts external events through a dedicated bounded ingestion surface and acknowledges only committed records. Producer-scoped event identity deduplicates identical retries and rejects conflicting reuse. Events, receipt state and any extraction intent are transactionally consistent. Existing databases upgrade without rewriting applied migrations; external events neither submit chat turns nor execute tools or provider calls. Restart and lost-acknowledgement fixtures preserve accepted history without duplicate records.
 - verify: python3 tests/test_migrations.py && cargo test --locked && python3 tests/external_history_integration.py
+
+- result: Added migration 021, bounded producer-only ingestion, v1 envelope/digest validation, atomic immutable event/receipt rows, replay/conflict handling and restart/lost-ack tests. Verification: 360 Rust tests, 5 HTTP integration tests, 19 external contract tests, strict Clippy, migration chain including populated v20 upgrade, and recording/SQL/agentic regressions passed.
+- limitations: No extraction dispatch, MCP capture, client integration, external history read UI, volume quota or retention/deletion jobs. Not merged or deployed.
 
 ### P19-T04 · Capture isolated development-mcp activity durably
 - status: todo
