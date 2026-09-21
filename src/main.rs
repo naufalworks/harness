@@ -216,12 +216,15 @@ async fn main() -> Result<()> {
     let state = Harness {
         store: store.clone(),
         agents: agents.clone(),
-        auth: Arc::new(AuthState::new(
-            token,
-            previous_token,
-            Duration::from_secs(session_ttl),
-            proxy_identity_header,
-        )),
+        auth: Arc::new(
+            AuthState::new(
+                token,
+                previous_token,
+                Duration::from_secs(session_ttl),
+                proxy_identity_header,
+            )
+            .with_producers_from_env()?,
+        ),
         port: addr.port(),
         origins: Arc::new(origins),
         api_limit: Arc::new(Semaphore::new(8)),

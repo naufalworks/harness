@@ -1455,7 +1455,7 @@ Approved direction: development-mcp records server-observed activity locally and
 - result-verify: 2026-09-21: `cargo test --locked && python3 tests/test_external_history_contract.py` passed (345 Rust tests, 18 contract tests); final saved logs `/tmp/p19-final-rust.log` and `/tmp/p19-final-contract.log`. Fresh contract rerun passed. Recording contracts (25), SQL contracts (19), migration chain through 020 and `git diff --check` passed. Deployment identity remains separate and has not been promoted.
 
 ### P19-T02 · Enforce external producer scope and recording privacy
-- status: todo
+- status: done
 - priority: medium
 - lane: history-security
 - parallel: no
@@ -1464,6 +1464,9 @@ Approved direction: development-mcp records server-observed activity locally and
 - files: src/api/auth.rs, src/safety.rs, src/storage/scope.rs, src/archive/, tests/external_history/, tests/test_external_history_contract.py (new)
 - done-when: authenticated producers are bound to permitted project scopes; ingestion authority does not grant history read, memory approval or archive access. Policy covers arguments, titles, paths, results, errors and output before persistence/export. Secret-bearing fixtures do not leak into sanitized records, diagnostics or indexes. Exact-content archives remain opt-in and encrypted; retention/deletion rules include artifacts and derived memories. Untrusted identifiers cannot attach events to another scope, and privacy failures never silently permit raw capture.
 - verify: cargo test --locked && python3 tests/test_external_history_contract.py
+- note: Completed producer-only credentials, exact project allowlists, scoped correlation keys, immutable privacy-checked evidence, bounded recursive secret rejection and unambiguous JSON parsing. Existing privileged routes refuse producer credentials. Partial archive configuration fails closed; external artifact/derived-memory retention policy is documented. No ingestion endpoints, storage, migrations or MCP capture added.
+- result-verify: 2026-09-21: `cargo test --locked && python3 tests/test_external_history_contract.py` passed with `CARGO_BUILD_JOBS=1 RUST_TEST_THREADS=1` (356 Rust tests, 19 contract tests). Recording contracts (25), SQL contracts (19), agentic SQL (11), migrations 001–020, formatting and `git diff --check` passed. Logs: `/tmp/p19-t02-verified.5NDPb1/`. Existing Python SQLite placeholder deprecation warnings remain.
+- limitations: Authorization/privacy preparation only; full envelope/digest validation and durable acceptance remain P19-T03. Secret detection is conservative pattern matching, not complete DLP. External retention/deletion rules are policy for future consumers, not implemented external storage jobs. Not deployed or merged to main.
 
 ### P19-T03 · Add durable external history ingestion and receipts
 - status: todo

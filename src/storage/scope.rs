@@ -345,3 +345,46 @@ pub fn canonical_root(input: &str) -> std::result::Result<String, &'static str> 
         .map(str::to_string)
         .ok_or("root_path must be valid UTF-8")
 }
+
+/// External identifiers are opaque labels, never paths or authority.
+/// Producer grants are owner-configured exact project IDs, with no wildcard expansion.
+pub(crate) fn valid_external_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value.as_bytes()[0].is_ascii_alphanumeric()
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_.:-".contains(&b))
+}
+
+/// Composite identity prevents a caller-supplied session/task/artifact ID from
+/// selecting another producer or project's resource. Do not resolve bare IDs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ExternalScope {
+    producer: String,
+    project: String,
+}
+impl ExternalScope {
+    pub(crate) fn bind(
+        producer: &str,
+        project: &str,
+        allowed: &[String],
+    ) -> Result<Self, &'static str> {
+        if !valid_external_id(producer)
+            || !valid_external_id(project)
+            || !allowed.iter().any(|p| p == project)
+        {
+            return Err("scope_not_permitted");
+        }
+        Ok(Self {
+            producer: producer.into(),
+            project: project.into(),
+        })
+    }
+    pub(crate) fn key(&self, id: &str) -> Result<(String, String, String), &'static str> {
+        if !valid_external_id(id) {
+            return Err("malformed_envelope");
+        }
+        Ok((self.producer.clone(), self.project.clone(), id.into()))
+    }
+}

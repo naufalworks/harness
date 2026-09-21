@@ -1,5 +1,23 @@
 # PROGRESS — journal
 
+## 2026-09-21T13:50:17Z · P19-T02 done
+
+Completed the producer scope and recording privacy boundary on `task/p19-t02-producer-privacy`, based on `2cd1cb9`. Reviewed the complete change set, including new producer module and privacy fixtures: only P19-T02 runtime, tests, design and task records changed. Producer credentials remain separate from owner/browser authority, project grants are exact allowlists, and correlation keys include producer/project identity. Bounded recursive privacy checks reject recognized secrets, known credentials, ambiguous JSON and failed privacy-state checks without returning raw evidence. Archive opt-in/encryption remain separate; partial configuration now fails startup. Documented retention/deletion rules include artifacts and derived memories.
+
+Verification completed sequentially with `CARGO_BUILD_JOBS=1 RUST_TEST_THREADS=1`: `cargo test --locked && python3 tests/test_external_history_contract.py` passed (356 Rust tests, 19 external-history contract tests). `python3 tests/test_recording_contracts.py` passed 25 tests; `python3 tests/test_sql_contracts.py` passed 19; `python3 tests/test_agentic_sql.py` passed 11; `python3 tests/test_migrations.py` passed the 001–020 chain with data/FTS/FKs preserved. `cargo fmt --all -- --check` and `git diff --check` passed. Final logs: `/tmp/p19-t02-verified.5NDPb1/`. An initial compile failure in test-only runtime type references was corrected before this passing run. Existing Python SQLite placeholder deprecation warnings remain. No successful full suite was unnecessarily repeated during finalization.
+
+Limits: pattern-based detection is not complete DLP; producers still sanitize at source. No external ingestion endpoint/storage, digest acceptance, capture flow, or retention jobs were added. The immutable preparation boundary and documented deletion policy must be used by future consumers. No production configuration, service restart, deployment, browser/release-gate execution or main merge occurred. P19-T03 is next by dependency but remains unstarted; this work stops at committing and pushing the P19-T02 branch.
+
+## 2026-09-21T09:48:40Z · P19-T02 doing
+
+Started `task/p19-t02-producer-privacy` from clean main `2cd1cb9`. P19-T01 is done; reviewed the P19-T02 task, external-development-history design, auth token/session separation, scope validation, recording redaction, and opt-in encrypted archive/privacy actions. No eligible critical/high-priority todo was found in the ledger review.
+
+Implementation checkpoint: no runtime changes or security tests written yet. Existing `AuthState::identify` accepts owner/browser credentials; external producer authority must remain separate and must never authorize those existing routes. Existing `safety::redact` is best-effort, not complete DLP. The external boundary must bound and inspect nested values and keys, bind producer/project identity to trusted configuration rather than submitted data, reject residual recognized secrets with non-content-bearing errors, and qualify correlation identities by producer/project. Exact archives remain separately opt-in and encrypted. Specify retention/deletion coverage for artifacts and derived memory without inventing P19-T03 storage.
+
+Next: implement and test the P19-T02 authorization/privacy boundary with explicit limitations until P19-T03 supplies ingestion and durable storage. Do not introduce ingestion endpoints, migrations, later tasks, deployment or production configuration changes. No implementation blocker is established; direct local commands work.
+
+Verification: task tests and regression suites have NOT run for P19-T02. Run the exact task command `cargo test --locked && python3 tests/test_external_history_contract.py`, plus focused auth/archive/recording regressions and `git diff --check`, sequentially with `PATH=/root/.cargo/bin:$PATH`, `CARGO_BUILD_JOBS=1`, `RUST_TEST_THREADS=1`. Check for existing jobs before starting; never restart a running or already-passed test job unnecessarily. Review the complete diff before marking done, committing and pushing this branch. P19-T03 remains unstarted.
+
 ## 2026-09-21T08:05:07Z · P19-T01 done
 
 Verified implementation commit `b6c4c83` is already on origin/task/p19-t01-external-history; no implementation was repeated. Final saved task-gate output confirms 345 Rust tests and 18 contract tests passed. Fresh `python3 tests/test_external_history_contract.py` rerun passed all 18 tests. Saved recording contracts (25 tests), SQL contracts (19 tests), and migrations through 020 also passed. Migration checks emitted existing Python sqlite placeholder deprecation warnings.
