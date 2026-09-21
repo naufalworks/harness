@@ -1,5 +1,11 @@
 # PROGRESS — journal
 
+## 2026-09-21T08:05:07Z · P19-T01 done
+
+Verified implementation commit `b6c4c83` is already on origin/task/p19-t01-external-history; no implementation was repeated. Final saved task-gate output confirms 345 Rust tests and 18 contract tests passed. Fresh `python3 tests/test_external_history_contract.py` rerun passed all 18 tests. Saved recording contracts (25 tests), SQL contracts (19 tests), and migrations through 020 also passed. Migration checks emitted existing Python sqlite placeholder deprecation warnings.
+
+The prior needs-verify ledger status is closed using this evidence. Full documentation checking still reports deployment identity drift because the live release predates this test-only change; this is not a claim of deployment readiness. No runtime source, schema, production configuration or service changed. Strict release/browser verification and deployment were not performed for this task. P19-T02 is next by dependency but was not started.
+
 ## 2026-09-21 · P19-T01 needs-verify
 
 Completed the external development history contract and fixture corpus on
