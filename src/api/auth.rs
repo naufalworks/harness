@@ -16,10 +16,13 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
+mod producer;
+
 const AUTH_FAILURE_DELAY: Duration = Duration::from_millis(150);
 const MAX_BROWSER_SESSIONS: usize = 128;
 
 pub(crate) struct AuthState {
+    producers: producer::Producers,
     current: String,
     previous: Option<String>,
     session_ttl: Duration,
@@ -42,6 +45,7 @@ impl AuthState {
         proxy_identity_header: Option<header::HeaderName>,
     ) -> Self {
         Self {
+            producers: producer::Producers::default(),
             current,
             previous,
             session_ttl,
@@ -50,7 +54,51 @@ impl AuthState {
             proxy_identity_header,
         }
     }
+    /// Owner-supplied configuration only; never taken from an event or HTTP request.
+    pub(crate) fn with_producers_from_env(self) -> anyhow::Result<Self> {
+        match std::env::var("HARNESS_HISTORY_PRODUCERS") {
+            Ok(config) => self.with_producers(&config),
+            Err(std::env::VarError::NotPresent) => Ok(self),
+            Err(_) => anyhow::bail!("invalid external producer configuration"),
+        }
+    }
+
+    fn with_producers(mut self, config: &str) -> anyhow::Result<Self> {
+        self.producers =
+            producer::Producers::parse(config, &self.current, self.previous.as_deref())
+                .map_err(|_| anyhow::anyhow!("invalid external producer configuration"))?;
+        Ok(self)
+    }
+
+    /// P19-T02 boundary only: no receipt, durable write, or full envelope validation.
+    #[allow(dead_code)] // Consumer is the separately tracked P19-T03 ingestion task.
+    pub(crate) fn authorize_external(
+        &self,
+        token: &str,
+        body: &[u8],
+    ) -> Result<producer::AuthorizedEvidence, &'static str> {
+        let evidence = self.producers.authorize(token, body)?;
+        if (!self.current.is_empty()
+            && crate::safety::external_contains(evidence.value(), &self.current))
+            || self.previous.as_ref().is_some_and(|p| {
+                !p.is_empty() && crate::safety::external_contains(evidence.value(), p)
+            })
+            || self
+                .sessions
+                .lock()
+                .map_err(|_| "privacy_check_failed")?
+                .keys()
+                .any(|s| crate::safety::external_contains(evidence.value(), s))
+        {
+            return Err("redaction_missing");
+        }
+        Ok(evidence)
+    }
+
     pub(crate) fn identify(&self, token: &str) -> Option<AuthKind> {
+        if self.producers.contains_token(token) {
+            return None;
+        }
         if valid_token(&self.current, token)
             || self
                 .previous

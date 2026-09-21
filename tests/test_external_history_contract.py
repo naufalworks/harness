@@ -255,5 +255,18 @@ class TestMalformedInputs(unittest.TestCase):
         self.assertEqual(types, EVENT_TYPES)
 
 
+class TestPrivacyCorpus(unittest.TestCase):
+    def test_security_fixture_coverage(self):
+        # Runtime enforcement is exercised by Rust; do not duplicate the policy here.
+        cases = json.loads((FIXTURES / "privacy.json").read_text())
+        self.assertEqual(len({c["name"] for c in cases}), len(cases))
+        self.assertTrue({"nested_arguments", "title", "path", "result", "error", "output", "artifact"}
+                        <= {c["name"] for c in cases})
+        for case in cases:
+            self.assertIn(case["expected"], (None, "redaction_missing"))
+            if case["expected"] is None:
+                self.assertNotIn("synthetic-canary", json.dumps(case["body"]))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

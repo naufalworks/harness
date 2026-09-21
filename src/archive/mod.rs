@@ -7,8 +7,8 @@
 //! on-disk format is mirrored by `scripts/backup.py`, and migration 007 ships the
 //! `exact_archives` / `privacy_events` tables.
 //!
-//! The subsystem stays opt-in: `open_from_env` returns `None` unless both
-//! `HARNESS_ARCHIVE_ROOT` and `HARNESS_ARCHIVE_KEY` are set, so a deployment that never
+//! The subsystem stays opt-in: `open_from_env` returns `None` when no archive
+//! setting is present; partial configuration fails closed. A deployment that never
 //! configures a key keeps an entirely sanitized database and its archive routes refuse
 //! explicitly instead of half-working.
 //!
@@ -171,19 +171,36 @@ impl ArchiveStore {
     /// is deliberately distinct from a bad configuration: a key that is present but unreadable,
     /// wrongly sized or world-readable fails at startup rather than at the first request.
     pub fn open_from_env() -> Result<Option<Self>> {
-        let (Ok(root), Ok(current)) = (
-            std::env::var("HARNESS_ARCHIVE_ROOT"),
-            std::env::var("HARNESS_ARCHIVE_KEY"),
-        ) else {
-            return Ok(None);
-        };
-        let previous = std::env::var("HARNESS_ARCHIVE_KEY_PREVIOUS").ok();
-        Self::open(
-            Path::new(&root),
-            Path::new(&current),
-            previous.as_deref().map(Path::new),
-        )
-        .map(Some)
+        fn setting(name: &str) -> Result<Option<String>> {
+            match std::env::var(name) {
+                Ok(value) => Ok(Some(value)),
+                Err(std::env::VarError::NotPresent) => Ok(None),
+                Err(_) => bail!("invalid archive configuration"),
+            }
+        }
+        let root = setting("HARNESS_ARCHIVE_ROOT")?;
+        let current = setting("HARNESS_ARCHIVE_KEY")?;
+        let previous = setting("HARNESS_ARCHIVE_KEY_PREVIOUS")?;
+        Self::open_configured(root.as_deref(), current.as_deref(), previous.as_deref())
+    }
+
+    /// Partial configuration must never silently downgrade exact capture to disabled.
+    fn open_configured(
+        root: Option<&str>,
+        current: Option<&str>,
+        previous: Option<&str>,
+    ) -> Result<Option<Self>> {
+        match (root, current, previous) {
+            (None, None, None) => Ok(None),
+            (Some(root), Some(current), previous)
+                if !root.is_empty()
+                    && !current.is_empty()
+                    && !previous.is_some_and(str::is_empty) =>
+            {
+                Self::open(Path::new(root), Path::new(current), previous.map(Path::new)).map(Some)
+            }
+            _ => bail!("incomplete archive configuration"),
+        }
     }
 
     /// Archive bytes through the shared writer. The ciphertext file is published before the
@@ -484,6 +501,26 @@ fn hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn external_privacy_archive_configuration_is_explicit_and_fail_closed() {
+        assert!(ArchiveStore::open_configured(None, None, None)
+            .unwrap()
+            .is_none());
+        for (root, key, previous) in [
+            (Some("/unused"), None, None),
+            (None, Some("/unused"), None),
+            (None, None, Some("/unused")),
+            (Some(""), Some("/unused"), None),
+            (Some("/unused"), Some(""), None),
+            (Some("/unused"), Some("/unused"), Some("")),
+        ] {
+            let error = ArchiveStore::open_configured(root, key, previous)
+                .err()
+                .unwrap();
+            assert_eq!(error.to_string(), "incomplete archive configuration");
+        }
+    }
 
     fn fixture() -> Result<(PathBuf, Connection, PathBuf, PathBuf)> {
         let dir = std::env::temp_dir().join(format!("harness-archive-test-{}", Uuid::new_v4()));

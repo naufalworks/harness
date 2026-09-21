@@ -1,0 +1,78 @@
+[
+  {
+    "name": "nested_arguments",
+    "body": {
+      "arguments": {
+        "password": "synthetic-canary"
+      }
+    },
+    "expected": "redaction_missing"
+  },
+  {
+    "name": "title",
+    "body": {
+      "title": "Bearer synthetic-canary"
+    },
+    "expected": "redaction_missing"
+  },
+  {
+    "name": "path",
+    "body": {
+      "path": "https://user:synthetic-canary@example.test/path"
+    },
+    "expected": "redaction_missing"
+  },
+  {
+    "name": "result",
+    "body": {
+      "result": [
+        {
+          "token": "synthetic-canary"
+        }
+      ]
+    },
+    "expected": "redaction_missing"
+  },
+  {
+    "name": "error",
+    "body": {
+      "error": "api_key=synthetic-canary"
+    },
+    "expected": "redaction_missing"
+  },
+  {
+    "name": "output",
+    "body": {
+      "output": "-----BEGIN PRIVATE KEY-----\nsynthetic-canary\n-----END PRIVATE KEY-----"
+    },
+    "expected": "redaction_missing"
+  },
+  {
+    "name": "artifact",
+    "body": {
+      "artifacts": [
+        {
+          "uri": "https://example.test/?token=synthetic-canary"
+        }
+      ]
+    },
+    "expected": "redaction_missing"
+  },
+  {
+    "name": "redacted",
+    "body": {
+      "output": "[REDACTED SENSITIVE CONTENT]"
+    },
+    "expected": null
+  },
+  {
+    "name": "ordinary",
+    "body": {
+      "path": "src/main.rs",
+      "result": {
+        "lines": 2
+      }
+    },
+    "expected": null
+  }
+]

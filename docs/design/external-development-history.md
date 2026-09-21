@@ -114,3 +114,75 @@ Artifact references carry artifact_id, media_type, byte_count, digest and trunca
 bytes are not implicitly archived by referencing them. Arguments/results/error details
 are sanitized evidence, never trusted instructions. Sequence order applies within a
 producer instance only; late arrival is accepted without claiming global clock order.
+
+
+## P19-T02 authorization and privacy boundary
+
+`AuthState::authorize_external` is the single authorization/privacy preparation boundary.
+It does **not** validate the entire v1 envelope, verify its digest, commit anything, or
+acknowledge a receipt. P19-T03 must perform those checks and use this boundary before any
+record, diagnostic detail, export, extraction input, or search index is written. This task
+adds no ingestion route, external-history schema, or development-mcp capture behavior.
+
+Owner-controlled `HARNESS_HISTORY_PRODUCERS` is a bounded JSON array of objects with exactly
+`producer_id`, `token`, and `projects`. Tokens are independent, 32–256 printable ASCII bytes;
+operators must generate high-entropy values and protect environment/configuration access.
+`projects` is a nonempty list of exact project/scope IDs, with no wildcard or path expansion.
+Absent configuration or `[]` enables no producers. Invalid/duplicate grants, duplicate
+credentials, unknown fields, and collisions with current/previous owner tokens fail startup
+with a static error that does not echo configuration. Changing grants requires restart;
+there is no remote grant-management API. Startup wiring in `src/main.rs` is the only change
+outside the task's declared runtime areas.
+
+A producer token never becomes owner/browser authority and is refused by existing history,
+memory-confirmation, session-minting and archive routes. Owner/browser tokens are not
+producer credentials. Submitted producer identity must match the authenticated grant;
+project IDs must match its exact allowlist. Correlation keys are tuples of trusted producer,
+authorized project and validated external ID, never bare session/task/invocation/artifact
+IDs or delimiter-concatenated strings. Future storage must not use nested payload IDs to
+resolve another scope's resources. Scoped correlation does not replace the contract's
+producer-wide `(producer_id,event_id)` deduplication key: ingestion must also reject replay
+of an event ID with a changed project/digest.
+
+The body is capped at 65,536 bytes before parsing. Duplicate keys (including escaped aliases),
+invalid JSON/UTF-8, floats, out-of-range integers, invalid object keys, oversized strings or
+containers, and excessive nesting are rejected. All decoded object keys and string values
+are checked recursively, including arguments, titles, paths, results, errors, output and
+artifact metadata. Recognized secret patterns, credential-bearing URLs, sensitive keys,
+and known producer/owner/browser credentials produce `redaction_missing`. A failed privacy
+state check produces `privacy_check_failed`; errors contain no submitted text. Rejection
+returns no evidence object, so callers must not persist/log/index/export the rejected body.
+Private fields and immutable accessors keep an accepted scope/value pair bound together.
+
+This is deliberately conservative pattern recognition, **not complete DLP**. Arbitrary,
+encoded, split or otherwise unrecognized secrets may escape detection; producers still
+must sanitize at source. Unknown secrets cannot be guaranteed absent. Clean redaction
+markers are accepted; secrets are rejected rather than silently rewritten, preserving the
+producer digest. Artifact references do not authorize fetching a URL/path or retaining bytes.
+Any future fetched bytes need their own privacy boundary before use.
+
+### Retention, deletion and exact content rules
+
+External source policy includes its sanitized events, artifact metadata/content, exports,
+indexes, extraction candidates and derived memories; do not retain detached copies as a
+way around source expiry/deletion. The existing separate privacy intents remain distinct:
+
+- **Forget:** exclude derived candidates/memories from approval/recall; source history is
+  unchanged unless separately deleted.
+- **Purge index:** remove derived searchable material (including artifact text) without
+  claiming the source or archive has been deleted.
+- **Delete source / retention expiry:** remove the scoped source and its artifact copies,
+  purge its indexes/exports, and invalidate derived memory/extraction material before it can
+  be recalled or re-indexed. Shared derivations must be recomputed from still-authorized
+  sources or excluded. Keep only non-content-bearing audit/tombstone evidence needed to
+  enforce deletion and prevent replay from resurrecting removed content.
+- **Exact archive:** never implied by ingestion or a reference. Require separate owner opt-in,
+  encrypted storage with external keys, and explicit deletion of associated archive objects
+  using the existing audited archive-deletion path. Unconfigured means disabled; partial or
+  invalid archive configuration fails startup, never silently enables plaintext fallback.
+
+These are policy requirements for future external storage/retention consumers, not a claim
+that external-event deletion jobs exist in P19-T02. No new retention period is invented here.
+Existing encrypted archive tests remain the regression proof for encryption/deletion; the
+new test additionally checks disabled versus partial configuration without mutating process
+configuration. Simulated sanitized sinks test privacy output, not database ingestion.

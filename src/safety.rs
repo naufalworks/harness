@@ -349,3 +349,241 @@ mod tests {
         assert!(!out.contains("\n\n"), "{out:?}");
     }
 }
+
+/// External evidence is rejected, not silently rewritten (which would invalidate its
+/// producer digest). This recognizes our redaction vocabulary, not arbitrary secrets.
+/// The body cap applies before JSON parsing; errors never echo submitted content.
+pub(crate) fn external_privacy(body: &[u8]) -> Result<serde_json::Value, &'static str> {
+    use serde_json::Value;
+    fn text(s: &str) -> Result<(), &'static str> {
+        if s.len() > 16384 {
+            return Err("malformed_envelope");
+        }
+        let lower = s.to_ascii_lowercase();
+        let url_secret = s.split_whitespace().any(|part| {
+            url::Url::parse(part).ok().is_some_and(|url| {
+                !url.username().is_empty()
+                    || url.password().is_some()
+                    || url.query_pairs().any(|(k, _)| {
+                        matches!(
+                            k.to_ascii_lowercase().as_str(),
+                            "token" | "secret" | "key" | "auth" | "signature"
+                        )
+                    })
+            })
+        });
+        if sensitive(s)
+            || redact(s) != s
+            || url_secret
+            || ["token=", "secret=", "cookie:", "authorization="]
+                .iter()
+                .any(|v| lower.contains(v))
+        {
+            return Err("redaction_missing");
+        }
+        Ok(())
+    }
+    fn walk(v: &Value, depth: usize) -> Result<(), &'static str> {
+        if depth > 12 {
+            return Err("malformed_envelope");
+        }
+        match v {
+            Value::String(s) => text(s)?,
+            Value::Array(a) => {
+                if a.len() > 256 {
+                    return Err("malformed_envelope");
+                }
+                for v in a {
+                    walk(v, depth + 1)?;
+                }
+            }
+            Value::Object(o) => {
+                if o.len() > 256 {
+                    return Err("malformed_envelope");
+                }
+                for (k, v) in o {
+                    if k.is_empty()
+                        || k.len() > 64
+                        || !(k.as_bytes()[0].is_ascii_alphabetic() || k.starts_with('_'))
+                        || !k.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                    {
+                        return Err("malformed_envelope");
+                    }
+                    text(k)?;
+                    // Detect split credential names/values and path/URL credentials.
+                    let normalized = k.to_ascii_lowercase().replace('_', "");
+                    if [
+                        "token",
+                        "secret",
+                        "authorization",
+                        "cookie",
+                        "setcookie",
+                        "apikey",
+                        "privatekey",
+                        "clientsecret",
+                        "accesstoken",
+                        "refreshtoken",
+                    ]
+                    .contains(&normalized.as_str())
+                    {
+                        return Err("redaction_missing");
+                    }
+                    walk(v, depth + 1)?;
+                }
+            }
+            Value::Number(n) => {
+                if !n
+                    .as_i64()
+                    .is_some_and(|n| (-9007199254740991..=9007199254740991).contains(&n))
+                {
+                    return Err("malformed_envelope");
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    if body.len() > 65536 {
+        return Err("malformed_envelope");
+    }
+    // Reject duplicate keys before Value's map representation can discard evidence.
+    let mut deserializer = serde_json::Deserializer::from_slice(body);
+    let v = <ExternalJson as serde::Deserialize>::deserialize(&mut deserializer)
+        .map_err(|_| "malformed_envelope")?
+        .0;
+    deserializer.end().map_err(|_| "malformed_envelope")?;
+    if !v.is_object() {
+        return Err("malformed_envelope");
+    }
+    walk(&v, 0)?;
+    Ok(v)
+}
+
+#[cfg(test)]
+mod external_privacy_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn external_limits_and_malformed_inputs_fail_closed() {
+        for body in [
+            b"null".as_slice(),
+            b"[]",
+            b"{",
+            b"\xff",
+            b"{\"n\":1.5}",
+            b"{\"n\":9007199254740992}",
+        ] {
+            assert_eq!(external_privacy(body).err(), Some("malformed_envelope"));
+        }
+        assert!(external_privacy(&vec![b' '; 65537]).is_err());
+        for v in [
+            json!({"s":"x".repeat(16385)}),
+            json!({"a":vec![0;257]}),
+            json!({"bad-key":1}),
+        ] {
+            assert!(external_privacy(&serde_json::to_vec(&v).unwrap()).is_err());
+        }
+        let mut v = json!(null);
+        for _ in 0..14 {
+            v = json!({"a":v});
+        }
+        assert!(external_privacy(&serde_json::to_vec(&v).unwrap()).is_err());
+    }
+    #[test]
+    fn external_nested_secrets_and_private_keys_are_rejected() {
+        for v in [
+            json!({"a":[{"token":"opaque"}]}),
+            json!({"a":"-----BEGIN PRIVATE KEY-----\nopaque\n-----END PRIVATE KEY-----"}),
+            json!({"a":{"Authorization":"opaque"}}),
+        ] {
+            assert_eq!(
+                external_privacy(&serde_json::to_vec(&v).unwrap()).err(),
+                Some("redaction_missing")
+            );
+        }
+        assert!(external_privacy(
+            &serde_json::to_vec(&json!({"output":REDACTION_MARKER})).unwrap()
+        )
+        .is_ok());
+    }
+}
+
+/// Compare decoded values, not JSON-escaped serialization, against known credentials.
+pub(crate) fn external_contains(value: &serde_json::Value, needle: &str) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
+    match value {
+        serde_json::Value::String(s) => s.contains(needle),
+        serde_json::Value::Array(a) => a.iter().any(|v| external_contains(v, needle)),
+        serde_json::Value::Object(o) => o
+            .iter()
+            .any(|(k, v)| k.contains(needle) || external_contains(v, needle)),
+        _ => false,
+    }
+}
+
+/// Strict JSON tree: duplicate object keys are ambiguous evidence, including escaped keys.
+struct ExternalJson(serde_json::Value);
+impl<'de> serde::Deserialize<'de> for ExternalJson {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = ExternalJson;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("bounded unambiguous JSON")
+            }
+            fn visit_bool<E: serde::de::Error>(
+                self,
+                v: bool,
+            ) -> std::result::Result<Self::Value, E> {
+                Ok(ExternalJson(v.into()))
+            }
+            fn visit_i64<E: serde::de::Error>(self, v: i64) -> std::result::Result<Self::Value, E> {
+                Ok(ExternalJson(v.into()))
+            }
+            fn visit_u64<E: serde::de::Error>(self, v: u64) -> std::result::Result<Self::Value, E> {
+                Ok(ExternalJson(v.into()))
+            }
+            fn visit_f64<E: serde::de::Error>(self, _: f64) -> std::result::Result<Self::Value, E> {
+                Err(E::custom("integer required"))
+            }
+            fn visit_str<E: serde::de::Error>(
+                self,
+                v: &str,
+            ) -> std::result::Result<Self::Value, E> {
+                Ok(ExternalJson(v.into()))
+            }
+            fn visit_unit<E: serde::de::Error>(self) -> std::result::Result<Self::Value, E> {
+                Ok(ExternalJson(serde_json::Value::Null))
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut a: A,
+            ) -> std::result::Result<Self::Value, A::Error> {
+                let mut items = Vec::new();
+                while let Some(v) = a.next_element::<ExternalJson>()? {
+                    if items.len() == 256 {
+                        return Err(serde::de::Error::custom("container limit"));
+                    }
+                    items.push(v.0);
+                }
+                Ok(ExternalJson(items.into()))
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut a: A,
+            ) -> std::result::Result<Self::Value, A::Error> {
+                let mut items = serde_json::Map::new();
+                while let Some(k) = a.next_key::<String>()? {
+                    if items.len() == 256 || items.contains_key(&k) {
+                        return Err(serde::de::Error::custom("ambiguous or oversized object"));
+                    }
+                    items.insert(k, a.next_value::<ExternalJson>()?.0);
+                }
+                Ok(ExternalJson(items.into()))
+            }
+        }
+        d.deserialize_any(Visitor)
+    }
+}
