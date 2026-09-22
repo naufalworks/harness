@@ -1498,7 +1498,7 @@ Approved direction: development-mcp records server-observed activity locally and
 - verify: cd /root/workspace/development-mcp && python3 -m pytest
 
 ### P19-T05 · Deliver recorded activity reliably into Harness
-- status: todo
+- status: done
 - priority: medium
 - lane: mcp-delivery
 - parallel: no
@@ -1509,7 +1509,7 @@ Approved direction: development-mcp records server-observed activity locally and
 - verify: python3 tests/external_history_integration.py && (cd /root/workspace/development-mcp && python3 -m pytest)
 
 ### P19-T06 · Expose evidence-linked external session history
-- status: todo
+- status: done
 - priority: medium
 - lane: history-ux
 - parallel: no

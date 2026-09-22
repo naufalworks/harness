@@ -255,6 +255,110 @@ pub(crate) fn validate(e: &Value) -> Result<(), &'static str> {
     Ok(())
 }
 
+// These reads are mounted only inside the owner/browser-authenticated router.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ExternalHistoryQuery {
+    project_id: Option<String>,
+    producer_id: Option<String>,
+    logical_session_id: Option<String>,
+    event_id: Option<String>,
+    after: Option<i64>,
+    limit: Option<i64>,
+}
+impl ExternalHistoryQuery {
+    fn check(&self) -> crate::api::error::ApiResult<()> {
+        use crate::api::error::invalid;
+        for id in [
+            &self.project_id,
+            &self.producer_id,
+            &self.logical_session_id,
+            &self.event_id,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if !crate::storage::valid_external_id(id) {
+                return Err(invalid("Invalid external history identifier"));
+            }
+        }
+        if !(0..=9_007_199_254_740_991).contains(&self.after.unwrap_or(0))
+            || !(1..=100).contains(&self.limit.unwrap_or(50))
+        {
+            return Err(invalid("Invalid history cursor or page size"));
+        }
+        Ok(())
+    }
+    fn scope(&self) -> crate::api::error::ApiResult<(String, String, String)> {
+        use crate::api::error::invalid;
+        self.check()?;
+        Ok((
+            self.project_id
+                .clone()
+                .ok_or_else(|| invalid("project_id required"))?,
+            self.producer_id
+                .clone()
+                .ok_or_else(|| invalid("producer_id required"))?,
+            self.logical_session_id
+                .clone()
+                .ok_or_else(|| invalid("logical_session_id required"))?,
+        ))
+    }
+}
+pub(crate) async fn sessions(
+    State(h): State<Harness>,
+    axum::extract::Query(q): axum::extract::Query<ExternalHistoryQuery>,
+) -> crate::api::error::ApiResult<Json<Value>> {
+    q.check()?;
+    Ok(Json(
+        h.store
+            .external_sessions(
+                q.project_id,
+                q.producer_id,
+                q.after.unwrap_or(0),
+                q.limit.unwrap_or(50),
+            )
+            .await
+            .map_err(crate::api::error::db_error)?,
+    ))
+}
+pub(crate) async fn activity(
+    State(h): State<Harness>,
+    axum::extract::Query(q): axum::extract::Query<ExternalHistoryQuery>,
+) -> crate::api::error::ApiResult<Json<Value>> {
+    let (project, producer, session) = q.scope()?;
+    Ok(Json(
+        h.store
+            .external_activity(
+                project,
+                producer,
+                session,
+                q.after.unwrap_or(0),
+                q.limit.unwrap_or(50),
+            )
+            .await
+            .map_err(crate::api::error::db_error)?,
+    ))
+}
+pub(crate) async fn artifact(
+    State(h): State<Harness>,
+    axum::extract::Query(q): axum::extract::Query<ExternalHistoryQuery>,
+) -> crate::api::error::ApiResult<Json<Value>> {
+    let (project, producer, session) = q.scope()?;
+    let event = q
+        .event_id
+        .ok_or_else(|| crate::api::error::invalid("event_id required"))?;
+    let result = h
+        .store
+        .external_artifact(project, producer, session, event)
+        .await
+        .map_err(crate::api::error::db_error)?;
+    Ok(Json(result.ok_or(crate::api::error::ApiError(
+        StatusCode::NOT_FOUND,
+        "Artifact evidence not found in this session",
+    ))?))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

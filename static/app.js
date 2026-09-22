@@ -1489,3 +1489,103 @@ $('exportform').addEventListener('submit', async event => {
     $('export-draft').disabled = false;
   }
 });
+
+// P19-T06. Keep evidence in memory only and discard late responses after lock,
+// scope changes, filter changes or session selection. Explicit resume is bounded.
+let externalState = { generation: 0, cursor: 0, sessionsCursor: 0, selected: null, rows: new Map(), filters: {} };
+function clearExternalHistory() {
+  externalState = { generation: externalState.generation + 1, cursor: 0, sessionsCursor: 0, selected: null, rows: new Map(), filters: {} };
+  for (const id of ['external-sessions', 'external-events', 'external-artifact', 'external-status']) $(id).replaceChildren();
+  $('external-more').hidden = true; $('external-resume').hidden = true;
+}
+function externalScope() {
+  const s = externalState.selected;
+  return { project_id: s.project_id, producer_id: s.producer_id, logical_session_id: s.logical_session_id };
+}
+async function discoverExternal(reset) {
+  if (!token) return;
+  if (reset) {
+    clearExternalHistory();
+    externalState.filters = { project_id: $('external-project').value.trim(), producer_id: $('external-producer').value.trim() };
+  }
+  const generation = externalState.generation, myEpoch = epoch;
+  $('external-more').disabled = true;
+  try {
+    const data = await api(externalHistoryPath('sessions', { ...externalState.filters, after: externalState.sessionsCursor, limit: 25 }));
+    if (!token || epoch !== myEpoch || generation !== externalState.generation) return;
+    for (const s of data.sessions) {
+      const button = node('button', `${s.project_id} / ${s.producer_id} / ${s.logical_session_id} (${s.event_count} committed events)`);
+      button.type = 'button'; button.className = 'external-session';
+      button.addEventListener('click', () => {
+        externalState = { ...externalState, generation: externalState.generation + 1, selected: s, cursor: 0, rows: new Map(), loading: false };
+        $('external-events').replaceChildren(); $('external-artifact').replaceChildren();
+        $('external-resume').hidden = false; loadExternalActivity();
+      });
+      $('external-sessions').append(button);
+    }
+    externalState.sessionsCursor = data.next_cursor; $('external-more').hidden = !data.has_more;
+    $('external-status').textContent = data.sessions.length ? 'Select a session to inspect evidence.' : 'No additional committed sessions match. This does not prove local capture is empty.';
+  } catch (error) { if (token && myEpoch === epoch && generation === externalState.generation) $('external-status').textContent = error.message; }
+  finally { $('external-more').disabled = false; }
+}
+function renderExternalActivity() {
+  const groups = new Map();
+  for (const row of externalState.rows.values()) {
+    const instance = row.envelope.producer_instance_id;
+    if (!groups.has(instance)) groups.set(instance, []);
+    groups.get(instance).push(row);
+  }
+  $('external-events').replaceChildren();
+  for (const [instance, rows] of groups) {
+    rows.sort((a,b) => a.envelope.producer_sequence - b.envelope.producer_sequence || a.cursor - b.cursor);
+    const section = node('section'); section.append(node('h3', `Producer instance ${instance}`));
+    section.append(node('p', 'Sequence order within this instance only; no global clock order is implied.'));
+    const workKey = e => JSON.stringify(e.event_type.startsWith('task.') ? ['task', e.task_id] : ['tool', e.invocation_id]);
+    const terminal = new Set(rows.filter(r => /^(task\.(completed|interrupted)|tool\.(completed|failed))$/.test(r.envelope.event_type)).map(r => workKey(r.envelope)));
+    for (const row of rows) {
+      const e = row.envelope, card = node('article', undefined, 'panel external-event');
+      card.dataset.eventId = e.event_id;
+      card.append(node('h4', `${e.producer_sequence}: ${e.event_type}`));
+      card.append(node('p', `Evidence ${e.event_id}; receipt ${row.receipt_id}; occurred ${e.occurred_at}; ingested ${row.ingested_at}`));
+      card.append(node('p', `Handler transport: ${e.outcome.transport}; execution: ${e.outcome.execution}; exit code: ${e.outcome.exit_code ?? 'not applicable'}`));
+      if (/^(task\.(started|output)|tool\.(admitted|started))$/.test(e.event_type) && !terminal.has(workKey(e))) card.append(node('p', 'Pending background/work outcome: no terminal evidence in loaded history. This is not proof it is still running.'));
+      card.append(node('p', `Capture: ${e.capture.payload}; ${e.capture.truncated ? 'truncated' : 'not marked truncated'}; sanitized evidence, not original content. Redaction completeness is not guaranteed.`));
+      card.append(node('p', e.capture.conversation === 'client_supplied' ? 'Client-supplied excerpt only; not a complete transcript.' : `Conversation ${e.capture.conversation}; not an empty conversation.`));
+      if (e.event_type === 'message.observed') card.append(node('p', `Source client: ${e.payload.source_client}; role: ${e.payload.role}; session: ${e.logical_session_id}; invocation: ${e.invocation_id || 'not supplied'}; task: ${e.task_id || 'not supplied'}`));
+      const detail = node('details'); detail.append(node('summary', 'Open supporting evidence'), node('pre', JSON.stringify(e.payload, null, 2))); card.append(detail);
+      if (e.event_type === 'artifact.recorded') {
+        const button = node('button', 'Open artifact evidence'); button.type = 'button';
+        button.addEventListener('click', async () => {
+          const generation = externalState.generation, myEpoch = epoch;
+          try {
+            const artifact = await api(externalHistoryPath('artifact', { ...externalScope(), event_id: e.event_id }));
+            if (!token || myEpoch !== epoch || generation !== externalState.generation) return;
+            $('external-artifact').replaceChildren(node('p', artifact.reason), node('pre', JSON.stringify(artifact.envelope, null, 2)));
+          } catch (error) { if (token && myEpoch === epoch && generation === externalState.generation) $('external-artifact').replaceChildren(node('p', error.message)); }
+        }); card.append(button);
+      }
+      section.append(card);
+    }
+    $('external-events').append(section);
+  }
+}
+async function loadExternalActivity() {
+  if (!token || !externalState.selected || externalState.loading) return;
+  externalState.loading = true;
+  const state = externalState, generation = state.generation, myEpoch = epoch;
+  $('external-resume').disabled = true;
+  try {
+    const data = await api(externalHistoryPath('activity', { ...externalScope(), after: state.cursor, limit: 50 }));
+    if (!token || myEpoch !== epoch || generation !== externalState.generation) return;
+    for (const row of data.events) state.rows.set(row.receipt_id, row);
+    state.cursor = data.next_cursor;
+    renderExternalActivity();
+    $('external-status').textContent = `${state.rows.size} loaded committed events. ${data.has_more ? 'More pages remain.' : 'Caught up to this response; check again for arrivals.'} Producer acknowledgement and unseen local backlog: unknown.`;
+  } catch (error) { if (token && myEpoch === epoch && generation === externalState.generation) $('external-status').textContent = `Read failed; cursor preserved. ${error.message}`; }
+  finally { state.loading = false; $('external-resume').disabled = false; }
+}
+$('external-search').addEventListener('submit', event => { event.preventDefault(); discoverExternal(true); });
+$('external-more').addEventListener('click', () => discoverExternal(false));
+$('external-resume').addEventListener('click', loadExternalActivity);
+$('lock').addEventListener('click', clearExternalHistory);
+$('scope').addEventListener('change', clearExternalHistory);

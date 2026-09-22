@@ -232,6 +232,117 @@ components:
 security:
   - bearerAuth: []
 paths:
+  /external-history/events:
+    post:
+      operationId: ingestExternalHistory
+      summary: Commit validated external evidence using a separately configured producer credential.
+      description: Owner and browser tokens do not authorize ingestion. Identical replay is 200; new commit 201; changed content 409.
+      requestBody:
+        required: true
+        content:
+          application/json: {}
+      responses:
+        '200':
+          description: Existing immutable receipt replayed.
+        '201':
+          description: Evidence and receipt durably committed.
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /external-history/sessions:
+    get:
+      operationId: externalHistorySessions
+      summary: Discover committed external sessions
+      description: Owner/browser authentication required. Producer credentials do not grant read authority.
+      parameters:
+        - name: project_id
+          in: query
+          required: false
+          schema: {type: string, minLength: 1, maxLength: 128}
+        - name: producer_id
+          in: query
+          required: false
+          schema: {type: string, minLength: 1, maxLength: 128}
+        - name: after
+          in: query
+          schema: {type: integer, minimum: 0, maximum: 9007199254740991, default: 0}
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 100, default: 50}
+      responses:
+        '200':
+          description: Committed evidence. Activity cursors follow arrival order; producer sequence order applies only within an instance. Artifact responses expose metadata and explicitly unavailable bytes.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /external-history/activity:
+    get:
+      operationId: externalHistoryActivity
+      summary: Resume scoped external activity
+      description: Owner/browser authentication required. Producer credentials do not grant read authority.
+      parameters:
+        - name: project_id
+          in: query
+          required: true
+          schema: {type: string, minLength: 1, maxLength: 128}
+        - name: producer_id
+          in: query
+          required: true
+          schema: {type: string, minLength: 1, maxLength: 128}
+        - name: logical_session_id
+          in: query
+          required: true
+          schema: {type: string, minLength: 1, maxLength: 128}
+        - name: after
+          in: query
+          schema: {type: integer, minimum: 0, maximum: 9007199254740991, default: 0}
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 100, default: 50}
+      responses:
+        '200':
+          description: Committed evidence. Activity cursors follow arrival order; producer sequence order applies only within an instance. Artifact responses expose metadata and explicitly unavailable bytes.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /external-history/artifact:
+    get:
+      operationId: externalHistoryArtifact
+      summary: Read scoped artifact evidence, never arbitrary referenced bytes
+      description: Owner/browser authentication required. Producer credentials do not grant read authority.
+      parameters:
+        - name: project_id
+          in: query
+          required: true
+          schema: {type: string, minLength: 1, maxLength: 128}
+        - name: producer_id
+          in: query
+          required: true
+          schema: {type: string, minLength: 1, maxLength: 128}
+        - name: logical_session_id
+          in: query
+          required: true
+          schema: {type: string, minLength: 1, maxLength: 128}
+        - name: event_id
+          in: query
+          required: true
+          schema: {type: string, minLength: 1, maxLength: 128}
+      responses:
+        '200':
+          description: Committed evidence. Activity cursors follow arrival order; producer sequence order applies only within an instance. Artifact responses expose metadata and explicitly unavailable bytes.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
   /:
     get:
       operationId: index

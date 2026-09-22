@@ -78,6 +78,10 @@ existence: an unauthenticated request never learns whether a path exists.
 - `GET /memory/entries/{id}/timeline`
 - `POST /memory/entries/{id}/governance`
 - `POST /memory/branches`
+- `POST /external-history/events`
+- `GET /external-history/sessions`
+- `GET /external-history/activity`
+- `GET /external-history/artifact`
 - `GET /history/search`
 - `POST /history/index`
 - `GET /history/documents/{id}`

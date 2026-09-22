@@ -207,5 +207,61 @@ class ExternalHistory(unittest.TestCase):
                 with self.assertRaises(sqlite3.DatabaseError): db.execute(sql)
                 db.rollback()
 
+    def test_history_read_authorization_scope_and_resume(self):
+        from urllib.parse import urlencode
+        def read(kind, **kw):
+            return self.call('/external-history/'+kind+'?'+urlencode(kw), token=OWNER, method='GET')
+        for kind in ['sessions', 'activity', 'artifact']:
+            for bad in [TOKEN, 'invalid']:
+                self.assertEqual(self.call('/external-history/'+kind, token=bad, method='GET')[0], 401)
+        scope = dict(project_id='proj-harness', producer_id='development-mcp', logical_session_id='sess-01')
+        for i in [10, 30]:
+            self.assertEqual(self.call(body=self.event(event_id='read-'+str(i), producer_sequence=i))[0], 201)
+        code, page = read('activity', **scope, limit=1)
+        self.assertEqual(code, 200); self.assertTrue(page['has_more'])
+        cursor=page['next_cursor']
+        self.assertEqual(page['events'][0]['envelope']['producer_sequence'],10)
+        self.assertEqual(page['events'][0]['producer_acknowledgement'],'unknown')
+        # Late producer sequence is a new durable arrival, never skipped by resume.
+        late=self.event(event_id='read-late',producer_sequence=1)
+        self.assertEqual(self.call(body=late)[0],201)
+        self.assertEqual(self.call(body=late)[0],200)
+        code, tail=read('activity',**scope,after=cursor)
+        self.assertEqual([r['envelope']['producer_sequence'] for r in tail['events']],[30,1])
+        self.assertFalse(tail['has_more'])
+        self.stop(); self.start()
+        self.assertEqual(read('activity',**scope,after=tail['next_cursor'])[1]['events'],[])
+        self.assertEqual(read('activity',**dict(scope,project_id='other'))[1]['events'],[])
+        self.assertEqual(read('activity',**dict(scope,producer_id='second'))[1]['events'],[])
+        sessions=read('sessions',project_id='proj-harness',producer_id='development-mcp')[1]['sessions']
+        self.assertEqual(len(sessions),1); self.assertEqual(sessions[0]['event_count'],3)
+        for query in [dict(limit=0),dict(after=-1),dict(project_id='../outside')]:
+            self.assertEqual(read('sessions',**query)[0],400)
+        self.assertEqual(read('activity')[0],400)
+
+    def test_artifact_scope_messages_and_session_pagination(self):
+        from urllib.parse import urlencode
+        def read(kind, **kw):
+            return self.call('/external-history/'+kind+'?'+urlencode(kw), token=OWNER, method='GET')
+        for name in ['artifact.recorded.json','message_observed_client_supplied.json','task.started.json','crash_window_unknown.json']:
+            event=json.loads((ROOT/'tests/external_history/accepted'/name).read_text())
+            self.assertEqual(self.call(body=event)[0],201)
+        scope=dict(project_id='proj-harness',producer_id='development-mcp',logical_session_id='sess-01',event_id='evt-20')
+        code,artifact=read('artifact',**scope)
+        self.assertEqual(code,200);self.assertFalse(artifact['content_available'])
+        self.assertEqual(artifact['envelope']['payload']['artifact_id'],'artifact-01')
+        for key,value in [('project_id','other'),('producer_id','second'),('logical_session_id','other'),('event_id','missing')]:
+            self.assertEqual(read('artifact',**dict(scope,**{key:value}))[0],404)
+        self.assertEqual(self.call(body=self.event(event_id='session2',logical_session_id='session2'))[0],201)
+        first=read('sessions',limit=1)[1]
+        self.assertTrue(first['has_more'])
+        self.assertEqual(self.call(body=self.event(event_id='session3',logical_session_id='session3'))[0],201)
+        rest=read('sessions',after=first['next_cursor'])[1]
+        self.assertEqual(len(rest['sessions']),2)
+        activity=read('activity',project_id='proj-harness',producer_id='development-mcp',logical_session_id='sess-01')[1]
+        message=next(r['envelope'] for r in activity['events'] if r['envelope']['event_type']=='message.observed')
+        self.assertEqual(message['payload']['source_client'],'fixture-host')
+        self.assertEqual(message['capture']['conversation'],'client_supplied')
+
 if __name__=='__main__':
     unittest.main(verbosity=2)

@@ -134,6 +134,21 @@
            shows exactly what would leave before anything leaves. -->
       <section id="view-history" class="view pageview" hidden>
         <div class="pagecol">
+          <section class="panel" aria-labelledby="external-title">
+            <h2 id="external-title">External development sessions</h2>
+            <p>Harness-committed evidence only. Locally captured but undelivered activity is not visible here. Producer receipt of acknowledgement and local backlog are unknown.</p>
+            <form id="external-search">
+              <label for="external-project">Project (optional)</label><input id="external-project" maxlength="128">
+              <label for="external-producer">Producer (optional)</label><input id="external-producer" maxlength="128">
+              <button type="submit">Discover sessions</button>
+            </form>
+            <div id="external-sessions"></div>
+            <button id="external-more" type="button" hidden>More sessions</button>
+            <p id="external-status" role="status"></p>
+            <button id="external-resume" type="button" hidden>Load more / check for new activity</button>
+            <div id="external-events"></div>
+            <div id="external-artifact"></div>
+          </section>
           <div class="sectionhead">
             <h2>Search sanitized history</h2>
             <button id="history-index" class="secondary" type="button">Refresh index</button>

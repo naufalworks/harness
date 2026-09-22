@@ -148,3 +148,12 @@ async function apiExchangeSession(masterToken, { timeoutMs = 20000 } = {}) {
     return payload.session_token;
   } finally { clearTimeout(timer); }
 }
+
+// P19-T06: all external reads use the same short-lived browser credential.
+function externalHistoryPath(kind, fields) {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(fields)) {
+    if (value !== null && value !== undefined && value !== '') params.set(key, String(value));
+  }
+  return `/external-history/${kind}?${params}`;
+}

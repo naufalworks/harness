@@ -1,5 +1,39 @@
 # PROGRESS — journal
 
+## 2026-09-22 · P19-T06 implementation and validation done; promotion pending
+
+Implemented authenticated external session discovery, scoped activity/receipt evidence,
+arrival-cursor resume with late-arrival/replay handling, scoped artifact metadata views,
+and explicit unknown acknowledgement/backlog/conversation states. UI uses text-only evidence
+and clears on lock; optional supplied messages retain client provenance. No artifact bytes
+are fetched or archived; no provider/extraction work or schema changes added by P19-T06.
+
+Validation completed sequentially: external_history_integration.py 8 tests passed;
+verify_browser.sh both suites passed including external history assertions; verify_e2e.sh
+success, denial, crash recovery, cancellation and unsafe retry passed; cargo test --locked
+360 passed; Python contracts 91 passed; rust fmt, all-target/all-feature clippy -D warnings,
+build, API schema (75 operations), property/fuzz, benchmark and rollback checks passed.
+Initial Clippy item ordering failure fixed by placing test modules last. The initial
+release gate exposed pre-existing production deployment drift (live f4f54f8 vs main
+51caa29). Full strict release gate then passed against an isolated candidate, not production;
+log /tmp/p19-t06-candidate-gate.log. CI-only coverage/signatures/cross-target/public smoke
+remain explicitly skipped locally. This does not claim production promotion yet.
+
+Reviewed focused 13-file diff; git diff --check passed. Next: commit/push, fast-forward
+main, documented deployment, live commit/hash/schema/readiness and authenticated read smoke.
+Limitations: referenced artifact bytes unavailable; unknown producer acknowledgement and
+unseen local backlog; cursor contract requires immutable rowids during maintenance;
+pattern-based secret detection is not complete DLP. P19-T07 remains unstarted.
+
+
+## 2026-09-22 · P19-T06 doing; P19-T05 ledger reconciled
+
+P19-T05 completed in development-mcp main at c6b0632c95d5006ad21eceedb2b24994dd79d446 (remote verified). Historical validation: regression 200, delivery 24, Harness integration 7, contract 19, Rust 360 passed. This reconciles the stale dependency ledger, not a fresh test claim.
+
+P19-T06 implements owner/browser-authenticated external session discovery, durable arrival cursor replay and evidence views. Sequence ordering remains per producer incarnation; arrival cursors are distinct from display ordering. Artifact references never authorize filesystem/network fetches: only ingested evidence is opened, absent bytes explicitly unavailable. Producer acknowledgement knowledge and unseen local backlog remain unknown. No memory extraction or P19-T07 work.
+
+Required validation: python3 tests/external_history_integration.py; scripts/verify_browser.sh; scripts/verify_e2e.sh; cargo fmt/clippy/test and scripts/verify_release.sh. Deployment follows clean merge via scripts/deploy.sh.
+
 ## 2026-09-21T18:32:00Z · P19-T04 durable capture done, pending merge
 
 `task/p19-t04-durable-capture` in development-mcp, commits `73295b6` and `179ad59`,

@@ -218,3 +218,28 @@ Limitations: external read UI, exporters, retention/deletion jobs and volume quo
 not introduced. Future audited deletion must reconcile the source policy with immutable
 receipt/tombstone semantics. Pattern-based privacy is not complete DLP. P19-T04, MCP
 capture and client integrations remain out of scope.
+
+
+## P19-T06 evidence-linked reads
+
+Owner/browser credentials can read `/external-history/sessions`, `/external-history/activity`
+and `/external-history/artifact`; producer credentials cannot. Harness is single-owner:
+project filters are exact selection constraints, not new multi-user authorization grants.
+Activity/artifact reads require the full project/producer/session tuple. Event identity is
+producer-scoped; receipt identity links each displayed event to its immutable evidence.
+
+Pages are capped at 100 records. `after` is an exclusive durable arrival rowid, not producer
+sequence. Identical retries add no row; late sequence values remain discoverable by resume.
+The UI groups instances and sorts loaded records by producer sequence within each instance.
+It does not claim global ordering, all pages loaded, or an unseen terminal outcome. Session
+pagination uses first arrival; refresh discovery to update existing session counts.
+
+Reads do not fetch external paths/URLs or alias internal artifact IDs. Artifact views expose
+only scoped ingested evidence; referenced bytes are explicitly unavailable (no byte ingest
+contract exists). Conversation absence means unavailable, not empty. Optional observed
+messages show source client, role, session and supplied task/invocation linkage. Payloads are
+rendered as text, never HTML. Lock clears visible evidence and invalidates in-flight responses.
+Harness commit is known; producer receipt of acknowledgement and local undelivered backlog
+remain unknown. No provider, extraction, tool execution, archive activation or retention
+change is introduced. Arrival cursors rely on the append-only rowid table; future deletion,
+rebuild or VACUUM work must preserve cursor identity or version the resume contract.

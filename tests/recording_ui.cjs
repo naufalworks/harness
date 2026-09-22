@@ -19,6 +19,14 @@ const root=path.resolve(__dirname,'..'), out=path.join(root,'docs/qa');fs.mkdirS
    if(p==='/auth/session'&&req.headers().authorization==='Bearer fixture-token')return route.fulfill({status:201,json:{session_token:'fixture-session',expires_in:900}});
    if(req.headers().authorization!=='Bearer fixture-session')return route.fulfill({status:401,json:{error:'Bearer token required'}});
    if(offline&&p.startsWith('/chat/requests/'))return route.abort('failed');
+   if(p==='/external-history/sessions')return route.fulfill({json:{sessions:[{project_id:'proj-harness',producer_id:'development-mcp',logical_session_id:'sess-01',event_count:4}],next_cursor:1,has_more:false}});
+   if(p==='/external-history/activity') {
+    const make=(id,seq,type,execution='not_applicable')=>({cursor:seq,receipt_id:id,ingested_at:'2026-09-22',state:'committed',envelope:{event_id:id,producer_instance_id:'instance',producer_sequence:seq,logical_session_id:'sess-01',task_id:'task1',event_type:type,occurred_at:'2026-09-22',outcome:{transport:'ok',execution,exit_code:null},capture:{conversation:'unavailable',payload:'summarized',truncated:true},payload:{text:hostile}}});
+    const rows=u.searchParams.get('after')==='0'?[make('start',10,'task.started'),make('unknown',30,'tool.completed','unknown'),make('artifact',40,'artifact.recorded')]:[make('late',1,'message.observed')];
+    if(rows[0]?.receipt_id==='late'){rows[0].envelope.capture.conversation='client_supplied';rows[0].envelope.payload.source_client='fixture-host';rows[0].envelope.payload.role='user';}
+    return route.fulfill({json:{events:rows,next_cursor:50,has_more:false}});
+   }
+   if(p==='/external-history/artifact')return route.fulfill({json:{reason:'Artifact bytes were not ingested; reference metadata only.',content_available:false,envelope:{payload:{text:hostile}}}});
    if(p==='/health')return route.fulfill({json:{ready:true,commit:'__HARNESS_BUILD_COMMIT__',binary_sha256:'0'.repeat(64),schema_version:6,database:{ready:true},workers:{recording:true,extraction:true}}});
    if(p==='/memory/status')return route.fulfill({json:{active_memories:1,pending_confirmations:0,queued_jobs:1000,failed_jobs:0}});
    if(p==='/memory/candidates')return route.fulfill({json:{candidates:[]}});
@@ -116,7 +124,21 @@ const root=path.resolve(__dirname,'..'), out=path.join(root,'docs/qa');fs.mkdirS
   await page.setViewportSize({width:1120,height:900});await page.click('#sessionhistory>summary');await page.waitForSelector('.session-entry');await shot('history-desktop');
   await page.locator('.session-entry').first().click();await page.waitForFunction(()=>document.getElementById('log').textContent.includes('How should we'));
   assert(submits>=5);assert(polls>0);assert(streams>0,'the rail must subscribe to the activity stream');assert(generationStreams>0,'answers must subscribe to the generation stream');assert(generationAfter.some(cursor=>cursor>0),'generation reconnect must resume from a persisted cursor');assert.deepStrictEqual(errors,[]);
+  await page.click('[data-view="history"]');
+  await page.locator('#external-search button').click();await page.waitForSelector('.external-session');await page.locator('.external-session').click();
+  await page.waitForSelector('.external-event');
+  assert((await page.locator('#external-events').innerText()).includes('Pending background/work outcome'));
+  assert((await page.locator('#external-events').innerText()).includes('execution: unknown'));
+  assert((await page.locator('#external-events').innerText()).includes('Conversation unavailable'));
+  await page.getByText('Open artifact evidence',{exact:true}).click();
+  await page.waitForFunction(()=>document.getElementById('external-artifact').textContent.includes('bytes were not ingested'));
+  await page.click('#external-resume');await page.waitForFunction(()=>document.querySelectorAll('.external-event').length===4);
+  assert.strictEqual(await page.locator('.external-event').first().getAttribute('data-event-id'),'late');
+  assert((await page.locator('#external-events').innerText()).includes('fixture-host'));
+  await page.click('#external-resume');await page.waitForTimeout(100);assert.strictEqual(await page.locator('.external-event').count(),4);
+  assert.strictEqual(await page.evaluate(()=>window.INJECTED),undefined);
   await page.click('#lock');assert.strictEqual(await page.locator('#log').innerText(),'');assert.strictEqual(await page.locator('#sessionlist').innerText(),'');
+  assert.strictEqual(await page.locator('#external-events').innerText(),'');
   const result={status:'passed',scope:'Mocked API only — Rust not executed',checks:['saved_before_answer','durable_generation_answer','generation_cursor_resume','generation_terminal_states','raw_prompt_not_persisted_in_browser','context_receipt','memory_backlog_does_not_hide_answer','hostile_context_as_text','desktop_mobile_dark_light_no_overflow','lost_submit_response_recovers_without_resend','reload_recovers_without_resend','token_not_persisted','provider_failure_retains_message','restart_interruption_retains_message','safe_boundary_retry_posts_once','stop_records_cancellation','session_reopen','activity_stream_subscribed','lock_clears_visible_history','no_javascript_exceptions']};
   fs.writeFileSync(path.join(out,'recording-ui-results.json'),JSON.stringify(result,null,2));console.log(JSON.stringify(result));
  } finally {await browser.close();}
