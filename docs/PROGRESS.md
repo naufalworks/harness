@@ -1,5 +1,22 @@
 # PROGRESS — journal
 
+## 2026-09-25 · P21-T01 actual UI coverage inventory complete; implementation tasks remain
+
+Compared every shipped method+path to OpenAPI and present browser affordances:
+77 operations; 44 UI supported, 6 partial (provider/model and project-path
+settings), 27 expert/API-only or internal. Checked-in
+`docs/design/p21-ui-coverage.json` is an exact, executable classification
+verified by `tests/test_ui_coverage.py` (4 passing tests). The Project &
+Models screen now openly names available controls, missing custom provider
+editing, selectable models and server folder browsing, plus API-only
+operations and the raw-reasoning boundary. Updated P21 IA with navigation,
+accessible status, empty/error, narrow-screen and safe fallback criteria.
+
+T01's docs check, Ruff, JS syntax, and both Chromium mocked UI suites passed
+in the isolated P21 worktree. P21-T02 through P21-T10 remain `todo`.
+No new provider-backend capability, deployment, or credential change is
+claimed by T01.
+
 ## 2026-09-25 · P21 UI control center planned; live provider key rotated
 
 Owner requested that Harness operations move into UI: custom provider/API

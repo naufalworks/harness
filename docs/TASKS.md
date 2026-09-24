@@ -1616,15 +1616,17 @@ secrets, never backlog data or documentation examples. All tasks must retain
 P20's schema/memory and P19's truthful transcript boundaries.
 
 ### P21-T01 · Inventory actual UI coverage and information architecture
-- status: todo
+- status: done
 - priority: high
 - lane: ui-architecture
 - parallel: no
 - depends: P20-T06
 - design: docs/design/p21-ui-control-center.md
-- files: docs/design/p21-ui-control-center.md, docs/api.yaml, static/index.html, static/app.js, tests/recording_ui.cjs
+- files: docs/design/p21-ui-control-center.md, docs/design/p21-ui-coverage.json, docs/api.yaml, static/index.html, static/app.js, tests/test_ui_coverage.py, tests/ui_smoke.cjs
 - done-when: every owner-facing API operation has a tested classification of usable UI, explicit expert/API-only with rationale, or unavailable; identify the necessary setup/projects/providers/work/memory/history/diagnostics/recovery navigation and define keyboard/mobile/error/empty-state expectations. Inventory is based on implemented routes rather than imagined capabilities.
-- verify: python3 scripts/check_docs.py && bash scripts/verify_browser.sh
+- verify: python3 tests/test_ui_coverage.py && python3 scripts/check_docs.py && bash scripts/verify_browser.sh
+- result: Classified all 77 router/OpenAPI method+path operations into 44 existing UI controls, 6 partial settings operations, and 27 expert/API-only or internal operations, with per-group rationale. Added an accessible P21 capability-status disclosure to Project & Models and a concrete navigation/empty/error/accessibility contract. UI status does not claim a provider editor, model picker or folder browser exists.
+- result-verify: 4 new coverage-contract tests, docs/route/ledger checks, Ruff, JS syntax, and both Chromium mocked browser suites passed. Tests fail when a route is added without classification or when the present UI settings gaps are mislabeled complete; no production changes were made.
 
 ### P21-T02 · Safe runtime custom-provider configuration and secrets
 - status: todo

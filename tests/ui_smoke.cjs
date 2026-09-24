@@ -372,6 +372,15 @@ const root=path.resolve(__dirname,'..');const out=process.env.QA_DIR || path.joi
   await page.setViewportSize({width:390,height:844});await shot('history-privacy-mobile');await page.setViewportSize({width:1120,height:900});
 
   await page.click('[data-view="settings"]');
+  // P21-T01: configuration status is visible without promising controls that do not exist.
+  await page.locator('#p21-capabilities>summary').click();
+  const coverageText = await page.locator('#p21-capabilities').innerText();
+  for (const phrase of ['Available now', 'Not yet available in the UI', 'Advanced API-only operations', 'model\'s private reasoning']) {
+    assert(coverageText.includes(phrase), 'capability inventory omits: ' + phrase);
+  }
+  assert(coverageText.includes('browsing folders on the Harness server'));
+  assert(coverageText.includes('Adding or editing a custom provider'));
+  assert.strictEqual(await page.locator('#p21-capabilities input').count(), 0, 'inventory must not contain inert configuration fields');
   await page.click('#lock');assert(await page.locator('#workspace').isHidden());assert.strictEqual(await page.locator('#candidates').innerText(),'');
   assert.strictEqual(await page.locator('#verificationmodel').inputValue(),'');
   assert.deepStrictEqual(errors,[]);

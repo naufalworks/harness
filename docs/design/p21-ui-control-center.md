@@ -12,6 +12,32 @@ history semantics unchanged.
 
 ## Verified baseline at P20 / deployed audit release
 
+P21-T01 method-by-method classification is in
+`docs/design/p21-ui-coverage.json`. The inventory is tested against both
+`src/api/routes.rs` and `docs/api.yaml` and labels each operation as
+`ui_supported`, `ui_partial`, or `api_only`; the last group includes
+internal delivery endpoints that are not owner actions. This is a baseline,
+not a claim that all routes already have UI.
+
+### P21-T01 information architecture and interface states
+
+Keep the existing **Chat**, **Inbox**, **History & privacy**, and
+**Imports & jobs** views; retain the durable activity rail inside Chat.
+Split the current **Project & models** view during P21 into **Projects &
+folders**, **Providers & secrets**, and **Model roles**, with an owner-facing
+feature-status/help entry that continues to name expert/API-only operations.
+Do not expose recovery and exact-original archive actions as everyday UI
+buttons until the owner/secret/recovery workflow is separately reviewed.
+
+For each view and subview provide an accessible heading and current
+scope/provider, keyboard-focusable controls with error/status announcements,
+a non-misleading empty state, distinct loading/retry state, narrow-screen
+overflow protection and a non-color-only status indicator. Forms must not
+clear unsaved user inputs on fetch failures. Provider/folder selectors must
+degrade to a labeled manual field only when the backend supports that
+fallback. Preserve the current light/dark layout and inert rendering of
+untrusted provider or filesystem text.
+
 | Capability | Existing implementation | UI gap to close |
 |---|---|---|
 | Provider connection | One startup `HARNESS_BASE_URL` and `HARNESS_API_KEY` in `main.rs` / `MemoryAgents` | No add/edit/test/remove custom providers in UI; no live provider switch. |

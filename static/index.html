@@ -225,6 +225,15 @@
         <div class="pagecol">
           <h2>Project &amp; models</h2>
           <p class="muted">The main model answers. The extraction model proposes memories. The verification model checks file and symbol claims against recorded tool evidence. Recall combines local FTS5 and deterministic offline vectors—no network or extra recall model call.</p>
+          <details id="p21-capabilities" class="panel">
+            <summary>What the UI can do today · P21 feature status</summary>
+            <h3>Available now</h3>
+            <p>Chat and durable activity, approval prompts, reviewed memory suggestions, sanitized history and exports, transcript imports, and project settings are available in the navigation. You can type a server project path and type model IDs; Show provider model names lists IDs from the one configured provider.</p>
+            <h3>Not yet available in the UI</h3>
+            <p>Adding or editing a custom provider and its API key, selecting models from a dropdown, and browsing folders on the Harness server are planned P21 work. Editing the model names below does not change the provider connection.</p>
+            <h3>Advanced API-only operations</h3>
+            <p>Some diagnostics, governance, recovery, and exact-original archive operations have authenticated APIs but no complete browser controls yet. The activity panel shows recorded work, not the model's private reasoning. Unavailable external conversation text cannot be recovered from tool records.</p>
+          </details>
           <form id="settingsform" class="panel">
             <label for="mainmodel">Main model</label>
             <input id="mainmodel" maxlength="128" placeholder="Use server default">

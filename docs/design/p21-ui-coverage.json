@@ -1,0 +1,172 @@
+{
+  "schema": "harness.ui-coverage/v1",
+  "baseline": "c952e823211ab285923b20fc87aa1236cff238a2",
+  "description": "Each method+path must match the shipped router; UI support describes present functionality, not proposed P21 features. Expert API-only functions are deliberately not represented as existing browser controls.",
+  "groups": [
+    {
+      "status": "ui_supported",
+      "surface": "chat",
+      "anchor": "view-chat",
+      "detail": "Chat admission, durable turns, retries, context, steps and generation are available in the chat/agent-activity UI; no private reasoning is exposed.",
+      "operations": [
+        "POST /auth/session",
+        "POST /chat/submit",
+        "GET /chat/requests/{id}",
+        "POST /chat/requests/{id}/cancel",
+        "POST /chat/requests/{id}/retry",
+        "GET /chat/requests/{id}/context",
+        "GET /chat/requests/{id}/steps",
+        "GET /chat/requests/{id}/incident",
+        "GET /chat/requests/{id}/retrieval",
+        "GET /generation",
+        "GET /generation/stream",
+        "GET /activity",
+        "GET /activity/stream",
+        "GET /changes",
+        "POST /changes/{id}/revert",
+        "GET /permissions",
+        "POST /permissions/{id}",
+        "GET /sessions",
+        "PATCH /sessions/{id}",
+        "POST /sessions/{id}/fork",
+        "GET /sessions/{id}/messages",
+        "GET /sessions/{id}/plan"
+      ]
+    },
+    {
+      "status": "ui_supported",
+      "surface": "memory",
+      "anchor": "view-memory",
+      "detail": "Imported-memory inbox and inline candidate review; status and retrieval rehearsal also appear in chat.",
+      "operations": [
+        "GET /memory/status",
+        "GET /memory/candidates",
+        "POST /memory/candidates/{id}/edit",
+        "POST /memory/confirm",
+        "POST /memory/ingest",
+        "POST /memory/retrieval/preview"
+      ]
+    },
+    {
+      "status": "ui_supported",
+      "surface": "history",
+      "anchor": "view-history",
+      "detail": "Sanitized history search and privacy actions, export review/release, and evidence-linked external sessions; unavailable transcript remains unavailable.",
+      "operations": [
+        "GET /external-history/sessions",
+        "GET /external-history/activity",
+        "GET /external-history/artifact",
+        "GET /history/search",
+        "POST /history/index",
+        "GET /history/documents/{id}",
+        "POST /history/documents/{id}/privacy",
+        "POST /export/bundles",
+        "POST /export/bundles/{id}/review",
+        "POST /export/bundles/{id}/release"
+      ]
+    },
+    {
+      "status": "ui_supported",
+      "surface": "operations",
+      "anchor": "view-imports",
+      "detail": "Jobs, retry, registered process controls, and read-only Git state; health is shown in workspace connection/status.",
+      "operations": [
+        "GET /health",
+        "GET /jobs",
+        "POST /jobs/{id}/retry",
+        "GET /processes",
+        "POST /processes/{pid}/stop",
+        "GET /git/state"
+      ]
+    },
+    {
+      "status": "ui_partial",
+      "surface": "project settings",
+      "anchor": "view-settings",
+      "detail": "Scope and canonical root can be saved through typed paths; no allowlisted server-side folder chooser exists (P21-T06/T07).",
+      "operations": [
+        "GET /scopes",
+        "GET /scopes/{scope}",
+        "POST /scopes/{scope}"
+      ]
+    },
+    {
+      "status": "ui_partial",
+      "surface": "model settings",
+      "anchor": "view-settings",
+      "detail": "One startup-configured provider; /models is shown as text and model roles are typed manually. No runtime custom provider editor or model picker (P21-T02–T05).",
+      "operations": [
+        "GET /config",
+        "POST /config",
+        "GET /models"
+      ]
+    },
+    {
+      "status": "api_only",
+      "surface": "static delivery",
+      "anchor": null,
+      "detail": "Browser assets/entry point are delivered to render the UI; they are not standalone owner actions.",
+      "operations": [
+        "GET /",
+        "GET /api.js",
+        "GET /app.js",
+        "GET /style.css"
+      ]
+    },
+    {
+      "status": "api_only",
+      "surface": "provider and producer integration",
+      "anchor": null,
+      "detail": "Compatibility chat endpoint and authenticated producer ingestion are integration contracts; no separate owner control is claimed.",
+      "operations": [
+        "POST /chat",
+        "POST /external-history/events"
+      ]
+    },
+    {
+      "status": "api_only",
+      "surface": "advanced diagnostics",
+      "anchor": null,
+      "detail": "Advanced incident comparison, coverage, provenance, audit/graph exports and deployment provenance are API/operator functions; no equivalent complete browser control is claimed.",
+      "operations": [
+        "GET /chat/incidents/compare",
+        "GET /chat/incidents/coverage",
+        "GET /chat/requests/{id}/coverage",
+        "GET /chat/requests/{id}/provenance",
+        "GET /chat/requests/{id}/incident/export",
+        "POST /chat/requests/{id}/audit-export/preview",
+        "POST /chat/requests/{id}/audit-export/release",
+        "POST /chat/requests/{id}/review",
+        "GET /deployments",
+        "POST /deployments"
+      ]
+    },
+    {
+      "status": "api_only",
+      "surface": "memory and history governance",
+      "anchor": null,
+      "detail": "Governance/branch management and full recovery health are backend APIs; no complete self-service UI is claimed.",
+      "operations": [
+        "GET /memory/governance",
+        "POST /memory/entries/{id}/governance",
+        "GET /memory/entries/{id}/timeline",
+        "POST /memory/branches",
+        "GET /memory/health",
+        "GET /sessions/{id}/continuation"
+      ]
+    },
+    {
+      "status": "api_only",
+      "surface": "import and archives",
+      "anchor": null,
+      "detail": "Machine-readable export import and exact-original archive management require expert/API workflows; the current UI supports distinct sanitized transcript import and reviewed history export only.",
+      "operations": [
+        "POST /export/import",
+        "POST /sources/{id}/archive",
+        "POST /sources/{id}/privacy",
+        "GET /archives/{id}",
+        "DELETE /archives/{id}"
+      ]
+    }
+  ]
+}
