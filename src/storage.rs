@@ -153,7 +153,7 @@ impl DbStore {
                     "legacy or unknown database: use scripts/migrate_legacy.py into a NEW database"
                 );
             }
-        } else if !(1..=21).contains(&version) {
+        } else if !(1..=22).contains(&version) {
             bail!("unsupported schema version {version}");
         }
         conn.execute_batch(
@@ -223,6 +223,9 @@ impl DbStore {
         }
         if version < 21 {
             conn.execute_batch(include_str!("../migrations/021_external_history.sql"))?;
+        }
+        if version < 22 {
+            conn.execute_batch(include_str!("../migrations/022_agent_memory_protocol.sql"))?;
         }
         conn.execute(
             "UPDATE provider_calls SET state='failed',usage_status='unavailable',reason='process_restarted_with_call_reserved',finished_at=?1 WHERE state='reserved'",
@@ -334,6 +337,37 @@ impl DbStore {
             Ok(json!({"active_memories":active,"pending_confirmations":pending,"sources_stored":sources,"queued_jobs":queued,"failed_jobs":failed}))
         }).await
     }
+    pub async fn record_memory_health_baseline(&self) -> Result<()> {
+        self.run(|c| {
+            let count:i64 = c.query_row("SELECT count(*) FROM memories", [], |r| r.get(0))?;
+            c.execute(
+                "INSERT INTO settings(key,value) VALUES('memory_health_baseline',?1) ON CONFLICT(key) DO NOTHING",
+                [count.to_string()],
+            )?;
+            Ok(())
+        }).await
+    }
+    /// P20 memory health guard: exposes memory volume and detects an unexpected reset signal.
+    pub async fn memory_health(&self) -> Result<Value> {
+        self.read(|c| {
+            let memories:i64 = c.query_row("SELECT count(*) FROM memories", [], |r| r.get(0))?;
+            let revisions:i64 = c.query_row("SELECT count(*) FROM memory_revisions", [], |r| r.get(0))?;
+            let embeddings:i64 = c.query_row("SELECT count(*) FROM memory_embeddings", [], |r| r.get(0))?;
+            let baseline:Option<i64> = c.query_row("SELECT value FROM settings WHERE key='memory_health_baseline'", [], |r| r.get::<_, String>(0).map(|v| v.parse().unwrap_or(0))).optional()?;
+            let reset = baseline.map(|v| v > 0 && memories == 0).unwrap_or(false);
+            Ok(json!({"memories":memories,"memory_revisions":revisions,"memory_embeddings":embeddings,"previous_memory_baseline":baseline,"status":if reset {"MEMORY_RESET_DETECTED"} else {"OK"}}))
+        }).await
+    }
+    /// P20 agent-neutral continuation envelope. Agents only contribute an identity; the stored
+    /// session remains the source of truth.
+    pub async fn continuation_context(&self, session_id: String, agent_id: String) -> Result<Value> {
+        self.run(move |c| {
+            let now = Utc::now().to_rfc3339();
+            c.execute("INSERT INTO agent_sessions(id,agent_id,session_id,created_at,last_seen_at) VALUES(?1,?2,?3,?4,?4) ON CONFLICT(agent_id,session_id) DO UPDATE SET last_seen_at=excluded.last_seen_at", params![uid(), agent_id, session_id, now])?;
+            let session = c.query_row("SELECT id,scope,created_at FROM sessions WHERE id=?1", [&session_id], |r| Ok(json!({"id":r.get::<_,String>(0)?,"scope":r.get::<_,String>(1)?,"created_at":r.get::<_,String>(2)?}))).optional()?;
+            Ok(json!({"session":session,"agent_agnostic":true,"continuation":session_id}))
+        }).await
+    }
     pub async fn readiness(&self) -> Result<Value> {
         self.read(|c| {
             let schema_version:i64=c.query_row("PRAGMA user_version",[],|r|r.get(0))?;
@@ -347,7 +381,7 @@ impl DbStore {
             let last_checkpoint:Option<String>=c.query_row("SELECT finished_at FROM maintenance_runs WHERE action='wal_checkpoint' ORDER BY id DESC LIMIT 1",[],|r|r.get(0)).optional()?;
             let last_retention:Option<String>=c.query_row("SELECT finished_at FROM maintenance_runs WHERE action='retention' ORDER BY id DESC LIMIT 1",[],|r|r.get(0)).optional()?;
             let last_compaction:Option<String>=c.query_row("SELECT finished_at FROM maintenance_runs WHERE action='compaction' ORDER BY id DESC LIMIT 1",[],|r|r.get(0)).optional()?;
-            Ok(json!({"ready":schema_version==21&&quick_check=="ok","schema_version":schema_version,
+            Ok(json!({"ready":schema_version==22&&quick_check=="ok","schema_version":schema_version,
                 "quick_check":quick_check,"queue":{"jobs_pending":pending_jobs,"jobs_running":running_jobs,
                 "jobs_failed":failed_jobs,"turns_waiting":waiting_turns,"turns_running":running_turns},
                 "maintenance":{"journal_mode":journal_mode,"last_wal_checkpoint_at":last_checkpoint,
@@ -1264,7 +1298,7 @@ mod tests {
         let db = DbStore::init(":memory:").unwrap();
         seed_retention_fixture(&db).await;
         let readiness = db.readiness().await.unwrap();
-        assert_eq!(readiness["schema_version"], 21);
+        assert_eq!(readiness["schema_version"], 22);
         assert_eq!(readiness["ready"], true);
         assert!(
             readiness["maintenance"]["last_retention_at"].is_null(),

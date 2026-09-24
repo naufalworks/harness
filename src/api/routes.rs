@@ -417,6 +417,12 @@ async fn edit_candidate(
 async fn status(State(h): State<Harness>) -> ApiResult<Json<Value>> {
     Ok(Json(h.store.stats().await.map_err(db_error)?))
 }
+async fn memory_health(State(h): State<Harness>) -> ApiResult<Json<Value>> {
+    Ok(Json(h.store.memory_health().await.map_err(db_error)?))
+}
+async fn continuation_context(State(h): State<Harness>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
+    Ok(Json(h.store.continuation_context(id, "unknown-agent".into()).await.map_err(db_error)?))
+}
 async fn health(State(h): State<Harness>) -> Response {
     let recording = h.workers.recording.load(Ordering::Acquire);
     let extraction = h.workers.extraction.load(Ordering::Acquire);
@@ -2004,6 +2010,8 @@ pub(crate) fn router(state: Harness) -> Router {
         .route("/models", get(models))
         .route("/config", get(get_config).post(set_config))
         .route("/memory/status", get(status))
+        .route("/memory/health", get(memory_health))
+        .route("/sessions/{id}/continuation", get(continuation_context))
         .route("/health", get(health))
         .route("/memory/candidates", get(candidates))
         .route("/memory/candidates/{id}/edit", post(edit_candidate))

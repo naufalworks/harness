@@ -13,6 +13,7 @@ use std::{
 };
 use tokio::sync::Semaphore;
 mod agent_loop; // P1-T10 agentic turn loop: steps, tools, activity events, budgets
+mod backup; // P20 full internal recovery snapshots, separate from reviewed exports
 mod agentic_sql; // P1 SQL constants (schema 003); contract-tested by tests/test_agentic_sql.py
 mod api; // P12-T01 HTTP surface split into cohesive modules
 mod archive; // P13 opt-in exact-original encryption and privacy audit policy
@@ -176,6 +177,9 @@ async fn main() -> Result<()> {
     // rejected contender must never interrupt the live owner's jobs or receipts.
     let _database_lock = ProcessLock::acquire(&database)?;
     let store = DbStore::init(&database)?;
+    // Capture a known-good memory floor after migrations and before workers start. The health
+    // endpoint can then distinguish an empty fresh database from an unexpected memory reset.
+    store.record_memory_health_baseline().await?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -689,7 +693,7 @@ mod tests {
         assert_eq!(payload["ready"], true);
         assert_eq!(payload["commit"], BUILD_COMMIT);
         assert_eq!(payload["binary_sha256"].as_str().unwrap().len(), 64);
-        assert_eq!(payload["schema_version"], 21);
+        assert_eq!(payload["schema_version"], 22);
         assert_eq!(payload["database"]["quick_check"], "ok");
         assert_eq!(payload["database"]["queue"]["jobs_pending"], 0);
         assert_eq!(payload["workers"]["recording"], true);
