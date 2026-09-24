@@ -23,6 +23,7 @@ A task may run in parallel only when its `parallel: yes` metadata is present, ev
 | I | Optional scale and ecosystem work | P18 | workers, plugins, portability |
 | J | Record external development history | P19 | contract, capture, delivery, history UX |
 | K | Make Harness reliable as the long-term brain | P20 | backup, restore, health, continuation, multi-agent |
+| L | Expose safe configuration and feature coverage in the UI | P21 | providers, model picker, server folder chooser, activity, navigation |
 
 Critical tasks in Wave A start first. Independent CI/docs/backup work may proceed beside runtime work. Schema-writing tasks never run in parallel with another schema-writing task.
 
@@ -84,6 +85,19 @@ agent-independent continuation envelopes and stable agent-session links let GPT,
 Codex, and future clients resume shared Harness project context without inventing
 conversation text that the client did not provide. P20 is complete; its task evidence is
 recorded in `docs/TASKS.md` and `docs/PROGRESS.md`.
+
+## P21 — UI control center and configuration coverage (planned)
+
+Audit the existing HTTP surface against current browser controls and close owner
+workflow gaps without equating backend availability with usable UI. Build securely
+stored custom-provider profiles (including YAML/JSON input of an
+`openai-completions` / proxy-discovery profile), safe connection testing, and
+model selection from the chosen provider's `/models`, with manual ID fallback.
+Add a server-side allowlisted folder chooser plus typed absolute-path support,
+provider-aware role settings, and truthful live activity/progress displays that
+do not expose raw hidden reasoning. Finish with feature-coverage navigation,
+accessibility and browser-to-live-server tests. Detailed boundaries and task
+ordering: `docs/design/p21-ui-control-center.md` and P21 in `docs/TASKS.md`.
 
 ## Coverage contract
 

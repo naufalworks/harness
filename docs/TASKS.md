@@ -1607,3 +1607,120 @@ unavailable unless the originating client supplies it.
 - files: scripts/deploy.sh, src/backup.rs, src/storage.rs
 - done-when: backup, restore, migration, health, recall and multi-agent continuation are verified against production-sized state; the clean commit is pushed and deployment reports the expected commit, binary hash, schema and healthy workers.
 - verify: cargo test --locked -q && git diff --check
+
+## P21 · UI control center and feature coverage
+
+P21 is planned, not implemented. Define its feature-by-feature acceptance in
+`docs/design/p21-ui-control-center.md`. Provider keys entered by users are
+secrets, never backlog data or documentation examples. All tasks must retain
+P20's schema/memory and P19's truthful transcript boundaries.
+
+### P21-T01 · Inventory actual UI coverage and information architecture
+- status: todo
+- priority: high
+- lane: ui-architecture
+- parallel: no
+- depends: P20-T06
+- design: docs/design/p21-ui-control-center.md
+- files: docs/design/p21-ui-control-center.md, docs/api.yaml, static/index.html, static/app.js, tests/recording_ui.cjs
+- done-when: every owner-facing API operation has a tested classification of usable UI, explicit expert/API-only with rationale, or unavailable; identify the necessary setup/projects/providers/work/memory/history/diagnostics/recovery navigation and define keyboard/mobile/error/empty-state expectations. Inventory is based on implemented routes rather than imagined capabilities.
+- verify: python3 scripts/check_docs.py && bash scripts/verify_browser.sh
+
+### P21-T02 · Safe runtime custom-provider configuration and secrets
+- status: todo
+- priority: high
+- lane: provider-backend
+- parallel: no
+- depends: P21-T01
+- design: docs/design/p21-ui-control-center.md
+- files: src/memory_agents.rs, src/main.rs, src/api/, src/storage/, docs/api.yaml, tests/
+- done-when: an owner can add/edit/test/choose/delete an OpenAI-compatible provider ID with validated baseUrl, api type and discovery policy; its API key stays exclusively in a private atomic 0600 secret store or separately-keyed encryption, never in ordinary SQLite, GET responses, logs or exports. Pin provider version to admitted turns, keep in-flight turns stable, allow explicit rotation without corrupting P20 state, and preserve the existing environment fallback. Deny SSRF, redirects, DNS rebinding and invalid URL/scheme/path combinations with mock-server tests.
+- verify: cargo test --locked && bash scripts/verify_release.sh
+
+### P21-T03 · Provider model discovery, capability testing and fallback
+- status: todo
+- priority: high
+- lane: provider-backend
+- parallel: no
+- depends: P21-T02
+- design: docs/design/p21-ui-control-center.md
+- files: src/memory_agents.rs, src/api/, docs/api.yaml, tests/
+- done-when: authenticated proxy discovery invokes only the chosen provider's bounded /models and returns sanitized IDs; connection checks report tested vs untested tools/streaming/usage without conflating a model list with successful generation. Timeout, 401, empty/malformed/unsupported /models and manual model IDs are visible and never fall back to another provider.
+- verify: cargo test --locked && bash scripts/verify_e2e.sh
+
+### P21-T04 · Custom API editor in UI, including YAML/JSON paste
+- status: todo
+- priority: high
+- lane: provider-ui
+- parallel: no
+- depends: P21-T03
+- design: docs/design/p21-ui-control-center.md
+- files: static/index.html, static/app.js, static/api.js, static/style.css, tests/recording_ui.cjs, tests/browser_e2e.cjs
+- done-when: owner UI can list, add, edit, test, choose and remove provider profiles with structured inputs or bounded paste of the example YAML/JSON vocabulary (baseUrl, apiKey, api: openai-completions, discovery.type: proxy); never display stored secrets or persist input in browser storage; distinguish validation, save, rotation and test outcomes; protect destructive actions with confirmation.
+- verify: bash scripts/verify_browser.sh && bash scripts/verify_e2e.sh
+
+### P21-T05 · Select main, extraction and verification models from /models
+- status: todo
+- priority: high
+- lane: model-ui
+- parallel: no
+- depends: P21-T04
+- design: docs/design/p21-ui-control-center.md
+- files: static/index.html, static/app.js, static/api.js, src/api/, src/storage/config.rs, tests/
+- done-when: model roles use accessible searchable provider-scoped model selectors fed by /models with exact IDs, loading/error/empty states, and a clearly labeled manual-ID option. Changing provider requires explicit role reassignment; old sessions and in-flight turns retain their pinned provider/model, and missing tool support keeps the existing safe fallback.
+- verify: bash scripts/verify_browser.sh && bash scripts/verify_e2e.sh
+
+### P21-T06 · Authorized server-side project directory browser
+- status: todo
+- priority: high
+- lane: filesystem-api
+- parallel: no
+- depends: P21-T01
+- design: docs/design/p21-ui-control-center.md
+- files: src/api/, src/tools/paths.rs, docs/api.yaml, tests/
+- done-when: an authenticated read-only paginated browse endpoint starts only from explicitly allowed server workspace roots; it lists safe directory names and breadcrumbs, not files, secrets, or the filesystem root. Reuse canonical scope path validation and refuse traversal, symlink escapes, racey swaps, hidden/denied directories and unauthorized roots, including in end-to-end tests.
+- verify: cargo test --locked && bash scripts/verify_e2e.sh
+
+### P21-T07 · Project folder picker plus typed-path option
+- status: todo
+- priority: high
+- lane: project-ui
+- parallel: no
+- depends: P21-T06
+- design: docs/design/p21-ui-control-center.md
+- files: static/index.html, static/app.js, static/api.js, static/style.css, tests/recording_ui.cjs, tests/browser_e2e.cjs
+- done-when: owner can select a server folder from allowed directories or type an absolute path, see resolved root/scope/permission mode before saving, recover from denial, and cancel without changing scope; a local browser file picker must never be represented as choosing a remote server directory.
+- verify: bash scripts/verify_browser.sh && bash scripts/verify_e2e.sh
+
+### P21-T08 · Truthful live work and model activity UI
+- status: todo
+- priority: medium
+- lane: activity-ui
+- parallel: no
+- depends: P21-T01
+- design: docs/design/p21-ui-control-center.md
+- files: static/index.html, static/app.js, static/api.js, src/api/stream.rs, tests/recording_ui.cjs, tests/browser_e2e.cjs
+- done-when: plan, model/provider label, status, elapsed time, bounded tool/permission activity, verification, usage and recovery are discoverable and accurately resumed after reload; show redacted provider-supplied reasoning **summary** only when explicitly available and validated, never raw hidden chain-of-thought or fabricated activity. Missing transcript remains explicitly unavailable.
+- verify: bash scripts/verify_browser.sh && bash scripts/verify_e2e.sh
+
+### P21-T09 · Complete owner-facing feature navigation and accessibility
+- status: todo
+- priority: medium
+- lane: feature-ui
+- parallel: no
+- depends: P21-T05, P21-T07, P21-T08
+- design: docs/design/p21-ui-control-center.md
+- files: docs/design/p21-ui-control-center.md, static/index.html, static/app.js, static/style.css, tests/recording_ui.cjs, tests/ui_smoke.cjs
+- done-when: coverage matrix reconciles every API operation to a discoverable UI control or documented expert/API-only rationale; navigation and labels avoid false claims, approvals/deletion require confirmations, and mobile/keyboard/screen-reader/dark-mode/XSS checks pass. Do not silently turn backend-only operations into unreviewed privileged actions.
+- verify: python3 scripts/check_docs.py && bash scripts/verify_browser.sh
+
+### P21-T10 · End-to-end provider/folder/UI release and production gate
+- status: todo
+- priority: high
+- lane: release
+- parallel: no
+- depends: P21-T02, P21-T03, P21-T04, P21-T05, P21-T06, P21-T07, P21-T08, P21-T09
+- design: docs/design/p21-ui-control-center.md
+- files: scripts/verify_release.sh, tests/browser_e2e.cjs, tests/browser_e2e_failure.cjs, tests/, docs/PROGRESS.md
+- done-when: disposable real-browser/provider/SQLite tests cover secret non-disclosure, provider switch mid-turn, key rotation/restart, /models failures, manual model fallback, folder sandbox escapes, lost ACK and resumed activity; strict gates pass and a verified recovery snapshot precedes a clean pushed and deployed commit with unchanged memory baseline, expected binary/schema and ready workers.
+- verify: bash scripts/verify_release.sh && python3 scripts/check_docs.py

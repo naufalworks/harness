@@ -175,6 +175,19 @@ stable agent-session linking, and production recovery verification. The full tra
 of a client that does not supply conversation text is still unavailable; tool history
 does not imply transcript capture.
 
+### P21 — UI control center and configuration coverage [planned]
+
+Make setup and daily operation usable without editing a production environment file:
+owner-managed OpenAI-compatible provider connections, safe UI-only secret replacement,
+per-provider `/models` discovery with selectable main/extraction/verification models,
+an authenticated server-side project folder browser alongside typed paths, and a
+durable activity view that shows observable work rather than hidden model reasoning.
+Inventory every existing owner-facing backend feature against usable UI coverage;
+explicitly label expert/API-only and unavailable functions instead of claiming every
+feature already has a screen. The exact security, non-goals, acceptance criteria and
+implementation order live in `docs/design/p21-ui-control-center.md` and
+`docs/TASKS.md`. P21 is not implemented by this plan.
+
 ## 6. Non-goals (for now)
 Multi-user, remote bind, enabling exact-original archive by default, OpenAI-
 compatible proxy API, autonomous background coding without a human in the loop.

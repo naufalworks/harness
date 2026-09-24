@@ -1,5 +1,26 @@
 # PROGRESS — journal
 
+## 2026-09-25 · P21 UI control center planned; live provider key rotated
+
+Owner requested that Harness operations move into UI: custom provider/API
+connection with structured or YAML-style input, model selection from the
+selected provider's `/models`, safe server folder choosing with typed-path
+fallback, and more visible running activity without claims of hidden reasoning.
+Current baseline includes one startup-configured provider and a text list of
+its models, editable model role strings, canonicalized typed project roots,
+and partial durable activity UI. This is a design/backlog transition only:
+P21-T01 through P21-T10 are `todo`; no P21 backend/UI code is claimed.
+Spec: `docs/design/p21-ui-control-center.md`.
+
+Separately, the owner-requested live **provider** key (not Harness owner-auth
+token) was replaced only in the private 0600 deployment environment after
+an authenticated `/models` check. The service restarted on the existing
+deployed binary; the production `/health` and `/models` reads succeeded,
+both workers were ready, and memory health remained OK at the unchanged
+baseline. No credential bytes, partial key, or example from chat belong in
+this journal, Git, external history, or test fixtures. A pasted credential
+should be reissued by its provider if it could have been exposed.
+
 ## 2026-09-22 · P19-T06 implementation and validation done; promotion pending
 
 Implemented authenticated external session discovery, scoped activity/receipt evidence,

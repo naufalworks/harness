@@ -1,0 +1,139 @@
+# P21 — UI control center and configuration coverage
+
+Status: design and backlog only. P21 is **not implemented** by adding this document.
+
+## Goal
+
+An owner can set up and operate Harness from its authenticated UI without editing
+`.env`, guessing a model name, or manually discovering an absolute project path.
+No UI control may imply a backend ability that does not exist; expose unsupported
+capabilities honestly and give clear next actions. Keep P20 recovery and P19 external
+history semantics unchanged.
+
+## Verified baseline at P20 / deployed audit release
+
+| Capability | Existing implementation | UI gap to close |
+|---|---|---|
+| Provider connection | One startup `HARNESS_BASE_URL` and `HARNESS_API_KEY` in `main.rs` / `MemoryAgents` | No add/edit/test/remove custom providers in UI; no live provider switch. |
+| Model discovery | Owner-authenticated `GET /models` forwards to the configured provider's `/models` | "Show provider model names" prints text; no selectable models or per-provider cache/fallback. |
+| Model roles | `GET/POST /config` saves main/extraction/verification names | Text-only inputs; no model validation or provider-aware selectors. |
+| Project folders | `GET/POST /scopes/{scope}` validates and canonicalizes absolute root path | User must type an absolute server path; no server-side browse or safe suggested roots. |
+| Activity | Durable model/tool/permission/verification steps and resumable activity; context receipts and incident graph | Present as partial rails/panels; unify status and action affordances; do **not** expose hidden model reasoning. |
+| External history | P19 scoped session and event reads | Show missing transcript as unavailable unless client supplied it. |
+| Other backend APIs | Routes and API schema include memory, history, archive, export/import, governance, diagnostics and provenance | Audit each operation against a usable UI entry or an explicitly documented expert/API-only route. |
+
+The browser cannot select an arbitrary directory on the **remote server** via the
+ordinary local `<input type=file>` picker; P21's picker must list only authorized
+server-side directory names and retain a typed-path option.
+
+## Provider configuration contract
+
+Accept an owner-entered structured form **or** an optional bounded YAML/JSON paste
+with identical validation. Example is deliberately a placeholder, not a real key:
+
+```yaml
+iamhc:
+  baseUrl: https://api.iamhc.cn/v1
+  apiKey: <enter-secret-in-UI>
+  api: openai-completions
+  discovery:
+    type: proxy
+```
+
+- `iamhc` is a user-chosen unique provider ID, not a built-in endorsement.
+- Initially support `api: openai-completions` as the **OpenAI-compatible
+  chat-completions adapter**, with the exact paths/response shape validated against
+  a mock provider. Do not imply every provider exposes identical tools, streaming,
+  usage accounting or reasoning-summary fields.
+- `discovery.type: proxy` requests an authenticated, server-side `GET
+  {baseUrl}/models`; if unsupported/empty/error, label discovery unavailable and
+  permit explicitly typed model IDs. Do not quietly use models from another provider.
+- Show `baseUrl`, API type, discovery state, capabilities, last test result, and
+  **key present / replacement required**, never the stored key or its prefix.
+  Secrets must not be returned by GET, written to logs/activity/memory/backup
+  exports, embedded in HTML, URL query strings, or browser local/session storage.
+- Keep keys in an owner-only 0600 secret store under a 0700 directory outside Git,
+  or protect them using a separately managed encryption key. Store metadata
+  separately. Crash-safe atomic writes and explicit permission/rollback tests;
+  no raw API keys in ordinary SQLite snapshots or reviewed exports.
+- Reject plaintext external HTTP, loopback exceptions only when explicitly opted
+  in, URL userinfo/query/fragment, redirects, DNS rebinding, forbidden IP ranges,
+  and SSRF to metadata/internal endpoints. Revalidate resolved address on
+  connection; enforce response byte/time limits, allowed API paths, and no arbitrary
+  user-supplied request headers. A successfully fetched model list is not proof that
+  the provider supports tools or chat completions.
+- Provider edits/replacements require authenticated owner action, origin/session
+  controls, explicit confirmation for deletion/rotation, and a bounded connection
+  test. Errors must be redacted and say whether settings were saved or not.
+- Never mutate a provider object used by an in-flight turn. Each admitted turn
+  pins a validated provider configuration/version; switching the default affects
+  subsequent turns. Recovery receipts retain provider ID/model/version, **not key**.
+  New settings must not reset P20 memory state or replay external actions.
+- Startup `.env` provider remains a migration-compatible fallback until the owner
+  explicitly selects a saved provider; no breaking migration or default endpoint
+  change. Harness is a provider **client**, not a public OpenAI proxy service.
+
+## Model selection
+
+- Load `/models` through the selected provider only. Show searchable selection
+  for **main**, **extraction**, and **verification** roles; display exact model IDs,
+  no invented capabilities, and a manually entered ID when discovery is unavailable.
+- Distinguish configured, discovered, selectable, unavailable, and last-known
+  models. Warn before deleting a provider used by active/default roles.
+- Verify model permissions/tool and streaming compatibility with safe, bounded
+  test fixtures; preserve the existing tools-unsupported fallback and spend guard.
+- A provider returning a valid `data: [{id: ...}]` is sufficient to populate a
+  dropdown, **not** sufficient to assert successful generation or tool support.
+
+## Server folder chooser
+
+- Add an authenticated, read-only, bounded directory-list endpoint using a
+  configurable list of allowed workspace roots; default to **deny** until an owner
+  explicitly configures an allowed root. No traversal from `/` by default.
+- Show directories only, bounded pagination, parent/breadcrumbs, clear symlink
+  and permission-denied states. Never list hidden/secret paths, archive/key/data
+  folders, or return arbitrary file content.
+- Canonicalize and resolve symlinks at the backend, refuse escapes, `..`,
+  denied roots, and racey path swaps at save/use time. Reuse existing scope
+  path gate for the final selected or typed root.
+- UI offers **Choose folder** and **Type absolute path** side by side. Preview
+  resolved path, target scope, diagnostics and tool-permission mode before save.
+  Cancel never mutates scope; scope changes never grant tools automatically.
+
+## Work visibility: activity, not private thought
+
+Display the known step phase, elapsed time, provider/model label, durable
+tool-call status, permission requests, tool output previews subject to current
+redaction, plan changes, verification and budget/cost estimates. Distinguish
+waiting, generating, model responding, tool executing, permission required,
+completed, cancelled, interrupted and failed. Reuse durable cursors for reload
+and reconnect and never fabricate missing history.
+
+No hidden chain-of-thought/raw internal reasoning. If a provider **explicitly**
+supplies an approved, shareable reasoning-summary field, support it only through
+an opt-in, schema-validated, redacted adapter and clear provenance; default UI
+shows event-based progress. Keep context receipts clearly labeled as model
+inputs rather than evidence of what the model thought.
+
+## Feature coverage inventory and UI acceptance
+
+Maintain a test-backed coverage matrix for every owner-facing operation in
+`docs/api.yaml`: **UI supported**, **expert/API-only with rationale**, or
+**unsupported/stub**. Organize setup, projects, providers/models, work/approvals,
+memory/history, imports/exports, diagnostics and recovery in discoverable
+navigation. Destructive actions need confirm/permissions; missing external
+evidence must never be converted into a chat transcript. Preserve keyboard,
+screen-reader, small-screen, dark-mode and inert rendering of untrusted text.
+Browser E2E must test secret masking, reload, failed API requests, provider
+switch mid-turn, empty `/models`, denied folder escapes, lost ACK, and restart.
+
+## Release and acceptance
+
+Each task has its own tests and review. On integration run locked Rust suite,
+strict Clippy, formatting, Python/UI contract tests, mocked browser and real
+browser-to-Axum-to-SQLite E2E, dependency/security scans, and the fail-closed
+release gate. Create and verify a production recovery snapshot before
+promotion; check schema, memory baseline, ready workers and current/previous
+provider credentials after restart. P21 is complete **only when the ledger's
+tasks are implemented, verified, pushed and deployed**; this document and a
+passing prior release do not complete P21.
