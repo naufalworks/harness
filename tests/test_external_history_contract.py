@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Offline contract check for harness.external-history/v1. No Rust toolchain needed.
 
 Validates the fixture corpus in tests/external_history against the envelope rules in

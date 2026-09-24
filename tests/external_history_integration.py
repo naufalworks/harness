@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """P19-T03 real-server ingestion, restart, lost-ack and failure tests. No MCP client.
 Builds the current binary sequentially; uses only a disposable DB and loopback server.
 """
