@@ -281,6 +281,9 @@ unsafe extern "C" {
 #[cfg(unix)]
 pub(super) fn isolate_process_group(command: &mut Command) {
     use std::os::unix::process::CommandExt;
+    // SAFETY: pre_exec runs after fork, where only async-signal-safe operations are allowed.
+    // The closure calls only setpgid(0, 0) and converts errno into io::Error; it captures
+    // no mutable Rust state and allocates nothing on the success path.
     unsafe {
         command.pre_exec(|| {
             if setpgid(0, 0) == 0 {
@@ -316,6 +319,8 @@ impl Drop for OwnedBrowser {
         #[cfg(unix)]
         if let Ok(pid) = i32::try_from(self.child.id()) {
             // Never negate an out-of-range pid: a wrapped value would name some other group.
+            // SAFETY: pid came from this owned child and was range-checked before negation.
+            // kill takes integers only and does not access Rust-managed memory.
             unsafe {
                 let _ = kill(-pid, 9);
             }

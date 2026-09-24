@@ -2,21 +2,22 @@
 """P19-T03 real-server ingestion, restart, lost-ack and failure tests. No MCP client.
 Builds the current binary sequentially; uses only a disposable DB and loopback server.
 """
-import copy
 import json
 import os
-from pathlib import Path
 import socket
 import sqlite3
 import subprocess
 import tempfile
 import time
 import unittest
-import urllib.request
 import urllib.error
-from contextlib import closing
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
+from pathlib import Path
+
 from test_external_history_contract import digest
+
 ROOT = Path(__file__).resolve().parents[1]
 TOKEN = 'p' * 40
 OWNER = 'o' * 40
@@ -40,8 +41,8 @@ class ExternalHistory(unittest.TestCase):
                         HARNESS_AUTH_TOKEN=OWNER, HARNESS_API_KEY='synthetic',
                         HARNESS_BASE_URL='http://127.0.0.1:9', HARNESS_MODEL='synthetic',
                         HARNESS_HISTORY_PRODUCERS=json.dumps([
-                            dict(producer_id='development-mcp', token=TOKEN, projects=['proj-harness', 'other']),
-                            dict(producer_id='second', token='q'*40, projects=['proj-harness'])]))
+                            {'producer_id': 'development-mcp', 'token': TOKEN, 'projects': ['proj-harness', 'other']},
+                            {'producer_id': 'second', 'token': 'q'*40, 'projects': ['proj-harness']}]))
         self.app = None
         self.start()
 
@@ -214,7 +215,7 @@ class ExternalHistory(unittest.TestCase):
         for kind in ['sessions', 'activity', 'artifact']:
             for bad in [TOKEN, 'invalid']:
                 self.assertEqual(self.call('/external-history/'+kind, token=bad, method='GET')[0], 401)
-        scope = dict(project_id='proj-harness', producer_id='development-mcp', logical_session_id='sess-01')
+        scope = {'project_id': 'proj-harness', 'producer_id': 'development-mcp', 'logical_session_id': 'sess-01'}
         for i in [10, 30]:
             self.assertEqual(self.call(body=self.event(event_id='read-'+str(i), producer_sequence=i))[0], 201)
         code, page = read('activity', **scope, limit=1)
@@ -235,7 +236,7 @@ class ExternalHistory(unittest.TestCase):
         self.assertEqual(read('activity',**dict(scope,producer_id='second'))[1]['events'],[])
         sessions=read('sessions',project_id='proj-harness',producer_id='development-mcp')[1]['sessions']
         self.assertEqual(len(sessions),1); self.assertEqual(sessions[0]['event_count'],3)
-        for query in [dict(limit=0),dict(after=-1),dict(project_id='../outside')]:
+        for query in [{'limit': 0}, {'after': -1}, {'project_id': '../outside'}]:
             self.assertEqual(read('sessions',**query)[0],400)
         self.assertEqual(read('activity')[0],400)
 
@@ -246,7 +247,7 @@ class ExternalHistory(unittest.TestCase):
         for name in ['artifact.recorded.json','message_observed_client_supplied.json','task.started.json','crash_window_unknown.json']:
             event=json.loads((ROOT/'tests/external_history/accepted'/name).read_text())
             self.assertEqual(self.call(body=event)[0],201)
-        scope=dict(project_id='proj-harness',producer_id='development-mcp',logical_session_id='sess-01',event_id='evt-20')
+        scope={'project_id': 'proj-harness', 'producer_id': 'development-mcp', 'logical_session_id': 'sess-01', 'event_id': 'evt-20'}
         code,artifact=read('artifact',**scope)
         self.assertEqual(code,200);self.assertFalse(artifact['content_available'])
         self.assertEqual(artifact['envelope']['payload']['artifact_id'],'artifact-01')

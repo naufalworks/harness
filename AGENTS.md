@@ -6,7 +6,7 @@ This is the contributor entry point. Read it fully before changing the repositor
 
 Harness is a single-user, loopback-first Rust coding agent with durable SQLite receipts. The agent can inspect and modify a configured project through recorded tools, request permission for side effects, stream redacted output from durable events, recall reviewed memories, and expose causal evidence for its work. Generation and extraction are server-owned background workers; browser tabs do not own accepted work.
 
-P0–P10 are historical, completed phases. The active continuation is P11–P19 in `docs/ROADMAP.md`; exact status and eligibility come only from `docs/TASKS.md`. A historical journal entry is evidence about that run, not current release evidence.
+P0–P10 are historical, completed phases. P11–P19 remain the tracked continuation backlog and P20 long-term memory reliability is complete; exact task status and eligibility come only from `docs/TASKS.md`. A historical journal entry is evidence about that run, not current release evidence.
 
 ## Read in this order
 
@@ -67,7 +67,7 @@ Do not copy historical test counts or deployment IDs into current claims. Report
 | `src/tools/lsp_tool/` | `protocol.rs` caps/argument preparation, `session.rs` framing and teardown, `format.rs` diagnostics/references, `rename.rs` workspace edits |
 | `src/tools/browser_tool/` | `protocol.rs` caps/destination validation, `snapshot.rs` accessibility snapshots, `cdp.rs` socket and browser launch, `session.rs` page lifecycle |
 | `src/archive/` | Opt-in encrypted exact-original archive and privacy actions |
-| `migrations/` | Applied schema chain, currently 001–020 |
+| `migrations/` | Applied schema chain, currently 001–023 |
 | `tools/schemas/` | Model-facing tool definitions |
 | `static/` | Served single-page UI |
 | `tests/` | Rust-adjacent Python contracts, HTTP/fault fixtures, Node/browser E2E |

@@ -38,12 +38,14 @@ existence: an unauthenticated request never learns whether a path exists.
 - `GET /models`
 - `GET|POST /config`
 - `GET /memory/status`
+- `GET /memory/health`
 - `GET /health`
 - `GET /memory/candidates`
 - `POST /memory/candidates/{id}/edit`
 - `POST /memory/confirm`
 - `POST /memory/ingest`
 - `GET /sessions/{id}/messages`
+- `GET /sessions/{id}/continuation`
 - `GET /jobs`
 - `POST /jobs/{id}/retry`
 - `GET /processes`

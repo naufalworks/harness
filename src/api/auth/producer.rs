@@ -20,16 +20,16 @@ pub(super) struct Producers(Vec<Grant>);
 
 /// Construction is private. Consumers cannot substitute raw data or another scope.
 /// This is NOT proof of full envelope conformance or durable acceptance.
-#[allow(dead_code)] // P19-T03 will consume this boundary.
 pub(crate) struct AuthorizedEvidence {
+    #[cfg(test)]
     scope: ExternalScope,
     value: Value,
 }
-#[allow(dead_code)]
 impl AuthorizedEvidence {
     pub(crate) fn value(&self) -> &Value {
         &self.value
     }
+    #[cfg(test)]
     pub(crate) fn scoped_key(&self, id: &str) -> Result<(String, String, String), &'static str> {
         self.scope.key(id)
     }
@@ -125,7 +125,11 @@ impl Producers {
         {
             return Err("redaction_missing");
         }
-        Ok(AuthorizedEvidence { scope, value })
+        Ok(AuthorizedEvidence {
+            #[cfg(test)]
+            scope,
+            value,
+        })
     }
 }
 

@@ -63,7 +63,7 @@ implies that bytes were kept.
 | Path | Purpose |
 |---|---|
 | `src/` | Rust service: API/auth, agent loop, tools, recording, memory, provenance, archive |
-| `migrations/` | Append-only SQLite schema, currently migrations 001–020 |
+| `migrations/` | Append-only SQLite schema, currently migrations 001–023 |
 | `static/` | Single-page UI served at `/` |
 | `tests/` | Rust-adjacent contracts, live HTTP/fault suites, mocked and real browser E2E |
 | `scripts/` | Local/release verification, encrypted backup/restore, deployment/rollback, imports |
@@ -185,7 +185,6 @@ change is journaled newest-first in `docs/PROGRESS.md`. Start at `AGENTS.md`.
 
 P0–P10 are historical completed phases in the executable task ledger. The current baseline includes the recorded tool loop, permission gate, bounded context/compaction, hybrid reviewed memory, durable incremental generation, browser E2E, causal incident graphs, single-process ownership, readiness/build identity, encrypted backup drills, graceful shutdown, schema-aware rollback, and disposable fault injection. These are capability statements, not fresh release evidence; rerun the strict gate for a current claim.
 
-P11–P18 are the active continuation covering performance, maintainability, remaining security/tool boundaries, daily workflow, memory governance, observability, the Memory Wind Tunnel, and optional platform evolution. Independent tasks may run in separate
-worktrees only when their task metadata explicitly permits parallel execution.
+P11–P19 are the tracked continuation covering performance, maintainability, remaining security/tool boundaries, daily workflow, memory governance, observability, the Memory Wind Tunnel, optional platform evolution, and external development history. P20 long-term memory reliability is complete. Independent tasks may run in separate worktrees only when their task metadata explicitly permits parallel execution.
 
 Security posture: loopback bind enforced; current/previous bearer-token rotation; short-lived memory-only browser sessions; delayed authentication failures; Origin, body-size, per-route rate, session-cap, and session-recursion controls; opt-in trusted-proxy identity; conditional HSTS; conservative redaction before storage/provider; encrypted opt-in exact archive and backups with external keys. This remains a single-trusted-user service, not multi-tenant. Browser, command, and final-write policy hardening remains explicit backlog work.

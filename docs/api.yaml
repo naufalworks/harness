@@ -1278,6 +1278,35 @@ paths:
           $ref: '#/components/responses/Error'
         '5XX':
           $ref: '#/components/responses/Error'
+  /sessions/{id}/continuation:
+    get:
+      operationId: sessionContinuation
+      summary: Read an agent-independent continuation envelope for a conversation.
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+        - name: agent_id
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 64
+        - name: agent_session_id
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+      responses:
+        '200':
+          description: Continuation context and linked agent sessions.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
   /sessions/{id}/plan:
     get:
       operationId: sessionPlan
@@ -1356,6 +1385,19 @@ paths:
       responses:
         '200':
           description: Memory status.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /memory/health:
+    get:
+      operationId: memoryHealth
+      summary: Report memory counts, the retained baseline, and reset-detection status.
+      responses:
+        '200':
+          description: Memory health state.
           content:
             application/json: {}
         '4XX':

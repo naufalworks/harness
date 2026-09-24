@@ -22,6 +22,7 @@ A task may run in parallel only when its `parallel: yes` metadata is present, ev
 | H | Build the Memory Wind Tunnel | P17 | capsules, replay, experiments, reports |
 | I | Optional scale and ecosystem work | P18 | workers, plugins, portability |
 | J | Record external development history | P19 | contract, capture, delivery, history UX |
+| K | Make Harness reliable as the long-term brain | P20 | backup, restore, health, continuation, multi-agent |
 
 Critical tasks in Wave A start first. Independent CI/docs/backup work may proceed beside runtime work. Schema-writing tasks never run in parallel with another schema-writing task.
 
@@ -73,6 +74,16 @@ isolated per-session capture in the producer, acknowledgement-driven delivery, e
 session history, review-first memory from external evidence, and recovery qualification. External
 ingestion never invokes the agent loop and never replays development actions. Conversation text is
 recorded only when a supported client supplies it; MCP hosts retain full chat history.
+
+## P20 — Long-term memory reliability
+
+Keep reviewed exports distinct from full internal recovery snapshots. Backups are
+transactionally consistent and manifest-verified; restores validate checksum and schema
+before publication. A retained memory baseline detects unexpected reset, while
+agent-independent continuation envelopes and stable agent-session links let GPT, Claude,
+Codex, and future clients resume shared Harness project context without inventing
+conversation text that the client did not provide. P20 is complete; its task evidence is
+recorded in `docs/TASKS.md` and `docs/PROGRESS.md`.
 
 ## Coverage contract
 

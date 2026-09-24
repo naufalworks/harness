@@ -1540,3 +1540,70 @@ Approved direction: development-mcp records server-observed activity locally and
 - files: tests/fault_injection.py, tests/external_history_integration.py, scripts/verify_release.sh, docs/design/external-development-history.md, docs/RECORDING_PROTOCOL.md, README.md
 - done-when: disposable end-to-end fixtures demonstrate filesystem inspection, edits, commands, test results and background completion flowing through development-mcp into Harness without production changes. Evidence covers simultaneous clients, process crashes, Harness outages, lost acknowledgements, storage exhaustion, oversized output, retention and restore. Capture failures, export backlog age, rejected events and completeness gaps are observable without secret-bearing telemetry. Measured capacity and operating limits are documented; no automatic side-effect replay occurs and unsupported transcript coverage is explicit. The strict non-deploying release gate includes integration coverage and reports missing prerequisites as failures rather than passes.
 - verify: python3 tests/fault_injection.py && python3 tests/external_history_integration.py && bash scripts/verify_release.sh && (cd /root/workspace/development-mcp && python3 -m pytest)
+
+## P20 · Harness as the long-term brain
+
+P20 separates reviewed knowledge export from full internal recovery and adds a
+client-independent continuation protocol. It does not change P19's explicit transcript
+coverage rule: development-mcp activity may be durable while conversation text remains
+unavailable unless the originating client supplies it.
+
+### P20-T01 · Full memory recovery snapshot
+- status: done
+- priority: high
+- lane: memory-reliability
+- parallel: no
+- depends: —
+- files: src/backup.rs, src/main.rs
+- done-when: a local operator can create a transactionally consistent SQLite snapshot with a versioned manifest containing database schema, memory/revision/embedding/session counts and SHA-256 integrity, separately from reviewed export packets.
+- verify: cargo test --locked backup
+
+### P20-T02 · Restore and migration safety
+- status: done
+- priority: high
+- lane: memory-reliability
+- parallel: no
+- depends: P20-T01
+- files: src/backup.rs, migrations/022_agent_memory_protocol.sql, migrations/023_agent_session_links.sql, tests/test_migrations.py
+- done-when: restore verifies manifest/schema/checksum/integrity before publishing a new destination, refuses overwrite, preserves WAL-committed state, and migrations preserve existing data and foreign-key integrity.
+- verify: cargo test --locked backup && python3 tests/test_migrations.py
+
+### P20-T03 · Memory health guard
+- status: done
+- priority: high
+- lane: memory-reliability
+- parallel: no
+- depends: P20-T02
+- files: src/storage.rs, src/main.rs, src/api/routes.rs
+- done-when: a non-zero memory baseline is retained, empty fresh stores remain distinguishable from reset stores, `GET /memory/health` exposes the state, and startup refuses workers when a prior positive baseline unexpectedly falls to zero.
+- verify: cargo test --locked memory_health
+
+### P20-T04 · Agent-independent context resume
+- status: done
+- priority: high
+- lane: continuation
+- parallel: no
+- depends: P20-T03
+- files: src/storage.rs, src/api/routes.rs, docs/api.yaml
+- done-when: a new client session can retrieve current task, plan, decisions, blockers, changed files, preferences, shared project memory and conflicts without relying on hidden agent state.
+- verify: cargo test --locked continuation_is_shared
+
+### P20-T05 · Multi-agent memory protocol
+- status: done
+- priority: high
+- lane: continuation
+- parallel: no
+- depends: P20-T04
+- files: migrations/023_agent_session_links.sql, src/storage.rs
+- done-when: agent identity and agent-session identity link durably to one Harness session; GPT/Claude/Codex-style clients see the same shared project memory, while cross-session relinking conflicts rather than silently changing ownership.
+- verify: cargo test --locked continuation_is_shared && python3 tests/test_migrations.py
+
+### P20-T06 · Production reliability gate
+- status: done
+- priority: high
+- lane: release
+- parallel: no
+- depends: P20-T01, P20-T02, P20-T03, P20-T04, P20-T05
+- files: scripts/deploy.sh, src/backup.rs, src/storage.rs
+- done-when: backup, restore, migration, health, recall and multi-agent continuation are verified against production-sized state; the clean commit is pushed and deployment reports the expected commit, binary hash, schema and healthy workers.
+- verify: cargo test --locked -q && git diff --check

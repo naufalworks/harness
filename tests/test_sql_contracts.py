@@ -18,7 +18,7 @@ sys.path.insert(0,str(ROOT/'scripts'))
 from backup import backup
 from migrate_legacy import migrate
 
-MIGRATIONS=['001_core.sql','002_recording.sql','003_agentic.sql','004_memory_kinds.sql','005_generation_stream.sql','006_provenance_edges.sql','007_privacy_archive.sql','008_provider_spend.sql','009_run_cancellation.sql','010_retention_maintenance.sql','011_retrieval_receipts.sql','012_memory_governance.sql','013_session_workflows.sql','014_history_search.sql','015_causal_coverage.sql','016_run_capsules.sql','017_worker_leases.sql','018_external_effects.sql','019_tool_effect_kinds.sql','020_archive_delete_outcomes.sql']
+MIGRATIONS=['001_core.sql','002_recording.sql','003_agentic.sql','004_memory_kinds.sql','005_generation_stream.sql','006_provenance_edges.sql','007_privacy_archive.sql','008_provider_spend.sql','009_run_cancellation.sql','010_retention_maintenance.sql','011_retrieval_receipts.sql','012_memory_governance.sql','013_session_workflows.sql','014_history_search.sql','015_causal_coverage.sql','016_run_capsules.sql','017_worker_leases.sql','018_external_effects.sql','019_tool_effect_kinds.sql','020_archive_delete_outcomes.sql','021_external_history.sql','022_agent_memory_protocol.sql','023_agent_session_links.sql']
 # P12-T02: the storage module was split into src/storage.rs plus src/storage/*.rs, so
 # the shipped SQL now lives across those files. The submodules hold the implementation
 # statements and src/storage.rs keeps its `mod tests` fixtures, some of which share a
@@ -34,10 +34,14 @@ MIGRATIONS=['001_core.sql','002_recording.sql','003_agentic.sql','004_memory_kin
 # the SQL the shipped code executes", and test-only SQL is by definition not that. This is a
 # statement about the source, not about file order, so a new module cannot silently break it.
 def _implementation_only(text):
-    marker='\n#[cfg(test)]'
+    # A production file can contain individual cfg(test) helpers before later runtime
+    # functions. Only an inline test module marks the end of implementation text; treating
+    # every cfg(test) attribute as EOF made this contract silently stop seeing provider
+    # dispatches after those helpers were tightened.
+    marker='\n#[cfg(test)]\nmod '
     index=text.find(marker)
     return text if index<0 else text[:index]
-RUST='\n'.join([_implementation_only(p.read_text()) for p in sorted((ROOT/'src/storage').glob('*.rs'))]+[_implementation_only((ROOT/'src/storage.rs').read_text())])
+RUST='\n'.join([_implementation_only(p.read_text()) for p in sorted((ROOT/'src/storage').glob('*.rs')) if not p.name.endswith('_tests.rs')]+[_implementation_only((ROOT/'src/storage.rs').read_text())])
 # P15-T02: the literal may sit on the line after `execute(`/`prepare(` once rustfmt wraps a
 # long call, so allow whitespace before the string. The contract being asserted is "this test
 # runs the SQL the Rust actually ships", which is a property of the statement, not of its
@@ -57,6 +61,10 @@ def prepared_start(prefix):
         if sql.startswith(prefix):return sql
     raise AssertionError('prepared SQL not found: '+prefix)
 RECALL=prepared_start('SELECT m.id,m.scope,m.key,m.value')
+
+def execute_numbered(connection, statement, values):
+    """Bind Rust's ?1-style parameters without Python's deprecated sequence fallback."""
+    return connection.execute(statement, {str(index): value for index, value in enumerate(values, 1)})
 
 def connect(path=':memory:'):
     c=sqlite3.connect(path,isolation_level=None,timeout=5);c.execute('PRAGMA foreign_keys=ON')
@@ -81,9 +89,9 @@ def resolve(c,identifier,scope='global',confirm=True):
             c.execute("UPDATE candidates SET status='conflict' WHERE id=?",(identifier,));c.execute('COMMIT');return 'conflict'
         memory=current[0] if current else str(uuid.uuid4());old=current[2] if current else None
         group=f'{scope}\x1f{key}\x1f{branch}'
-        c.execute(UPSERT,(memory,scope,key,value,branch,category,expected+1,identifier,group,'2026-09-08'))
-        c.execute(REVISION,(str(uuid.uuid4()),memory,expected+1,old,value,identifier,'2026-09-08'))
-        c.execute(APPROVE,('2026-09-08',identifier));c.execute('COMMIT');return 'approved'
+        execute_numbered(c,UPSERT,(memory,scope,key,value,branch,category,expected+1,identifier,group,'2026-09-08'))
+        execute_numbered(c,REVISION,(str(uuid.uuid4()),memory,expected+1,old,value,identifier,'2026-09-08'))
+        execute_numbered(c,APPROVE,('2026-09-08',identifier));c.execute('COMMIT');return 'approved'
     except Exception:c.execute('ROLLBACK');raise
 
 class Contracts(unittest.TestCase):
@@ -112,10 +120,10 @@ class Contracts(unittest.TestCase):
         proposal(self.c,value='Rust');resolve(self.c,'p1');proposal(self.c,'p2',value='Python',revision=1,source='s2');resolve(self.c,'p2')
         self.assertEqual(self.c.execute("SELECT count(*) FROM memory_fts WHERE memory_fts MATCH 'Rust'").fetchone()[0],0);self.assertEqual(self.c.execute("SELECT count(*) FROM memory_fts WHERE memory_fts MATCH 'Python'").fetchone()[0],1);self.assertEqual(self.c.execute('SELECT count(*) FROM memory_revisions').fetchone()[0],2)
     def test_short_terms_are_indexed(self):
-        proposal(self.c,value='SQL API MCP SSE');resolve(self.c,'p1');self.assertEqual(len(self.c.execute(RECALL,('"sql" OR "api"','global','main',int(time.time()))).fetchall()),1)
+        proposal(self.c,value='SQL API MCP SSE');resolve(self.c,'p1');self.assertEqual(len(execute_numbered(self.c,RECALL,('"sql" OR "api"','global','main',int(time.time()))).fetchall()),1)
     def test_scope_and_global_override(self):
         proposal(self.c,'g',value='SQL');resolve(self.c,'g');proposal(self.c,'a',scope='a',value='Rust');resolve(self.c,'a','a');proposal(self.c,'b',scope='b',value='Python');resolve(self.c,'b','b')
-        rows=self.c.execute(RECALL,('"sql" OR "rust" OR "python"','a','main',int(time.time()))).fetchall();self.assertEqual([r[3] for r in rows],['Rust'])
+        rows=execute_numbered(self.c,RECALL,('"sql" OR "rust" OR "python"','a','main',int(time.time()))).fetchall();self.assertEqual([r[3] for r in rows],['Rust'])
     def test_candidate_dedup_constraint(self):
         proposal(self.c)
         with self.assertRaises(sqlite3.IntegrityError):proposal(self.c,'p2')
@@ -124,7 +132,7 @@ class Contracts(unittest.TestCase):
         self.c.execute(query,('j1','once'))
         with self.assertRaises(sqlite3.IntegrityError):self.c.execute(query,('j2','once'))
     def test_foreign_key_requires_candidate(self):
-        with self.assertRaises(sqlite3.IntegrityError):self.c.execute(UPSERT,('m','global','language','Rust','main','preference',1,'missing','global\x1flanguage\x1fmain','now'))
+        with self.assertRaises(sqlite3.IntegrityError):execute_numbered(self.c,UPSERT,('m','global','language','Rust','main','preference',1,'missing','global\x1flanguage\x1fmain','now'))
     def test_online_backup_reads_wal_and_refuses_overwrite(self):
         with tempfile.TemporaryDirectory() as d:
             src=Path(d)/'source.db';dst=Path(d)/'backup.db';c=sqlite3.connect(src);c.execute('PRAGMA journal_mode=WAL');c.execute('CREATE TABLE example(value)');c.execute('INSERT INTO example VALUES(42)');c.commit()

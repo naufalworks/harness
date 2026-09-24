@@ -722,7 +722,7 @@ impl DbStore {
             Ok(json!({"scope":scope,"messages":rows,"has_more":more,"next_before_seq":cursor}))
         }).await
     }
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub async fn recorded_sessions(&self, before: Option<i64>) -> Result<Value> {
         self.recorded_sessions_filtered(before, None, false).await
     }

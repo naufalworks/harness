@@ -6,7 +6,6 @@ docs/design/external-development-history.md. Enforcement lands in P19-T02/T03; t
 suite pins the contract so a malformed event is rejected before any ingestion handler
 exists.
 """
-import copy
 import datetime
 import hashlib
 import json
@@ -113,16 +112,17 @@ def validate(event, seen=None):
         return "malformed_envelope"
     if etype == "capture.gap" and not (type(payload.get("missing_from_sequence")) is int and type(payload.get("missing_to_sequence")) is int and 1 <= payload["missing_from_sequence"] <= payload["missing_to_sequence"]):
         return "malformed_envelope"
-    if etype == "artifact.recorded":
-        if (not isinstance(payload.get("artifact_id"), str)
-                or not payload["artifact_id"]
-                or not isinstance(payload.get("media_type"), str)
-                or type(payload.get("byte_count")) is not int
-                or payload["byte_count"] < 0
-                or not isinstance(payload.get("digest"), str)
-                or not re.fullmatch(r"[0-9a-f]{64}", payload["digest"])
-                or type(payload.get("truncated")) is not bool):
-            return "malformed_envelope"
+    if etype == "artifact.recorded" and (
+        not isinstance(payload.get("artifact_id"), str)
+        or not payload["artifact_id"]
+        or not isinstance(payload.get("media_type"), str)
+        or type(payload.get("byte_count")) is not int
+        or payload["byte_count"] < 0
+        or not isinstance(payload.get("digest"), str)
+        or not re.fullmatch(r"[0-9a-f]{64}", payload["digest"])
+        or type(payload.get("truncated")) is not bool
+    ):
+        return "malformed_envelope"
     if not isinstance(event["content_digest"],str) or not re.fullmatch(r"[0-9a-f]{64}",event["content_digest"]):
         return "invalid_digest"
     if digest(event) != event["content_digest"]:

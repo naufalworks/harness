@@ -218,8 +218,8 @@ def test_003_constraints():
         (now,),
     )
     # recovery statements from docs/design/agentic-turn.md#recovery-additions
-    c.execute("UPDATE turn_steps SET status='interrupted', finished_at=?1 WHERE status='running'", (now,))
-    c.execute("UPDATE permission_requests SET status='expired', resolved_at=?1 WHERE status='pending'", (now,))
+    c.execute("UPDATE turn_steps SET status='interrupted', finished_at=? WHERE status='running'", (now,))
+    c.execute("UPDATE permission_requests SET status='expired', resolved_at=? WHERE status='pending'", (now,))
     assert c.execute("SELECT status FROM turn_steps WHERE id='st1'").fetchone()[0] == "interrupted"
     assert c.execute("SELECT status FROM permission_requests WHERE id='p1'").fetchone()[0] == "expired"
 

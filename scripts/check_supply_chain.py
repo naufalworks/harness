@@ -164,6 +164,7 @@ def check_ci_declares_gates() -> None:
 SCANNERS: tuple[tuple[str, str, list[str], bool], ...] = (
     ("audit", "cargo-audit", ["cargo", "audit", "--deny", "warnings"], True),
     ("deny", "cargo-deny", ["cargo", "deny", "check", "licenses", "bans", "sources"], True),
+    ("unused-deps", "cargo-machete", ["cargo", "machete"], False),
     ("shell-lint", "shellcheck", ["bash", "-c", "shellcheck scripts/*.sh"], False),
     ("python-lint", "ruff", ["ruff", "check", "tests", "scripts"], False),
 )

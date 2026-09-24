@@ -144,6 +144,8 @@ fn signal_group(pgid: i32) {
     if pgid <= 0 {
         return;
     }
+    // SAFETY: kill receives integer process-group identifiers only. pgid is validated
+    // positive before negation; no pointers or Rust references cross the FFI boundary.
     unsafe {
         libc::kill(-pgid, libc::SIGTERM);
         libc::kill(-pgid, libc::SIGKILL);
@@ -159,6 +161,8 @@ fn signal_process(pid: u32) {
     if pid <= 1 {
         return;
     }
+    // SAFETY: the validated positive PID is passed by value to kill. Sending to both the
+    // process and same-numbered process group cannot violate Rust memory safety.
     unsafe {
         libc::kill(pid, libc::SIGTERM);
         libc::kill(-pid, libc::SIGTERM);
@@ -175,6 +179,8 @@ fn process_exists(pid: u32) -> bool {
     if pid <= 1 {
         return false;
     }
+    // SAFETY: signal 0 performs an existence/permission probe using a validated positive PID;
+    // no pointers or Rust references cross the FFI boundary.
     let result = unsafe { libc::kill(pid as i32, 0) };
     result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }

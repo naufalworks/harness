@@ -49,6 +49,8 @@ impl ProcessLock {
                 .open(&lock_path)
                 .with_context(|| format!("open database process lock {}", lock_path.display()))?;
             std::fs::set_permissions(&lock_path, std::fs::Permissions::from_mode(0o600))?;
+            // SAFETY: file owns a live descriptor for the duration of this call and the
+            // operation flags are the platform flock constants.
             if unsafe { flock(file.as_raw_fd(), LOCK_EX | LOCK_NB) } != 0 {
                 let error = std::io::Error::last_os_error();
                 if error.kind() == std::io::ErrorKind::WouldBlock {
@@ -81,6 +83,7 @@ impl Drop for ProcessLock {
         if let Some(file) = self._file.as_ref() {
             // Best effort: if this fails the descriptor still closes, which is the previous
             // behaviour. There is no recovery action available from a destructor.
+            // SAFETY: file still owns the descriptor until this destructor returns.
             unsafe { flock(file.as_raw_fd(), LOCK_UN) };
         }
     }
@@ -186,6 +189,7 @@ mod tests {
     fn releasing_ownership_does_not_depend_on_every_descriptor_being_closed() {
         let (directory, database) = fixture();
         let owner = ProcessLock::acquire(database.to_str().unwrap()).unwrap();
+        // SAFETY: the source descriptor belongs to the live owner for this entire call.
         let inherited = unsafe { dup(owner._file.as_ref().unwrap().as_raw_fd()) };
         assert!(
             inherited >= 0,
@@ -195,6 +199,7 @@ mod tests {
         drop(owner);
 
         let reacquired = ProcessLock::acquire(database.to_str().unwrap());
+        // SAFETY: inherited is the successful result of dup above and is closed once.
         unsafe { close(inherited) };
         reacquired.expect("a database with no live owner must be claimable again");
 

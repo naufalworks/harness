@@ -1,6 +1,6 @@
 # PLAN — Harness as a durable coding agent
 
-Status: living document. P0–P10 are the historical completed baseline; P11–P18 are the active continuation. `docs/ROADMAP.md` defines sequencing and the safe daily-use boundary, `docs/TASKS.md` is the authoritative executable backlog, and `docs/PROGRESS.md` is a newest-first journal. Journal evidence describes the run that produced it and is never a substitute for fresh verification.
+Status: living document. P0–P10 are the historical completed baseline; P11–P19 remain the tracked continuation and P20 long-term memory reliability is complete. `docs/ROADMAP.md` defines sequencing and the safe daily-use boundary, `docs/TASKS.md` is the authoritative executable backlog, and `docs/PROGRESS.md` is a newest-first journal. Journal evidence describes the run that produced it and is never a substitute for fresh verification.
 
 ## 1. Why
 
@@ -26,6 +26,8 @@ The owner wants an agent that:
 - Loopback enforcement, current/previous token rotation, short-lived memory-only browser sessions, delayed auth failures, Origin/body/rate/session controls, optional trusted-proxy identity, and conditional HSTS.
 - One-process-per-database ownership, graceful drain, no-replay crash recovery, readiness/build/schema identity, encrypted backup drills, schema-aware binary rollback, and disposable fault injection.
 - Opt-in encrypted exact-original archival is distinct from sanitized recording and uses external current/previous keys.
+- Full internal recovery snapshots are separate from reviewed exports, carry checksum/schema/count manifests, and are verified before restore.
+- Memory health retains a non-zero baseline and refuses worker startup after an unexpected reset; agent-independent continuation links GPT/Claude/Codex-style sessions to shared Harness project memory without rewriting reviewed memory.
 
 This list describes compiled capabilities, not a fresh pass or deployment. Current evidence comes from commands run for the present change.
 
@@ -157,6 +159,21 @@ causal incident comparison/search/export without hidden-reasoning capture.
 Build immutable run capsules, strict/live/hybrid memory treatments and evidence-bound
 comparison reports. Multi-worker, plugin and remote execution remain optional and may
 start only after the earlier safety contracts are complete.
+
+### P19 — External development history [active continuation]
+
+Durably ingest sanitized development-mcp activity with producer/project isolation and
+expose evidence-linked external session history. Remaining extraction/readiness work is
+tracked in `docs/TASKS.md`; unsupported client transcript access must remain explicit
+rather than fabricated.
+
+### P20 — Long-term memory reliability [complete]
+
+Separate reviewed export from full recovery backup; add checksum/schema/count-verified
+restore, memory-reset health protection, agent-independent continuation envelopes,
+stable agent-session linking, and production recovery verification. The full transcript
+of a client that does not supply conversation text is still unavailable; tool history
+does not imply transcript capture.
 
 ## 6. Non-goals (for now)
 Multi-user, remote bind, enabling exact-original archive by default, OpenAI-

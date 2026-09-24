@@ -71,8 +71,8 @@ impl AuthState {
         Ok(self)
     }
 
-    /// P19-T02 boundary only: no receipt, durable write, or full envelope validation.
-    #[allow(dead_code)] // Consumer is the separately tracked P19-T03 ingestion task.
+    /// Producer admission/privacy boundary. Full envelope validation and durable acceptance
+    /// remain in the external-history handler/storage path.
     pub(crate) fn authorize_external(
         &self,
         token: &str,

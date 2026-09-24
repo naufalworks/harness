@@ -146,10 +146,10 @@ class Provider(BaseHTTPRequestHandler):
     def log_message(self, *_args: object) -> None:
         pass
 
-    def do_GET(self) -> None:  # noqa: N802
+    def do_GET(self) -> None:
         self.reply({"data": [{"id": "synthetic-model"}]})
 
-    def do_POST(self) -> None:  # noqa: N802
+    def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length", "0"))
         body = json.loads(self.rfile.read(length))
         time.sleep(self.delay_seconds)
@@ -200,15 +200,19 @@ def run(samples: int, provider_delay_ms: int, binary: Path) -> dict[str, Any]:
         db = tmp_path / "baseline.db"
         log = tmp_path / "server.log"
         synthetic_token = "synthetic-baseline-" + "x" * 40
-        env = {
-            **os.environ,
+        # A disposable benchmark must not inherit production Harness configuration.
+        # In particular, producer credentials are validated against the synthetic owner
+        # token and archive paths/keys belong to a different database. Keep ordinary
+        # process environment (PATH, locale, etc.) but rebuild the Harness namespace.
+        env = {key: value for key, value in os.environ.items() if not key.startswith("HARNESS_")}
+        env.update({
             "HARNESS_DB": str(db),
             "HARNESS_AUTH_TOKEN": synthetic_token,
             "HARNESS_API_KEY": "synthetic",
             "HARNESS_BASE_URL": f"http://127.0.0.1:{provider.server_port}",
             "HARNESS_ADDR": f"127.0.0.1:{server_port}",
             "HARNESS_MODEL": "synthetic-model",
-        }
+        })
 
         def call(endpoint: str, body: dict[str, Any] | None = None) -> tuple[int, dict[str, Any]]:
             request = urllib.request.Request(
@@ -226,10 +230,20 @@ def run(samples: int, provider_delay_ms: int, binary: Path) -> dict[str, Any]:
 
         try:
             with log.open("wb") as log_handle:
-                app = subprocess.Popen([str(binary)], env=env, stdout=subprocess.DEVNULL, stderr=log_handle)
+                app = subprocess.Popen(
+                    [str(binary)],
+                    cwd=tmp_path,
+                    env=env,
+                    stdout=subprocess.DEVNULL,
+                    stderr=log_handle,
+                )
             for _ in range(100):
                 if app.poll() is not None:
-                    raise RuntimeError("Harness exited during baseline startup")
+                    detail = log.read_text(errors="replace")[-4000:].strip()
+                    raise RuntimeError(
+                        "Harness exited during baseline startup"
+                        + (f": {detail}" if detail else "")
+                    )
                 try:
                     if call("/health")[0] == 200:
                         break
