@@ -12,7 +12,7 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MIG = ROOT / "migrations"
-CHAIN = ["001_core.sql", "002_recording.sql", "003_agentic.sql", "004_memory_kinds.sql", "005_generation_stream.sql", "006_provenance_edges.sql", "007_privacy_archive.sql", "008_provider_spend.sql", "009_run_cancellation.sql", "010_retention_maintenance.sql", "011_retrieval_receipts.sql", "012_memory_governance.sql", "013_session_workflows.sql", "014_history_search.sql", "015_causal_coverage.sql", "016_run_capsules.sql", "017_worker_leases.sql", "018_external_effects.sql", "019_tool_effect_kinds.sql", "020_archive_delete_outcomes.sql", "021_external_history.sql"]
+CHAIN = ["001_core.sql", "002_recording.sql", "003_agentic.sql", "004_memory_kinds.sql", "005_generation_stream.sql", "006_provenance_edges.sql", "007_privacy_archive.sql", "008_provider_spend.sql", "009_run_cancellation.sql", "010_retention_maintenance.sql", "011_retrieval_receipts.sql", "012_memory_governance.sql", "013_session_workflows.sql", "014_history_search.sql", "015_causal_coverage.sql", "016_run_capsules.sql", "017_worker_leases.sql", "018_external_effects.sql", "019_tool_effect_kinds.sql", "020_archive_delete_outcomes.sql", "021_external_history.sql", "022_agent_memory_protocol.sql", "023_agent_session_links.sql"]
 VERSIONS = [name.split("_", 1)[0] for name in CHAIN]
 LATEST_VERSION = int(VERSIONS[-1])
 OPEN_CONNECTIONS = []
@@ -38,6 +38,8 @@ EXPECTED_TABLES = {
     18: {"external_effects"},
     19: set(),
     21: {"external_history_events"},
+    22: {"agent_sessions"},
+    23: {"agent_session_links"},
 }
 
 
@@ -85,6 +87,23 @@ def test_v2_to_v3():
     c.executescript((MIG / CHAIN[2]).read_text())
     assert c.execute("PRAGMA user_version").fetchone()[0] == 3
     assert EXPECTED_TABLES[3] <= tables(c)
+
+
+def test_populated_v22_to_v23_preserves_agent_links():
+    c = fresh()
+    apply(c, 22)
+    now = "2026-01-01T00:00:00Z"
+    c.execute("INSERT INTO sessions(id,scope,created_at) VALUES('session-1','proj',?)", (now,))
+    c.execute(
+        "INSERT INTO agent_sessions(id,agent_id,session_id,created_at,last_seen_at) VALUES('link-1','gpt','session-1',?,?)",
+        (now, now),
+    )
+    c.executescript((MIG / CHAIN[22]).read_text())
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 23
+    assert c.execute(
+        "SELECT agent_id,agent_session_id,harness_session_id,scope FROM agent_session_links"
+    ).fetchone() == ("gpt", "session-1", "session-1", "proj")
+    assert c.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
 def test_populated_v3_to_v4():

@@ -17,6 +17,7 @@ pub fn now() -> String {
 pub fn uid() -> String {
     Uuid::new_v4().to_string()
 }
+pub const CURRENT_DATABASE_SCHEMA_VERSION: i64 = 23;
 #[derive(Clone)]
 pub struct DbStore {
     conn: Arc<Mutex<Connection>>,
@@ -153,7 +154,7 @@ impl DbStore {
                     "legacy or unknown database: use scripts/migrate_legacy.py into a NEW database"
                 );
             }
-        } else if !(1..=22).contains(&version) {
+        } else if !(1..=CURRENT_DATABASE_SCHEMA_VERSION).contains(&version) {
             bail!("unsupported schema version {version}");
         }
         conn.execute_batch(
@@ -226,6 +227,9 @@ impl DbStore {
         }
         if version < 22 {
             conn.execute_batch(include_str!("../migrations/022_agent_memory_protocol.sql"))?;
+        }
+        if version < 23 {
+            conn.execute_batch(include_str!("../migrations/023_agent_session_links.sql"))?;
         }
         conn.execute(
             "UPDATE provider_calls SET state='failed',usage_status='unavailable',reason='process_restarted_with_call_reserved',finished_at=?1 WHERE state='reserved'",
@@ -339,13 +343,18 @@ impl DbStore {
     }
     pub async fn record_memory_health_baseline(&self) -> Result<()> {
         self.run(|c| {
-            let count:i64 = c.query_row("SELECT count(*) FROM memories", [], |r| r.get(0))?;
-            c.execute(
-                "INSERT INTO settings(key,value) VALUES('memory_health_baseline',?1) ON CONFLICT(key) DO NOTHING",
-                [count.to_string()],
-            )?;
+            let count: i64 = c.query_row("SELECT count(*) FROM memories", [], |r| r.get(0))?;
+            if count > 0 {
+                c.execute(
+                    "INSERT INTO settings(key,value) VALUES('memory_health_baseline',?1)
+                     ON CONFLICT(key) DO UPDATE SET value=excluded.value
+                     WHERE CAST(settings.value AS INTEGER)<=0",
+                    [count.to_string()],
+                )?;
+            }
             Ok(())
-        }).await
+        })
+        .await
     }
     /// P20 memory health guard: exposes memory volume and detects an unexpected reset signal.
     pub async fn memory_health(&self) -> Result<Value> {
@@ -354,18 +363,157 @@ impl DbStore {
             let revisions:i64 = c.query_row("SELECT count(*) FROM memory_revisions", [], |r| r.get(0))?;
             let embeddings:i64 = c.query_row("SELECT count(*) FROM memory_embeddings", [], |r| r.get(0))?;
             let baseline:Option<i64> = c.query_row("SELECT value FROM settings WHERE key='memory_health_baseline'", [], |r| r.get::<_, String>(0).map(|v| v.parse().unwrap_or(0))).optional()?;
-            let reset = baseline.map(|v| v > 0 && memories == 0).unwrap_or(false);
-            Ok(json!({"memories":memories,"memory_revisions":revisions,"memory_embeddings":embeddings,"previous_memory_baseline":baseline,"status":if reset {"MEMORY_RESET_DETECTED"} else {"OK"}}))
+            let status = match baseline {
+                Some(v) if v > 0 && memories == 0 => "MEMORY_RESET_DETECTED",
+                None | Some(0) if memories == 0 => "NO_BASELINE",
+                _ => "OK",
+            };
+            Ok(json!({"memories":memories,"memory_revisions":revisions,"memory_embeddings":embeddings,"previous_memory_baseline":baseline,"status":status}))
         }).await
     }
     /// P20 agent-neutral continuation envelope. Agents only contribute an identity; the stored
     /// session remains the source of truth.
-    pub async fn continuation_context(&self, session_id: String, agent_id: String) -> Result<Value> {
+    pub async fn continuation_context(
+        &self,
+        session_id: String,
+        agent_id: String,
+        agent_session_id: String,
+    ) -> Result<Value> {
         self.run(move |c| {
-            let now = Utc::now().to_rfc3339();
-            c.execute("INSERT INTO agent_sessions(id,agent_id,session_id,created_at,last_seen_at) VALUES(?1,?2,?3,?4,?4) ON CONFLICT(agent_id,session_id) DO UPDATE SET last_seen_at=excluded.last_seen_at", params![uid(), agent_id, session_id, now])?;
-            let session = c.query_row("SELECT id,scope,created_at FROM sessions WHERE id=?1", [&session_id], |r| Ok(json!({"id":r.get::<_,String>(0)?,"scope":r.get::<_,String>(1)?,"created_at":r.get::<_,String>(2)?}))).optional()?;
-            Ok(json!({"session":session,"agent_agnostic":true,"continuation":session_id}))
+            let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            let session: Option<(String,String,String,String)> = tx.query_row(
+                "SELECT id,scope,created_at,title FROM sessions WHERE id=?1",
+                [&session_id],
+                |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)),
+            ).optional()?;
+            let Some((id,scope,created_at,title)) = session else {
+                bail!("unknown session");
+            };
+            let existing: Option<String> = tx.query_row(
+                "SELECT harness_session_id FROM agent_session_links WHERE agent_id=?1 AND agent_session_id=?2",
+                params![agent_id,agent_session_id],
+                |r| r.get(0),
+            ).optional()?;
+            if let Some(existing) = existing {
+                if existing != id {
+                    bail!("agent session is already linked to a different Harness session");
+                }
+                tx.execute(
+                    "UPDATE agent_session_links SET last_seen_at=?1 WHERE agent_id=?2 AND agent_session_id=?3",
+                    params![now(),agent_id,agent_session_id],
+                )?;
+            } else {
+                let stamp=now();
+                tx.execute(
+                    "INSERT INTO agent_session_links(id,agent_id,agent_session_id,harness_session_id,scope,created_at,last_seen_at) VALUES(?1,?2,?3,?4,?5,?6,?6)",
+                    params![uid(),agent_id,agent_session_id,id,scope,stamp],
+                )?;
+            }
+            let current_task: Option<Value> = tx.query_row(
+                "SELECT content,created_at FROM messages WHERE session_id=?1 AND role='user' ORDER BY seq DESC LIMIT 1",
+                [&id],
+                |r| Ok(json!({"content":r.get::<_,String>(0)?,"created_at":r.get::<_,String>(1)?})),
+            ).optional()?;
+            let plan = {
+                let mut stmt=tx.prepare("SELECT seq,text,status,updated_at FROM plan_items WHERE session_id=?1 ORDER BY seq LIMIT 100")?;
+                let rows=stmt.query_map([&id],|r|Ok(json!({"seq":r.get::<_,i64>(0)?,"text":r.get::<_,String>(1)?,"status":r.get::<_,String>(2)?,"updated_at":r.get::<_,String>(3)?})))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                rows
+            };
+            let mut blockers = {
+                let mut stmt=tx.prepare("SELECT seq,text,status,updated_at FROM plan_items WHERE session_id=?1 AND status='failed' ORDER BY seq LIMIT 50")?;
+                let rows=stmt.query_map([&id],|r|Ok(json!({"kind":"plan","seq":r.get::<_,i64>(0)?,"text":r.get::<_,String>(1)?,"status":r.get::<_,String>(2)?,"updated_at":r.get::<_,String>(3)?})))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                rows
+            };
+            {
+                let mut stmt=tx.prepare("SELECT request_id,state,error_code,updated_at FROM chat_receipts WHERE session_id=?1 AND state IN ('failed','interrupted') ORDER BY updated_at DESC LIMIT 20")?;
+                blockers.extend(stmt.query_map([&id],|r|Ok(json!({"kind":"turn","request_id":r.get::<_,String>(0)?,"status":r.get::<_,String>(1)?,"error_code":r.get::<_,Option<String>>(2)?,"updated_at":r.get::<_,String>(3)?})))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?);
+            }
+            let files_changed = {
+                let mut stmt=tx.prepare(
+                    "SELECT f.path,f.action,f.request_id,f.created_at FROM file_changes f
+                     JOIN chat_receipts r ON r.request_id=f.request_id
+                     WHERE r.session_id=?1 AND f.applied=1 AND f.reverted_at IS NULL
+                     ORDER BY f.created_at DESC LIMIT 100"
+                )?;
+                let rows=stmt.query_map([&id],|r|Ok(json!({"path":r.get::<_,String>(0)?,"action":r.get::<_,String>(1)?,"request_id":r.get::<_,String>(2)?,"created_at":r.get::<_,String>(3)?})))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                rows
+            };
+            let branch=memories::active_branch(&tx,&scope)?;
+            let now_unix=Utc::now().timestamp();
+            let visible_memories = {
+                let mut stmt=tx.prepare(
+                    "SELECT m.scope,m.key,m.value,m.category,m.revision,m.branch,m.conflict_group,m.updated_at
+                     FROM memories m
+                     WHERE m.status='active'
+                       AND m.branch IN ('main',?2)
+                       AND (m.expires_at IS NULL OR m.expires_at>?3)
+                       AND NOT EXISTS(
+                           SELECT 1 FROM memories b
+                           WHERE b.scope=m.scope AND b.key=m.key AND b.branch=?2
+                             AND b.status='active' AND (b.expires_at IS NULL OR b.expires_at>?3)
+                             AND m.branch<>?2
+                       )
+                       AND (m.scope=?1 OR m.scope='global')
+                       AND (m.scope=?1 OR NOT EXISTS(
+                           SELECT 1 FROM memories p
+                           WHERE p.scope=?1 AND p.key=m.key AND p.status='active'
+                             AND p.branch IN ('main',?2)
+                             AND (p.expires_at IS NULL OR p.expires_at>?3)
+                       ))
+                     ORDER BY CASE WHEN m.scope=?1 THEN 0 ELSE 1 END,m.key
+                     LIMIT 200"
+                )?;
+                let rows=stmt.query_map(params![scope,branch,now_unix],|r|Ok(json!({
+                    "scope":r.get::<_,String>(0)?,"key":r.get::<_,String>(1)?,"value":r.get::<_,String>(2)?,
+                    "category":r.get::<_,String>(3)?,"revision":r.get::<_,i64>(4)?,"branch":r.get::<_,String>(5)?,
+                    "conflict_group":r.get::<_,Option<String>>(6)?,"updated_at":r.get::<_,String>(7)?
+                })))?.collect::<rusqlite::Result<Vec<_>>>()?;
+                rows
+            };
+            let decisions: Vec<Value> = visible_memories.iter()
+                .filter(|m|m["category"]=="decision").cloned().collect();
+            let preferences: Vec<Value> = visible_memories.iter()
+                .filter(|m|m["category"]=="preference").cloned().collect();
+            let shared_project_memory: Vec<Value> = visible_memories.iter()
+                .filter(|m|m["scope"]==scope).cloned().collect();
+            let conflicts = {
+                let mut stmt=tx.prepare(
+                    "SELECT key,value,category,expected_revision,created_at FROM candidates
+                     WHERE scope=?1 AND status='conflict' ORDER BY created_at DESC LIMIT 50"
+                )?;
+                let rows=stmt.query_map([&scope],|r|Ok(json!({"key":r.get::<_,String>(0)?,"value":r.get::<_,String>(1)?,"category":r.get::<_,String>(2)?,"expected_revision":r.get::<_,i64>(3)?,"created_at":r.get::<_,String>(4)?})))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                rows
+            };
+            let linked_agents = {
+                let mut stmt=tx.prepare(
+                    "SELECT agent_id,agent_session_id,created_at,last_seen_at FROM agent_session_links
+                     WHERE harness_session_id=?1 ORDER BY last_seen_at DESC LIMIT 50"
+                )?;
+                let rows=stmt.query_map([&id],|r|Ok(json!({"agent_id":r.get::<_,String>(0)?,"agent_session_id":r.get::<_,String>(1)?,"created_at":r.get::<_,String>(2)?,"last_seen_at":r.get::<_,String>(3)?})))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                rows
+            };
+            tx.commit()?;
+            Ok(json!({
+                "format_version":1,
+                "agent_independent":true,
+                "session":{"id":id,"scope":scope,"title":title,"created_at":created_at},
+                "agent":{"id":agent_id,"session_id":agent_session_id},
+                "current_task":current_task,
+                "plan":plan,
+                "decisions":decisions,
+                "blockers":blockers,
+                "files_changed":files_changed,
+                "preferences":preferences,
+                "shared_project_memory":shared_project_memory,
+                "conflicts":conflicts,
+                "linked_agents":linked_agents
+            }))
         }).await
     }
     pub async fn readiness(&self) -> Result<Value> {
@@ -381,7 +529,7 @@ impl DbStore {
             let last_checkpoint:Option<String>=c.query_row("SELECT finished_at FROM maintenance_runs WHERE action='wal_checkpoint' ORDER BY id DESC LIMIT 1",[],|r|r.get(0)).optional()?;
             let last_retention:Option<String>=c.query_row("SELECT finished_at FROM maintenance_runs WHERE action='retention' ORDER BY id DESC LIMIT 1",[],|r|r.get(0)).optional()?;
             let last_compaction:Option<String>=c.query_row("SELECT finished_at FROM maintenance_runs WHERE action='compaction' ORDER BY id DESC LIMIT 1",[],|r|r.get(0)).optional()?;
-            Ok(json!({"ready":schema_version==22&&quick_check=="ok","schema_version":schema_version,
+            Ok(json!({"ready":schema_version==CURRENT_DATABASE_SCHEMA_VERSION&&quick_check=="ok","schema_version":schema_version,
                 "quick_check":quick_check,"queue":{"jobs_pending":pending_jobs,"jobs_running":running_jobs,
                 "jobs_failed":failed_jobs,"turns_waiting":waiting_turns,"turns_running":running_turns},
                 "maintenance":{"journal_mode":journal_mode,"last_wal_checkpoint_at":last_checkpoint,
@@ -1288,6 +1436,117 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[tokio::test]
+    async fn memory_health_reports_missing_baseline_on_an_empty_database() {
+        let db = DbStore::init(":memory:").unwrap();
+        let health = db.memory_health().await.unwrap();
+        assert_eq!(health["memories"], 0);
+        assert!(health["previous_memory_baseline"].is_null());
+        assert_eq!(health["status"], "NO_BASELINE");
+    }
+
+    #[tokio::test]
+    async fn memory_health_records_a_nonzero_baseline_and_detects_reset() {
+        let db = DbStore::init(":memory:").unwrap();
+        db.run(|c| {
+            c.execute(
+                "INSERT INTO candidates(id,scope,key,value,category,source_id,evidence,expected_revision,status,created_at,expires_at,resolved_at)
+                 VALUES('health-c','proj','health-key','health-value','fact','test','{}',0,'approved','2026-01-01T00:00:00Z',4102444800,'2026-01-01T00:00:00Z')",
+                [],
+            )?;
+            c.execute(
+                "INSERT INTO memories(id,scope,key,value,category,status,revision,candidate_id,created_at,updated_at)
+                 VALUES('health-m','proj','health-key','health-value','fact','active',1,'health-c','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
+                [],
+            )?;
+            Ok(())
+        }).await.unwrap();
+        db.record_memory_health_baseline().await.unwrap();
+        let healthy = db.memory_health().await.unwrap();
+        assert_eq!(healthy["previous_memory_baseline"], 1);
+        assert_eq!(healthy["status"], "OK");
+
+        db.run(|c| {
+            c.execute("DELETE FROM memories WHERE id='health-m'", [])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+        let reset = db.memory_health().await.unwrap();
+        assert_eq!(reset["memories"], 0);
+        assert_eq!(reset["previous_memory_baseline"], 1);
+        assert_eq!(reset["status"], "MEMORY_RESET_DETECTED");
+    }
+
+    #[tokio::test]
+    async fn continuation_is_shared_across_agents_and_refuses_cross_session_relink() {
+        let db = DbStore::init(":memory:").unwrap();
+        db.run(|c| {
+            c.execute("INSERT INTO sessions(id,scope,created_at,title) VALUES('s-cont','proj','2026-01-01T00:00:00Z','P20'),('s-other','proj','2026-01-01T00:00:00Z','Other')", [])?;
+            c.execute("INSERT INTO messages(id,session_id,role,content,status,created_at) VALUES('r-cont','s-cont','user','Implement P20 reliability','complete','2026-01-01T00:00:01Z')", [])?;
+            c.execute("INSERT INTO chat_receipts(request_id,session_id,scope,model,signature,redacted,state,error_code,captured_at,updated_at) VALUES('r-cont','s-cont','proj','test','sig',0,'failed','blocked_test','2026-01-01T00:00:01Z','2026-01-01T00:00:02Z')", [])?;
+            c.execute("INSERT INTO turn_steps(id,request_id,seq,kind,status,tool_name,output_bytes,truncated,started_at,finished_at) VALUES('step-cont','r-cont',1,'tool_call','complete','write',0,0,'2026-01-01T00:00:01Z','2026-01-01T00:00:02Z')", [])?;
+            c.execute("INSERT INTO file_changes(id,request_id,step_id,path,action,diff,applied,created_at) VALUES('change-cont','r-cont','step-cont','src/storage.rs','modify','diff',1,'2026-01-01T00:00:02Z')", [])?;
+            c.execute("INSERT INTO plan_items(id,session_id,seq,text,status,updated_at) VALUES('plan-1','s-cont',1,'Verify deployment','failed','2026-01-01T00:00:03Z')", [])?;
+            for (cid, mid, key, value, category) in [
+                ("c-decision","m-decision","architecture","Harness is shared memory","decision"),
+                ("c-preference","m-preference","workflow","verify before push","preference"),
+            ] {
+                c.execute(
+                    "INSERT INTO candidates(id,scope,key,value,category,source_id,evidence,expected_revision,status,created_at,expires_at,resolved_at)
+                     VALUES(?1,'proj',?2,?3,?4,'test','{}',0,'approved','2026-01-01T00:00:00Z',4102444800,'2026-01-01T00:00:00Z')",
+                    params![cid,key,value,category],
+                )?;
+                c.execute(
+                    "INSERT INTO memories(id,scope,key,value,category,status,revision,candidate_id,created_at,updated_at)
+                     VALUES(?1,'proj',?2,?3,?4,'active',1,?5,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
+                    params![mid,key,value,category,cid],
+                )?;
+            }
+            c.execute(
+                "INSERT INTO candidates(id,scope,key,value,category,source_id,evidence,expected_revision,status,created_at,expires_at,resolved_at)
+                 VALUES('c-conflict','proj','architecture','Conflicting architecture','decision','test','{}',0,'conflict','2026-01-01T00:00:04Z',4102444800,'2026-01-01T00:00:04Z')",
+                [],
+            )?;
+            Ok(())
+        }).await.unwrap();
+
+        let gpt = db
+            .continuation_context("s-cont".into(), "gpt".into(), "gpt-session".into())
+            .await
+            .unwrap();
+        let claude = db
+            .continuation_context("s-cont".into(), "claude".into(), "claude-session".into())
+            .await
+            .unwrap();
+        let codex = db
+            .continuation_context("s-cont".into(), "codex".into(), "codex-session".into())
+            .await
+            .unwrap();
+        assert_eq!(gpt["format_version"], 1);
+        assert_eq!(gpt["agent_independent"], true);
+        assert_eq!(gpt["current_task"]["content"], "Implement P20 reliability");
+        assert_eq!(gpt["decisions"].as_array().unwrap().len(), 1);
+        assert_eq!(gpt["preferences"].as_array().unwrap().len(), 1);
+        assert_eq!(gpt["files_changed"].as_array().unwrap().len(), 1);
+        assert_eq!(gpt["conflicts"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            gpt["shared_project_memory"],
+            claude["shared_project_memory"]
+        );
+        assert_eq!(gpt["shared_project_memory"], codex["shared_project_memory"]);
+        assert_eq!(codex["linked_agents"].as_array().unwrap().len(), 3);
+        let relink = db
+            .continuation_context("s-other".into(), "gpt".into(), "gpt-session".into())
+            .await
+            .unwrap_err();
+        assert!(relink.to_string().contains("different Harness session"));
+        assert_eq!(
+            count(&db, "SELECT count(*) FROM agent_session_links").await,
+            3
+        );
+    }
+
     /// P11-T04's readiness projection is what an operator actually reads, and now that the
     /// duplicate Rust retention surface is retired, `scripts/maintenance.py` is the only writer
     /// of `maintenance_runs`. This proves the projection reports, per action, what that writer
@@ -1298,7 +1557,7 @@ mod tests {
         let db = DbStore::init(":memory:").unwrap();
         seed_retention_fixture(&db).await;
         let readiness = db.readiness().await.unwrap();
-        assert_eq!(readiness["schema_version"], 22);
+        assert_eq!(readiness["schema_version"], CURRENT_DATABASE_SCHEMA_VERSION);
         assert_eq!(readiness["ready"], true);
         assert!(
             readiness["maintenance"]["last_retention_at"].is_null(),

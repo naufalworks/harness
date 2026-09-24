@@ -420,8 +420,49 @@ async fn status(State(h): State<Harness>) -> ApiResult<Json<Value>> {
 async fn memory_health(State(h): State<Harness>) -> ApiResult<Json<Value>> {
     Ok(Json(h.store.memory_health().await.map_err(db_error)?))
 }
-async fn continuation_context(State(h): State<Harness>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
-    Ok(Json(h.store.continuation_context(id, "unknown-agent".into()).await.map_err(db_error)?))
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ContinuationQuery {
+    agent_id: String,
+    agent_session_id: String,
+}
+
+async fn continuation_context(
+    State(h): State<Harness>,
+    Path(id): Path<String>,
+    Query(query): Query<ContinuationQuery>,
+) -> ApiResult<Json<Value>> {
+    Uuid::parse_str(&id).map_err(|_| invalid("Invalid session identifier"))?;
+    if query.agent_id.is_empty()
+        || query.agent_id.len() > 64
+        || query.agent_id.chars().any(char::is_control)
+        || query.agent_session_id.is_empty()
+        || query.agent_session_id.len() > 128
+        || query.agent_session_id.chars().any(char::is_control)
+    {
+        return Err(invalid("Invalid agent identity"));
+    }
+    let value = match h
+        .store
+        .continuation_context(id, query.agent_id, query.agent_session_id)
+        .await
+    {
+        Ok(value) => value,
+        Err(err) if err.to_string() == "unknown session" => {
+            return Err(ApiError(StatusCode::NOT_FOUND, "Session not found"))
+        }
+        Err(err)
+            if err.to_string()
+                == "agent session is already linked to a different Harness session" =>
+        {
+            return Err(ApiError(
+                StatusCode::CONFLICT,
+                "Agent session is already linked to a different Harness session",
+            ))
+        }
+        Err(err) => return Err(db_error(err)),
+    };
+    Ok(Json(value))
 }
 async fn health(State(h): State<Harness>) -> Response {
     let recording = h.workers.recording.load(Ordering::Acquire);
