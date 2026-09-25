@@ -75,23 +75,23 @@ class UiCoverageContract(unittest.TestCase):
                         "UI surface marker no longer exists",
                     )
 
-    def test_configuration_gaps_are_not_mislabelled_complete(self) -> None:
+    def test_configuration_coverage_matches_current_ui(self) -> None:
         groups = self.matrix["groups"]
         classified = {
             op: group
             for group in groups
             for op in group["operations"]
         }
-        for op in (
-            "GET /models",
-            "GET /config",
-            "POST /config",
-            "GET /scopes/{scope}",
-            "POST /scopes/{scope}",
-        ):
+        for op in ("GET /models", "GET /config", "POST /config"):
+            with self.subTest(operation=op):
+                self.assertEqual(classified[op]["status"], "ui_supported")
+                self.assertEqual(classified[op]["anchor"], "settingsform")
+        for op in ("GET /scopes/{scope}", "POST /scopes/{scope}"):
             with self.subTest(operation=op):
                 self.assertEqual(classified[op]["status"], "ui_partial")
         self.assertIn("id=\"loadmodels\"", self.index)
+        self.assertIn("id=\"provider-model-options\"", self.index)
+        self.assertIn("id=\"mainmodel-origin\"", self.index)
         self.assertIn("id=\"rootpath\"", self.index)
         self.assertIn("id=\"p21-capabilities\"", self.index)
         self.assertIn("Not yet available in the UI", self.index)

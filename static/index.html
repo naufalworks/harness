@@ -278,12 +278,30 @@
             </form>
           </section>
           <form id="settingsform" class="panel">
-            <label for="mainmodel">Main model</label>
-            <input id="mainmodel" maxlength="128" placeholder="Use server default">
-            <label for="extractmodel">Extraction model</label>
-            <input id="extractmodel" maxlength="128" placeholder="Use server default">
-            <label for="verificationmodel">Verification model</label>
-            <input id="verificationmodel" maxlength="128" placeholder="Use main model">
+            <div class="sectionhead compact">
+              <div>
+                <h3>Model roles</h3>
+                <p class="muted small">Suggestions come only from the selected provider's <code>/models</code>. You can always type an exact manual model ID; changing provider never changes a saved role automatically.</p>
+              </div>
+              <button id="loadmodels" class="secondary" type="button">Refresh models</button>
+            </div>
+            <p id="model-discovery-status" class="muted small" role="status" aria-live="polite">Open this view to discover models.</p>
+            <datalist id="provider-model-options"></datalist>
+            <div class="model-role">
+              <label for="mainmodel">Main model</label>
+              <input id="mainmodel" list="provider-model-options" maxlength="128" placeholder="Use server default or type exact model ID" spellcheck="false" autocomplete="off">
+              <span id="mainmodel-origin" class="muted small">Manual/default</span>
+            </div>
+            <div class="model-role">
+              <label for="extractmodel">Extraction model</label>
+              <input id="extractmodel" list="provider-model-options" maxlength="128" placeholder="Use server default or type exact model ID" spellcheck="false" autocomplete="off">
+              <span id="extractmodel-origin" class="muted small">Manual/default</span>
+            </div>
+            <div class="model-role">
+              <label for="verificationmodel">Verification model</label>
+              <input id="verificationmodel" list="provider-model-options" maxlength="128" placeholder="Use main model or type exact model ID" spellcheck="false" autocomplete="off">
+              <span id="verificationmodel-origin" class="muted small">Manual/default</span>
+            </div>
             <button type="submit">Save models</button>
           </form>
           <form id="projectform" class="panel">
@@ -306,8 +324,7 @@
             </div>
             <button type="submit">Save project settings</button>
           </form>
-          <button id="loadmodels" class="secondary" type="button">Show provider model names</button>
-          <pre id="modelnames"></pre>
+          <pre id="modelnames" hidden></pre>
         </div>
       </section>
     </main>

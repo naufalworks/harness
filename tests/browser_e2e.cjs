@@ -18,8 +18,13 @@ async function waitFor(fn, timeout = 30000, label = 'condition') { const end = D
 function jsonResponse(res, status, body) { const bytes = Buffer.from(JSON.stringify(body)); res.writeHead(status, { 'content-type': 'application/json', 'content-length': bytes.length }); res.end(bytes); }
 function startProvider() {
   const calls = [];
+  let modelMode = 'available';
   const server = http.createServer((req, res) => {
-    if (req.method === 'GET' && req.url === '/v1/models') return jsonResponse(res, 200, { data: [{ id: 'e2e-model' }] });
+    if (req.method === 'GET' && req.url === '/v1/models') {
+      if (modelMode === 'empty') return jsonResponse(res, 200, { data: [] });
+      if (modelMode === 'unauthorized') return jsonResponse(res, 401, { error: 'synthetic refusal' });
+      return jsonResponse(res, 200, { data: [{ id: 'e2e-model' }, { id: 'e2e-model-alt' }] });
+    }
     if (req.method !== 'POST' || req.url !== '/v1/chat/completions') return jsonResponse(res, 404, { error: 'not found' });
     let body = ''; req.on('data', chunk => { body += chunk; }); req.on('end', () => {
       const payload = JSON.parse(body); calls.push(payload); const tools = (payload.messages || []).filter(message => message.role === 'tool'); let reply;
@@ -30,7 +35,7 @@ function startProvider() {
       jsonResponse(res, 200, { choices: [{ message: reply }], usage: { prompt_tokens: 11, completion_tokens: 7 } });
     });
   });
-  return new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve({ server, calls, port: server.address().port })));
+  return new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve({ server, calls, port: server.address().port, setModelMode: mode => { modelMode = mode; } })));
 }
 function launch(command, env, cwd = root) { const child = spawn(command, [], { cwd, env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] }); let stdout = '', stderr = ''; child.stdout.on('data', chunk => { stdout += chunk; }); child.stderr.on('data', chunk => { stderr += chunk; }); child.diagnostics = () => `stdout:\n${stdout}\nstderr:\n${stderr}`; return child; }
 function querySqlite(db, query) { return execFileSync('python3', ['-c', 'import json,sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.row_factory=sqlite3.Row; print(json.dumps([dict(r) for r in c.execute(sys.argv[2])]))', db, query]).toString(); }
@@ -46,6 +51,14 @@ async function main() {
     browser = await chromium.launch({ headless: true, executablePath: process.env.CHROMIUM_PATH || chromium.executablePath(), args: ['--no-sandbox'] }); page = await browser.newPage({ viewport: { width: 1280, height: 900 } }); const pageErrors = []; page.on('pageerror', error => pageErrors.push(String(error)));
     await page.goto(`http://127.0.0.1:${appPort}/`); await page.fill('#token', token); await page.click('#authform button'); await page.waitForFunction(() => !document.querySelector('#workspace').hidden);
     await page.click('[data-view="settings"]'); await page.waitForFunction(() => document.querySelector('#provider-list')?.textContent.includes('environment'));
+    await page.waitForFunction(() => document.querySelector('#model-discovery-status')?.textContent.includes('discovered model ID'));
+    assert.strictEqual(await page.locator('#mainmodel').inputValue(), '', 'blank role means use the server default');
+    assert.strictEqual(await page.locator('#mainmodel-origin').innerText(), 'Default/fallback');
+    assert.strictEqual(await page.locator('#provider-model-options option').count(), 2);
+    assert((await page.locator('#model-discovery-status').innerText()).includes('does not prove generation'));
+    await page.fill('#mainmodel', 'e2e-model');
+    assert.strictEqual(await page.locator('#mainmodel-origin').innerText(), 'Discovered exact ID');
+    await page.click('#settingsform button[type="submit"]'); await page.waitForFunction(() => document.querySelector('#notice')?.textContent.includes('Model settings saved'));
     const uiProviderKey = 'e2e-ui-provider-key';
     await page.click('#provider-add'); await page.fill('#providerid', 'e2e-custom'); await page.fill('#providerbaseurl', `http://127.0.0.1:${provider.port}/v1`); await page.fill('#providerkey', uiProviderKey); await page.click('#provider-save');
     await page.waitForFunction(() => document.querySelector('#provider-list')?.textContent.includes('e2e-custom'));
@@ -55,6 +68,15 @@ async function main() {
     const publicProviders = await fetch(`http://127.0.0.1:${appPort}/providers`, { headers: { Authorization: `Bearer ${token}` } }).then(r => r.text()); assert(!publicProviders.includes(uiProviderKey));
     let customCard = page.locator('.provider-card').filter({hasText:'e2e-custom'}); await customCard.getByRole('button', {name:'Edit'}).click(); assert.strictEqual(await page.locator('#providerkey').inputValue(), ''); await page.click('#provider-save');
     customCard = page.locator('.provider-card').filter({hasText:'e2e-custom'}); await customCard.getByRole('button', {name:'Test discovery'}).click(); await page.waitForFunction(() => document.querySelector('#provider-status')?.textContent.includes('discovery available')); await customCard.getByRole('button', {name:'Select'}).click(); await page.waitForFunction(() => document.querySelector('#provider-status')?.textContent.includes('Selected provider: e2e-custom'));
+    await page.waitForFunction(() => document.querySelector('#model-discovery-status')?.textContent.startsWith('e2e-custom:'));
+    assert.strictEqual(await page.locator('#mainmodel').inputValue(), 'e2e-model', 'provider selection must not silently reassign model roles');
+    provider.setModelMode('empty'); await page.click('#loadmodels'); await page.waitForFunction(() => document.querySelector('#model-discovery-status')?.textContent.includes('discovery is empty'));
+    await page.fill('#mainmodel', 'manual-e2e-model'); assert.strictEqual(await page.locator('#mainmodel-origin').innerText(), 'Manual exact ID');
+    await page.click('#settingsform button[type="submit"]'); await page.waitForFunction(() => document.querySelector('#notice')?.textContent.includes('Model settings saved'));
+    provider.setModelMode('unauthorized'); await page.click('#loadmodels'); await page.waitForFunction(() => document.querySelector('#model-discovery-status')?.textContent.includes('discovery unavailable'));
+    assert.strictEqual(await page.locator('#mainmodel').inputValue(), 'manual-e2e-model', 'discovery failure must preserve the manual role');
+    provider.setModelMode('available'); await page.click('#loadmodels'); await page.waitForFunction(() => document.querySelector('#model-discovery-status')?.textContent.includes('discovered model ID'));
+    assert.strictEqual(await page.locator('#mainmodel-origin').innerText(), 'Manual exact ID');
     let environmentCard = page.locator('.provider-card').filter({hasText:'environment'}); await environmentCard.getByRole('button', {name:'Select'}).click(); customCard = page.locator('.provider-card').filter({hasText:'e2e-custom'}); page.once('dialog', dialog => dialog.accept()); await customCard.getByRole('button', {name:'Delete'}).click(); await page.waitForFunction(() => !document.querySelector('#provider-list')?.textContent.includes('e2e-custom'));
     const providerStore = path.join(dbDir, '.harness', 'providers.json'); assert(fs.existsSync(providerStore)); const providerStoreText = fs.readFileSync(providerStore, 'utf8'); assert(providerStoreText.includes(uiProviderKey), 'synthetic secret should exist only in the private version history store'); assert(!fs.readFileSync(db).includes(Buffer.from(uiProviderKey)), 'provider secret must not be stored in SQLite');
     await page.fill('#rootpath', project); await page.selectOption('#permissionmode', 'ask'); await page.fill('#diagnosticscmd', 'grep -q gamma notes.md'); await page.click('#projectform button[type="submit"]'); await page.waitForTimeout(1000); const savedState = await page.evaluate(() => ({ notice: document.querySelector('#notice').textContent, root: document.querySelector('#rootpath').value })); assert(savedState.notice.includes('saved'), JSON.stringify(savedState)); assert.strictEqual(savedState.root, project);

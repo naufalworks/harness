@@ -91,10 +91,10 @@
       ]
     },
     {
-      "status": "ui_partial",
-      "surface": "model settings",
-      "anchor": "view-settings",
-      "detail": "One startup-configured provider; /models is shown as text and model roles are typed manually. No runtime custom provider editor or model picker (P21-T02\u2013T05).",
+      "status": "ui_supported",
+      "surface": "model roles",
+      "anchor": "settingsform",
+      "detail": "Model roles load exact IDs only from the selected provider's /models response, expose accessible suggestions for main/extraction/verification, keep manual exact IDs as an explicit fallback for empty/error discovery, preserve configured role values across provider switches, and never infer model capabilities from discovery.",
       "operations": [
         "GET /config",
         "POST /config",

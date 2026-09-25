@@ -1,6 +1,6 @@
 # P21 — UI control center and configuration coverage
 
-Status: implementation in progress. P21-T01 through P21-T04 are implemented; later
+Status: implementation in progress. P21-T01 through P21-T05 are implemented; later
 tasks remain gated by the task ledger and final P21-T10 release verification.
 
 ## Goal
@@ -138,8 +138,20 @@ Discovery deliberately reports generation, tools, streaming and usage as
 `untested`; a model-list response is not a capability probe. The existing
 runtime tools-unsupported fallback and spend/effect guards remain authoritative
 when real turns execute. The response also declares manual model IDs allowed,
-which P21-T05 will expose as the explicit UI fallback when discovery is empty
+which P21-T05 exposes as the explicit UI fallback when discovery is empty
 or unavailable.
+
+### P21-T05 provider-scoped model roles
+
+The Model roles panel now loads exact IDs from the currently selected provider
+and offers them as browser-native searchable suggestions for the main,
+extraction, and verification fields. The currently configured value is never
+silently replaced: switching providers refreshes discovery only, and a value
+that is not in the refreshed list is labeled as a manual exact ID. Empty,
+unauthorized, timeout/network and other unavailable discovery states keep the
+typed value intact and explicitly retain manual fallback. A successful model
+list remains discovery evidence only and the UI states that generation, tools,
+streaming, and usage are not thereby proven.
 
 - Load `/models` through the selected provider only. Show searchable selection
   for **main**, **extraction**, and **verification** roles; display exact model IDs,

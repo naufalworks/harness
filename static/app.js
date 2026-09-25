@@ -655,8 +655,9 @@ function renderProviders(data) {
         select.disabled = true;
         try {
           await api(`/providers/${encodeURIComponent(provider.id)}/select`, {});
-          providerStatus(`Selected ${String(provider.id)} for newly admitted work.`);
+          providerStatus(`Selected ${String(provider.id)} for newly admitted work. Existing model-role IDs were not changed.`);
           await loadProviders();
+          await loadModelDiscovery();
         } catch (error) { providerStatus(error.message, true); select.disabled = false; }
       });
       actions.append(select);
@@ -790,15 +791,91 @@ $('providerform').addEventListener('submit', async event => {
   } catch (error) { providerStatus(`Provider was not saved. ${error.message}`, true); }
   finally { $('provider-save').disabled = false; $('providerkey').value = ''; }
 });
-$('settingsform').addEventListener('submit', async event => { event.preventDefault(); try { await api('/config', { main: $('mainmodel').value.trim(), extraction: $('extractmodel').value.trim(), verification: $('verificationmodel').value.trim() }); notice('Model settings saved.'); } catch (error) { notice(error.message, true); } });
-$('loadmodels').addEventListener('click', async () => { try { const data = await api('/models'); $('modelnames').textContent = data.data.map(m => String(m.id)).join('\n'); } catch (error) { notice(error.message, true); } });
+const modelDiscoveryState = { providerId: null, status: 'unloaded', ids: new Set(), errorCode: null };
+function renderModelOrigins() {
+  for (const [inputId, originId] of [['mainmodel','mainmodel-origin'],['extractmodel','extractmodel-origin'],['verificationmodel','verificationmodel-origin']]) {
+    const value = $(inputId).value.trim();
+    let label = 'Default/fallback';
+    if (value) label = modelDiscoveryState.ids.has(value) ? 'Discovered exact ID' : 'Manual exact ID';
+    $(originId).textContent = label;
+  }
+}
+function renderModelDiscovery(data) {
+  const options = $('provider-model-options');
+  options.replaceChildren();
+  modelDiscoveryState.ids = new Set();
+  modelDiscoveryState.providerId = typeof data?.providerId === 'string' ? data.providerId : providerState.selected;
+  modelDiscoveryState.status = String(data?.discovery?.status || 'unavailable');
+  modelDiscoveryState.errorCode = typeof data?.discovery?.errorCode === 'string' ? data.discovery.errorCode : null;
+  const rows = Array.isArray(data?.data) ? data.data : [];
+  for (const row of rows) {
+    if (!row || typeof row.id !== 'string' || !row.id || row.id.length > 128 || /[\u0000-\u001f\u007f]/.test(row.id) || modelDiscoveryState.ids.has(row.id)) continue;
+    modelDiscoveryState.ids.add(row.id);
+    const option = document.createElement('option');
+    option.value = row.id;
+    options.append(option);
+  }
+  $('modelnames').textContent = [...modelDiscoveryState.ids].join('\n');
+  const provider = modelDiscoveryState.providerId || 'selected provider';
+  let message;
+  if (modelDiscoveryState.status === 'available' && modelDiscoveryState.ids.size) {
+    message = `${provider}: ${modelDiscoveryState.ids.size} discovered model ID${modelDiscoveryState.ids.size === 1 ? '' : 's'}. Choose a suggestion or type a manual exact ID. Discovery does not prove generation, tools, streaming, or usage support.`;
+  } else if (modelDiscoveryState.status === 'empty' || (modelDiscoveryState.status === 'available' && !modelDiscoveryState.ids.size)) {
+    message = `${provider}: model discovery is empty. Manual exact model IDs remain available; no role was changed.`;
+  } else {
+    const code = modelDiscoveryState.errorCode ? ` (${modelDiscoveryState.errorCode})` : '';
+    message = `${provider}: model discovery ${modelDiscoveryState.status}${code}. Manual exact model IDs remain available; no role was changed.`;
+  }
+  $('model-discovery-status').textContent = message;
+  $('model-discovery-status').classList.toggle('error', !['available','empty'].includes(modelDiscoveryState.status));
+  renderModelOrigins();
+}
+async function loadModelDiscovery() {
+  $('model-discovery-status').textContent = 'Loading model IDs from the selected provider…';
+  $('model-discovery-status').classList.remove('error');
+  try {
+    const data = await api('/models');
+    renderModelDiscovery(data);
+    return data;
+  } catch (error) {
+    modelDiscoveryState.providerId = providerState.selected;
+    modelDiscoveryState.status = 'unavailable';
+    modelDiscoveryState.errorCode = error?.code || null;
+    modelDiscoveryState.ids = new Set();
+    $('provider-model-options').replaceChildren();
+    $('modelnames').textContent = '';
+    $('model-discovery-status').textContent = `${providerState.selected || 'Selected provider'}: model discovery unavailable${error?.message ? ` — ${error.message}` : ''}. Manual exact model IDs remain available; no role was changed.`;
+    $('model-discovery-status').classList.add('error');
+    renderModelOrigins();
+    return null;
+  }
+}
+for (const id of ['mainmodel','extractmodel','verificationmodel']) $(id).addEventListener('input', renderModelOrigins);
+$('settingsform').addEventListener('submit', async event => {
+  event.preventDefault();
+  const values = { main: $('mainmodel').value.trim(), extraction: $('extractmodel').value.trim(), verification: $('verificationmodel').value.trim() };
+  if (Object.values(values).some(value => value.length > 128 || /[\u0000-\u001f\u007f]/.test(value))) return notice('Model IDs must be at most 128 characters and contain no control characters.', true);
+  try { await api('/config', values); notice('Model settings saved. Manual IDs are allowed even when discovery is unavailable.'); renderModelOrigins(); }
+  catch (error) { notice(error.message, true); }
+});
+$('loadmodels').addEventListener('click', () => loadModelDiscovery());
 $('refreshmemory').addEventListener('click', () => loadCandidates().catch(e => notice(e.message, true)));
 $('refreshjobs').addEventListener('click', () => loadJobs().catch(e => notice(e.message, true)));
 $('refreshprocesses').addEventListener('click', () => loadProcesses().catch(e => notice(e.message, true)));
 $('refreshgit').addEventListener('click', () => loadGitState().catch(e => notice(e.message, true)));
 for (const tab of document.querySelectorAll('[data-view]')) tab.addEventListener('click', async () => {
   for (const t of document.querySelectorAll('[data-view]')) { const active = t === tab; t.classList.toggle('active', active); t.setAttribute('aria-pressed', String(active)); $(`view-${t.dataset.view}`).hidden = !active; }
-  try { if (tab.dataset.view === 'memory') await loadCandidates(); if (tab.dataset.view === 'imports') { await loadJobs(); await loadProcesses(); await loadGitState(); } if (tab.dataset.view === 'settings') { const [data] = await Promise.all([api('/config'), loadProviders()]); $('mainmodel').value = data.main || ''; $('extractmodel').value = data.extraction || ''; $('verificationmodel').value = data.verification || ''; } } catch (error) { notice(error.message, true); }
+  try {
+    if (tab.dataset.view === 'memory') await loadCandidates();
+    if (tab.dataset.view === 'imports') { await loadJobs(); await loadProcesses(); await loadGitState(); }
+    if (tab.dataset.view === 'settings') {
+      const data = await api('/config');
+      $('mainmodel').value = data.main || ''; $('extractmodel').value = data.extraction || ''; $('verificationmodel').value = data.verification || '';
+      await loadProviders();
+      await loadModelDiscovery();
+      renderModelOrigins();
+    }
+  } catch (error) { notice(error.message, true); }
 });
 // P11-T05: the two always-on clocks are now one tick, installed at the end of this file.
 

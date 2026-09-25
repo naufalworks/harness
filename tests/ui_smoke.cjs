@@ -7,7 +7,7 @@ const root=path.resolve(__dirname,'..');const out=process.env.QA_DIR || path.joi
  try{
   const page=await browser.newPage({viewport:{width:1120,height:900},colorScheme:'light'});const errors=[];page.on('pageerror',e=>errors.push(String(e)));
   let importCandidate=true,inlineCandidate=true,inlineData=null,failConfirm=false,chatHistory=[],receipt=null,importCalls=0,retryCalls=0,reverts=0,editCalls=0,savedConfig=null,previewCalls=0;
-  let selectedProvider='environment',providerSecret=null,providerPosts=[];
+  let selectedProvider='environment',providerSecret=null,providerPosts=[],modelDiscoveryMode='available';
   const providerRows=()=>[
    {id:'environment',baseUrl:'https://startup.example/v1',api:'openai-completions',discovery:{type:'proxy'},version:1,selected:selectedProvider==='environment',keyPresent:true,source:'environment'},
    ...(providerSecret===null?[]:[{id:'ui-provider',baseUrl:'https://api.example.com/v1',api:'openai-completions',discovery:{type:'proxy'},version:providerPosts.length,selected:selectedProvider==='ui-provider',keyPresent:true,source:'saved'}])
@@ -133,10 +133,17 @@ const root=path.resolve(__dirname,'..');const out=process.env.QA_DIR || path.joi
    else if(p==='/providers/ui-provider/select'){selectedProvider='ui-provider';result={status:'selected',providerId:'ui-provider',version:providerPosts.length};}
    else if(p==='/providers/ui-provider'&&req.method()==='DELETE'){providerSecret=null;selectedProvider='environment';result={status:'deleted'};}
    else if(p==='/config'){
-    if(req.method()==='GET')result={main:'synthetic-main',extraction:'synthetic-small',verification:'synthetic-verifier'};
+    if(req.method()==='GET')result=savedConfig||{main:'synthetic-main',extraction:'synthetic-small',verification:'synthetic-verifier'};
     else {savedConfig=JSON.parse(req.postData());result={status:'saved'};}
    }
-   else if(p==='/models')result={data:[{id:malicious},{id:'synthetic-main'}]};
+   else if(p==='/models'){
+    if(modelDiscoveryMode==='unauthorized')return route.fulfill({status:401,json:{error:'Provider refused model discovery',code:'unauthorized',retryable:false}});
+    const ids=selectedProvider==='ui-provider'?['ui-main','ui-small']:['synthetic-main','synthetic-small','synthetic-verifier',malicious];
+    if(modelDiscoveryMode==='empty')result={providerId:selectedProvider,version:1,connectionStatus:'reached_provider',discovery:{type:'proxy',status:'empty',errorCode:null,modelCount:0},capabilities:{generation:{status:'untested'},tools:{status:'untested'},streaming:{status:'untested'},usage:{status:'untested'}},manualModelIdAllowed:true,data:[]};
+    else if(modelDiscoveryMode==='timeout')result={providerId:selectedProvider,version:1,connectionStatus:'unreachable',discovery:{type:'proxy',status:'timeout',errorCode:'timeout',modelCount:0},capabilities:{generation:{status:'untested'},tools:{status:'untested'},streaming:{status:'untested'},usage:{status:'untested'}},manualModelIdAllowed:true,data:[]};
+    else if(modelDiscoveryMode==='network')result={providerId:selectedProvider,version:1,connectionStatus:'unreachable',discovery:{type:'proxy',status:'network_error',errorCode:'network_error',modelCount:0},capabilities:{generation:{status:'untested'},tools:{status:'untested'},streaming:{status:'untested'},usage:{status:'untested'}},manualModelIdAllowed:true,data:[]};
+    else result={providerId:selectedProvider,version:1,connectionStatus:'reached_provider',discovery:{type:'proxy',status:'available',errorCode:null,modelCount:ids.length},capabilities:{generation:{status:'untested'},tools:{status:'untested'},streaming:{status:'untested'},usage:{status:'untested'}},manualModelIdAllowed:true,data:ids.map(id=>({id}))};
+   }
    else if(p==='/history/search'){historySearches++;result={format_version:1,scope:u.searchParams.get('scope'),session_id:u.searchParams.get('session_id'),kind:u.searchParams.get('kind'),query:u.searchParams.get('q'),hits:1,results:[historyHit('doc-live')],returned:1,suppressed:1,limit:50,sanitizer:'harness-sanitize-v1',note:'Only sanitized, not-forgotten, not-source-deleted documents are searched.'};}
    else if(p==='/history/index'){indexCalls++;result={format_version:1,indexed:1,revision_advanced:0,unchanged:3,refused:[],sanitizer:'harness-sanitize-v1'};}
    else if(p.startsWith('/history/documents/')&&p.endsWith('/privacy')){
@@ -250,6 +257,11 @@ const root=path.resolve(__dirname,'..');const out=process.env.QA_DIR || path.joi
   await page.check('#consent');await page.click('#importbutton');await page.waitForFunction(()=>document.getElementById('notice').textContent.includes('Queued 2'));assert.strictEqual(importCalls,1);
   await page.click('[data-view="settings"]');await page.waitForFunction(()=>document.getElementById('mainmodel').value==='synthetic-main');
   await page.waitForFunction(()=>document.querySelector('#provider-list')?.textContent.includes('environment'));
+  await page.waitForFunction(()=>document.querySelector('#model-discovery-status')?.textContent.includes('discovered model ID'));
+  assert.strictEqual(await page.locator('#mainmodel-origin').innerText(),'Discovered exact ID');
+  assert.strictEqual(await page.locator('#verificationmodel-origin').innerText(),'Discovered exact ID');
+  assert.strictEqual(await page.locator('#provider-model-options option').count(),4);
+  assert((await page.locator('#model-discovery-status').innerText()).includes('does not prove generation'));
   assert(!(await page.locator('#provider-list').innerText()).includes('synthetic-ui-secret'),'provider list must never display provider secrets');
   await page.click('#provider-add');
   await page.locator('.provider-paste>summary').click();
@@ -277,9 +289,15 @@ const root=path.resolve(__dirname,'..');const out=process.env.QA_DIR || path.joi
   assert((await page.locator('#provider-status').innerText()).includes('remain untested'));
   await savedCard.getByRole('button',{name:'Select'}).click();
   await page.waitForFunction(()=>document.querySelector('#provider-status')?.textContent.includes('Selected provider: ui-provider'));
+  await page.waitForFunction(()=>document.querySelector('#model-discovery-status')?.textContent.startsWith('ui-provider:'));
+  assert.strictEqual(await page.locator('#mainmodel').inputValue(),'synthetic-main','provider switch must not silently replace role IDs');
+  assert.strictEqual(await page.locator('#mainmodel-origin').innerText(),'Manual exact ID','old provider model becomes explicit manual ID on the new provider');
   assert(await page.locator('.provider-card').filter({hasText:'ui-provider'}).getByRole('button',{name:'Delete'}).isDisabled(),'selected provider cannot be deleted from UI');
   const envCard=page.locator('.provider-card').filter({hasText:'environment'});
   await envCard.getByRole('button',{name:'Select'}).click();
+  await page.waitForFunction(()=>document.querySelector('#model-discovery-status')?.textContent.startsWith('environment:'));
+  assert.strictEqual(await page.locator('#mainmodel').inputValue(),'synthetic-main');
+  assert.strictEqual(await page.locator('#mainmodel-origin').innerText(),'Discovered exact ID');
   const removable=page.locator('.provider-card').filter({hasText:'ui-provider'});
   page.once('dialog',dialog=>dialog.accept());
   await removable.getByRole('button',{name:'Delete'}).click();
@@ -291,10 +309,23 @@ const root=path.resolve(__dirname,'..');const out=process.env.QA_DIR || path.joi
   assert((await page.locator('#provider-status').innerText()).includes('unsupported field'));
   await page.click('#provider-cancel');
   assert.strictEqual(await page.locator('#verificationmodel').inputValue(),'synthetic-verifier');
+  modelDiscoveryMode='empty';await page.click('#loadmodels');await page.waitForFunction(()=>document.querySelector('#model-discovery-status')?.textContent.includes('discovery is empty'));
+  await page.fill('#mainmodel','manual-main-id');assert.strictEqual(await page.locator('#mainmodel-origin').innerText(),'Manual exact ID');
+  modelDiscoveryMode='timeout';await page.click('#loadmodels');await page.waitForFunction(()=>document.querySelector('#model-discovery-status')?.textContent.includes('discovery timeout'));
+  assert.strictEqual(await page.locator('#mainmodel').inputValue(),'manual-main-id');
+  modelDiscoveryMode='network';await page.click('#loadmodels');await page.waitForFunction(()=>document.querySelector('#model-discovery-status')?.textContent.includes('network_error'));
+  assert.strictEqual(await page.locator('#mainmodel').inputValue(),'manual-main-id');
+  modelDiscoveryMode='unauthorized';await page.click('#loadmodels');await page.waitForFunction(()=>document.querySelector('#model-discovery-status')?.textContent.includes('discovery unavailable'));
+  assert.strictEqual(await page.locator('#mainmodel').inputValue(),'manual-main-id');
+  modelDiscoveryMode='available';await page.click('#loadmodels');await page.waitForFunction(()=>document.querySelector('#model-discovery-status')?.textContent.includes('discovered model ID'));
+  assert.strictEqual(await page.locator('#mainmodel-origin').innerText(),'Manual exact ID');
   await page.fill('#verificationmodel','synthetic-verifier-2');await page.click('#settingsform button[type="submit"]');
   await page.waitForFunction(()=>document.getElementById('notice').textContent.includes('Model settings saved'));
   assert.strictEqual(savedConfig.verification,'synthetic-verifier-2');
-  await page.click('#loadmodels');await page.waitForFunction(()=>document.getElementById('modelnames').textContent.includes('onerror'));
+  assert.strictEqual(savedConfig.main,'manual-main-id');
+  await page.click('[data-view="chat"]');await page.click('[data-view="settings"]');await page.waitForFunction(()=>document.getElementById('mainmodel').value==='manual-main-id');
+  assert.strictEqual(await page.locator('#mainmodel-origin').innerText(),'Manual exact ID','manual role survives settings reload');
+  assert((await page.locator('#modelnames').textContent()).includes('onerror'));
   assert.strictEqual(await page.locator('#modelnames img').count(),0);await shot('settings-desktop');
   // ---------------- P16-T01: incident search, timeline and expansion ----------------
   await page.click('[data-view="chat"]');

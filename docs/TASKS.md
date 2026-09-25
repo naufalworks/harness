@@ -1668,7 +1668,7 @@ P20's schema/memory and P19's truthful transcript boundaries.
 - result-verify: Both mocked Chromium suites pass the provider editor, hostile-text, storage and lock/reset checks. The real browser→Axum test creates/edits/tests/selects/deletes a provider against a loopback mock in an isolated temporary working directory, proves the synthetic key is absent from GET responses/browser storage/SQLite, and preserves the existing tool/permission workflow. Failure-path E2E also passes denial, crash recovery, cancellation/safe retry and unsafe-retry refusal after isolating each test's private provider store.
 
 ### P21-T05 · Select main, extraction and verification models from /models
-- status: todo
+- status: done
 - priority: high
 - lane: model-ui
 - parallel: no
@@ -1677,6 +1677,8 @@ P20's schema/memory and P19's truthful transcript boundaries.
 - files: static/index.html, static/app.js, static/api.js, src/api/, src/storage/config.rs, tests/
 - done-when: model roles use accessible searchable provider-scoped model selectors fed by /models with exact IDs, loading/error/empty states, and a clearly labeled manual-ID option. Changing provider requires explicit role reassignment; old sessions and in-flight turns retain their pinned provider/model, and missing tool support keeps the existing safe fallback.
 - verify: bash scripts/verify_browser.sh && bash scripts/verify_e2e.sh
+- result: Replaced the text-only model list with three provider-scoped role controls using exact /models IDs as searchable suggestions while keeping manual exact IDs valid. Discovery state is explicit for available, empty and failure cases, provider switches refresh suggestions without changing saved roles, and each field labels whether its current value is discovered, manual, or default/fallback. The UI continues to state that model discovery proves no generation/tool/streaming/usage capability.
+- result-verify: Mocked Chromium covers available/empty/timeout/network/unauthorized discovery, provider switching, manual fallback, hostile model IDs and reload. Real browser-to-Axum E2E covers selected-provider discovery, provider switching without role reassignment, explicit manual fallback through empty/unauthorized discovery, persisted /config reload, and the existing provider/tool workflow. The browser and E2E verification scripts pass with the repository Cargo toolchain on PATH.
 
 ### P21-T06 · Authorized server-side project directory browser
 - status: todo
