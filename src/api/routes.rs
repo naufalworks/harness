@@ -525,14 +525,9 @@ async fn set_config(
     Ok(Json(json!({"status":"saved"})))
 }
 async fn models(State(h): State<Harness>) -> ApiResult<Json<Value>> {
-    let agents = h
-        .providers
-        .selected_agents()
-        .await
-        .map_err(|_| ApiError(StatusCode::BAD_GATEWAY, "Unable to load provider models"))?;
-    Ok(Json(agents.list_models().await.map_err(|_| {
-        ApiError(StatusCode::BAD_GATEWAY, "Unable to load provider models")
-    })?))
+    Ok(Json(h.providers.selected_model_discovery().await.map_err(
+        |_| ApiError(StatusCode::BAD_GATEWAY, "Unable to load provider models"),
+    )?))
 }
 async fn provider_profiles(State(h): State<Harness>) -> ApiResult<Json<Value>> {
     Ok(Json(h.providers.public_state().map_err(|_| {
@@ -572,7 +567,7 @@ async fn select_provider(
 }
 async fn test_provider(State(h): State<Harness>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
     Ok(Json(h.providers.test_provider(&id).await.map_err(
-        |_| ApiError(StatusCode::BAD_GATEWAY, "Provider connection test failed"),
+        |_| ApiError(StatusCode::BAD_REQUEST, "Provider could not be tested"),
     )?))
 }
 async fn delete_provider(

@@ -164,7 +164,10 @@ class Contracts(unittest.TestCase):
 ADAPTER=_implementation_only((ROOT/'src/memory_agents.rs').read_text())
 # Read-only provider reads are exempt: replaying them cannot create, charge or deliver
 # anything, and they hold no spend reservation to key an effect record on.
-EXEMPT_DISPATCH={'list_models':'GET /models is a read; replaying it has no external effect'}
+EXEMPT_DISPATCH={
+    'discover_models':
+        'GET /models is a bounded read-only capability probe; replaying it cannot create, charge, or deliver user-visible work'
+}
 def _adapter_functions(text):
     starts=[(m.start(),m.group(1)) for m in re.finditer(r'\n    (?:pub )?(?:async )?fn (\w+)',text)]
     for index,(offset,name) in enumerate(starts):

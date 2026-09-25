@@ -165,8 +165,17 @@ async fn connection_test_uses_bearer_key_and_does_not_follow_redirects() {
         .await
         .unwrap();
     let result = registry.test_provider("mock").await.unwrap();
-    assert_eq!(result["status"], "reachable");
-    assert_eq!(result["modelCount"], 1);
+    assert_eq!(result["connectionStatus"], "reached_provider");
+    assert_eq!(result["discovery"]["status"], "available");
+    assert_eq!(result["discovery"]["modelCount"], 1);
+    assert_eq!(result["data"][0]["id"], "m1");
+    assert_eq!(result["manualModelIdAllowed"], true);
+    for capability in ["generation", "tools", "streaming", "usage"] {
+        assert_eq!(
+            result["capabilities"][capability]["status"], "untested",
+            "{capability} must not be inferred from /models"
+        );
+    }
     let request = request.await.unwrap();
     assert!(request.starts_with("GET /v1/models HTTP/1.1"));
     assert!(request
@@ -187,7 +196,10 @@ async fn connection_test_uses_bearer_key_and_does_not_follow_redirects() {
         ))
         .await
         .unwrap();
-    assert!(registry.test_provider("redirect").await.is_err());
+    let redirect = registry.test_provider("redirect").await.unwrap();
+    assert_eq!(redirect["connectionStatus"], "reached_provider");
+    assert_eq!(redirect["discovery"]["status"], "unavailable");
+    assert_eq!(redirect["discovery"]["errorCode"], "redirect_refused");
 
     let _ = std::fs::remove_dir_all(root);
 }
@@ -331,4 +343,139 @@ async fn existing_shared_parent_is_refused_without_changing_permissions() {
     );
     assert!(!parent.join("providers.json").exists());
     let _ = std::fs::remove_dir_all(parent);
+}
+#[tokio::test]
+async fn discovery_failures_are_explicit_and_manual_ids_remain_allowed() {
+    let root = temp_root();
+    let registry = registry(&root, true);
+    let cases = [
+        ("unauthorized", "401 Unauthorized", "{}", "unauthorized"),
+        ("unsupported", "404 Not Found", "{}", "unsupported"),
+        ("empty", "200 OK", r#"{"data":[]}"#, "empty_model_list"),
+        (
+            "malformed",
+            "200 OK",
+            r#"{"models":[{"id":"m1"}]}"#,
+            "malformed_response",
+        ),
+        (
+            "badid",
+            "200 OK",
+            "{\"data\":[{\"id\":\"bad\\nmodel\"}]}",
+            "invalid_model_id",
+        ),
+    ];
+    for (id, status, body, expected) in cases {
+        let (address, _request) = one_response(status, &[], body).await;
+        registry
+            .upsert(input(
+                id,
+                format!("http://127.0.0.1:{}/v1", address.port()),
+                Some("sk-discovery-state-test"),
+            ))
+            .await
+            .unwrap();
+        registry.select(id).await.unwrap();
+        let result = registry.selected_model_discovery().await.unwrap();
+        assert_eq!(result["providerId"], id);
+        assert_eq!(result["discovery"]["errorCode"], expected);
+        assert_eq!(result["manualModelIdAllowed"], true);
+        assert!(result["data"].as_array().unwrap().is_empty());
+    }
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn discovered_models_are_exact_bounded_and_deduplicated() {
+    let root = temp_root();
+    let registry = registry(&root, true);
+    let (address, _request) = one_response(
+        "200 OK",
+        &[],
+        r#"{"data":[{"id":"org/model:1"},{"id":"org/model:1"},{"id":"second-model"}]}"#,
+    )
+    .await;
+    registry
+        .upsert(input(
+            "models",
+            format!("http://127.0.0.1:{}/v1", address.port()),
+            Some("sk-model-list-test"),
+        ))
+        .await
+        .unwrap();
+    registry.select("models").await.unwrap();
+    let result = registry.selected_model_discovery().await.unwrap();
+    let ids = result["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["id"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(ids, vec!["org/model:1", "second-model"]);
+    assert_eq!(result["discovery"]["modelCount"], 2);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn selected_discovery_never_falls_back_to_another_provider() {
+    let root = temp_root();
+    let registry = registry(&root, true);
+    let (healthy_address, healthy_request) =
+        one_response("200 OK", &[], r#"{"data":[{"id":"healthy-model"}]}"#).await;
+    let (failing_address, _failing_request) = one_response("401 Unauthorized", &[], "{}").await;
+
+    registry
+        .upsert(input(
+            "healthy",
+            format!("http://127.0.0.1:{}/v1", healthy_address.port()),
+            Some("sk-healthy-test"),
+        ))
+        .await
+        .unwrap();
+    registry
+        .upsert(input(
+            "failing",
+            format!("http://127.0.0.1:{}/v1", failing_address.port()),
+            Some("sk-failing-test"),
+        ))
+        .await
+        .unwrap();
+    registry.select("failing").await.unwrap();
+
+    let result = registry.selected_model_discovery().await.unwrap();
+    assert_eq!(result["providerId"], "failing");
+    assert_eq!(result["discovery"]["status"], "unavailable");
+    assert_eq!(result["discovery"]["errorCode"], "unauthorized");
+    assert!(result["data"].as_array().unwrap().is_empty());
+    assert!(
+        !healthy_request.is_finished(),
+        "discovery must not query another provider as a fallback"
+    );
+    healthy_request.abort();
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn discovery_refuses_model_lists_over_the_bound() {
+    let root = temp_root();
+    let registry = registry(&root, true);
+    let models = (0..=crate::memory_agents::MAX_DISCOVERED_MODELS)
+        .map(|index| serde_json::json!({"id": format!("model-{index}")}))
+        .collect::<Vec<_>>();
+    let body = serde_json::json!({"data": models}).to_string();
+    let (address, _request) = one_response("200 OK", &[], &body).await;
+    registry
+        .upsert(input(
+            "bounded",
+            format!("http://127.0.0.1:{}/v1", address.port()),
+            Some("synthetic-bounded-key"),
+        ))
+        .await
+        .unwrap();
+    registry.select("bounded").await.unwrap();
+    let result = registry.selected_model_discovery().await.unwrap();
+    assert_eq!(result["discovery"]["status"], "unavailable");
+    assert_eq!(result["discovery"]["errorCode"], "too_many_models");
+    assert!(result["data"].as_array().unwrap().is_empty());
+    let _ = std::fs::remove_dir_all(root);
 }

@@ -1325,10 +1325,21 @@ paths:
   /models:
     get:
       operationId: models
-      summary: List models offered by the configured provider.
+      summary: Discover models from the currently selected provider only.
+      description: |
+        Performs the selected provider's bounded authenticated GET /models
+        discovery. The response always identifies the selected provider and
+        version and reports discovery status separately from generation/tool/
+        streaming/usage capabilities. A valid model list does not prove those
+        capabilities; they remain "untested". Discovery failures such as
+        network errors, timeout, unauthorized, unsupported, empty/malformed
+        responses, redirects, and invalid model IDs are returned as explicit
+        sanitized states with an empty data array. Harness never falls back to
+        another provider. manualModelIdAllowed remains true so the UI can offer
+        an explicit typed-ID fallback without inventing a discovered model.
       responses:
         '200':
-          description: Models.
+          description: Provider-scoped model-discovery state and sanitized exact model IDs.
           content:
             application/json: {}
         '4XX':
@@ -1410,7 +1421,13 @@ paths:
   /providers/{id}/test:
     post:
       operationId: testProvider
-      summary: Run a bounded authenticated provider connection test.
+      summary: Run a bounded authenticated provider discovery test.
+      description: |
+        Tests only the named provider's model-discovery endpoint. The result
+        distinguishes provider reachability and model discovery from generation,
+        tool, streaming, and usage capabilities; those are reported as untested
+        rather than inferred from /models. The provider key and upstream error
+        body are never returned.
       parameters:
         - name: id
           in: path
@@ -1419,7 +1436,7 @@ paths:
             type: string
       responses:
         '200':
-          description: Sanitized connection-test result.
+          description: Sanitized provider-scoped discovery result, including manual-ID fallback.
           content:
             application/json: {}
         '4XX':

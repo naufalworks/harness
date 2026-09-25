@@ -4,7 +4,10 @@
 //! Public API projections never serialize API keys. Each saved provider change appends
 //! a version so an already-admitted turn can keep using the provider version it recorded.
 
-use crate::{memory_agents::MemoryAgents, storage::DbStore};
+use crate::{
+    memory_agents::{MemoryAgents, ModelDiscovery},
+    storage::DbStore,
+};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -448,6 +451,11 @@ impl ProviderRegistry {
         self.agents_for(&selected.id, selected.version).await
     }
 
+    pub(crate) async fn selected_model_discovery(&self) -> Result<Value> {
+        let reference = self.selected_ref()?;
+        self.model_discovery_for(reference).await
+    }
+
     pub(crate) async fn agents_for(&self, id: &str, version: u64) -> Result<MemoryAgents> {
         if let Some(cached) = self
             .inner
@@ -523,14 +531,23 @@ impl ProviderRegistry {
                 default_model: self.inner.default_model.clone(),
             }
         };
-        let agents = self.agents_for(&reference.id, reference.version).await?;
-        let models = agents.list_models().await?;
-        Ok(json!({
-            "status":"reachable",
-            "providerId":reference.id,
-            "version":reference.version,
-            "modelCount":models.get("data").and_then(Value::as_array).map_or(0, Vec::len)
-        }))
+        let mut result = self.model_discovery_for(reference).await?;
+        result["testType"] = json!("discovery");
+        Ok(result)
+    }
+
+    async fn model_discovery_for(&self, reference: ProviderRef) -> Result<Value> {
+        let agents = match self.agents_for(&reference.id, reference.version).await {
+            Ok(agents) => agents,
+            Err(_) => {
+                return Ok(discovery_payload(
+                    reference,
+                    ModelDiscovery::unavailable("network_error", false),
+                ));
+            }
+        };
+        let discovery = agents.discover_models().await;
+        Ok(discovery_payload(reference, discovery))
     }
 
     async fn agents_from_version(&self, provider: &ProviderVersion) -> Result<MemoryAgents> {
@@ -544,6 +561,34 @@ impl ProviderRegistry {
         )
         .map(|agents| agents.with_spend_store(self.inner.spend_store.clone()))
     }
+}
+
+fn discovery_payload(reference: ProviderRef, discovery: ModelDiscovery) -> Value {
+    let connection_status = if discovery.reachable {
+        "reached_provider"
+    } else {
+        "unreachable"
+    };
+    let model_count = discovery.data.len();
+    json!({
+        "providerId":reference.id,
+        "version":reference.version,
+        "connectionStatus":connection_status,
+        "discovery":{
+            "type":"proxy",
+            "status":discovery.status,
+            "errorCode":discovery.error_code,
+            "modelCount":model_count
+        },
+        "capabilities":{
+            "generation":{"status":"untested"},
+            "tools":{"status":"untested"},
+            "streaming":{"status":"untested"},
+            "usage":{"status":"untested"}
+        },
+        "manualModelIdAllowed":true,
+        "data":discovery.data
+    })
 }
 
 fn current_version(record: &ProviderRecord) -> Result<&ProviderVersion> {

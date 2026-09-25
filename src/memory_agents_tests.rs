@@ -1,4 +1,30 @@
 use super::*;
+use tokio::io::AsyncWriteExt;
+
+#[tokio::test]
+async fn model_discovery_timeout_is_explicit_and_non_reachable() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let _ = stream.shutdown().await;
+    });
+    let agents = MemoryAgents::new(
+        &format!("http://127.0.0.1:{}", address.port()),
+        "test-key",
+        "test-model",
+    )
+    .unwrap();
+    let discovery = agents
+        .discover_models_with_timeout(Duration::from_millis(25))
+        .await;
+    assert_eq!(discovery.status, "unavailable");
+    assert_eq!(discovery.error_code.as_deref(), Some("timeout"));
+    assert!(!discovery.reachable);
+    assert!(discovery.data.is_empty());
+    server.abort();
+}
 
 #[test]
 fn only_the_user_facing_turn_counts_as_foreground_work() {

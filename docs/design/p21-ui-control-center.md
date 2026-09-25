@@ -109,6 +109,23 @@ iamhc:
 
 ## Model selection
 
+### P21-T03 model-discovery backend
+
+The selected provider now owns discovery end-to-end: Harness issues only its
+bounded authenticated `GET /models`, validates/deduplicates exact model IDs,
+and returns provider ID/version with explicit `available`, `empty`, or
+`unavailable` discovery state. Network failure, timeout, authorization failure,
+unsupported discovery, redirects, malformed responses, excessive lists and
+invalid IDs are named without exposing upstream bodies. A failing selected
+provider never causes discovery against another configured provider.
+
+Discovery deliberately reports generation, tools, streaming and usage as
+`untested`; a model-list response is not a capability probe. The existing
+runtime tools-unsupported fallback and spend/effect guards remain authoritative
+when real turns execute. The response also declares manual model IDs allowed,
+which P21-T05 will expose as the explicit UI fallback when discovery is empty
+or unavailable.
+
 - Load `/models` through the selected provider only. Show searchable selection
   for **main**, **extraction**, and **verification** roles; display exact model IDs,
   no invented capabilities, and a manually entered ID when discovery is unavailable.

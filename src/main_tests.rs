@@ -828,6 +828,27 @@ async fn body_json(response: Response) -> Value {
 }
 
 #[tokio::test]
+async fn models_endpoint_returns_structured_unavailable_state_without_fallback() {
+    let store = DbStore::init(":memory:").unwrap();
+    let app = app_with(store);
+    let response = app
+        .oneshot(authorized("GET", "/models").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload = body_json(response).await;
+    assert_eq!(payload["providerId"], "environment");
+    assert_eq!(payload["connectionStatus"], "unreachable");
+    assert_eq!(payload["discovery"]["status"], "unavailable");
+    assert_eq!(payload["discovery"]["errorCode"], "network_error");
+    assert_eq!(payload["manualModelIdAllowed"], true);
+    assert!(payload["data"].as_array().unwrap().is_empty());
+    for capability in ["generation", "tools", "streaming", "usage"] {
+        assert_eq!(payload["capabilities"][capability]["status"], "untested");
+    }
+}
+
+#[tokio::test]
 async fn provider_profile_is_secret_safe_and_chat_pins_admission_version() {
     let store = DbStore::init(":memory:").unwrap();
     let app = app_with(store.clone());
