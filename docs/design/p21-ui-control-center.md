@@ -54,6 +54,14 @@ server-side directory names and retain a typed-path option.
 
 ## Provider configuration contract
 
+**Implemented backend in P21-T02:** provider metadata/secret persistence,
+selection, connection-test endpoint, environment fallback, provider-version
+pinning on admitted turns, and the network/SSRF boundary below. These endpoints
+remain deliberately classified API-only until P21-T04 adds the reviewed UI.
+P21-T03 still owns richer discovery/capability semantics; a successful T02
+connection test only proves the selected provider returned a valid model-list
+shape.
+
 Accept an owner-entered structured form **or** an optional bounded YAML/JSON paste
 with identical validation. Example is deliberately a placeholder, not a real key:
 

@@ -285,14 +285,22 @@ mod tests {
         };
         use std::sync::Arc;
         use tower::ServiceExt;
+        let store = crate::storage::DbStore::init(":memory:").unwrap();
+        let providers = crate::providers::ProviderRegistry::open_for_test(
+            std::env::temp_dir().join(format!(
+                "harness-provider-producer-test-{}.json",
+                uuid::Uuid::new_v4()
+            )),
+            "http://127.0.0.1:9",
+            "synthetic",
+            "test",
+            store.clone(),
+            true,
+        )
+        .unwrap();
         let state = crate::Harness {
-            store: crate::storage::DbStore::init(":memory:").unwrap(),
-            agents: crate::memory_agents::MemoryAgents::new(
-                "http://127.0.0.1:9",
-                "synthetic",
-                "test",
-            )
-            .unwrap(),
+            store,
+            providers,
             auth: Arc::new(auth()),
             port: 8080,
             origins: Arc::new(vec![]),

@@ -36,6 +36,10 @@ existence: an unauthenticated request never learns whether a path exists.
 - `PATCH /sessions/{id}`
 - `POST /sessions/{id}/fork`
 - `GET /models`
+- `GET|POST /providers`
+- `DELETE /providers/{id}`
+- `POST /providers/{id}/select`
+- `POST /providers/{id}/test`
 - `GET|POST /config`
 - `GET /memory/status`
 - `GET /memory/health`

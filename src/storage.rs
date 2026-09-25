@@ -17,7 +17,7 @@ pub fn now() -> String {
 pub fn uid() -> String {
     Uuid::new_v4().to_string()
 }
-pub const CURRENT_DATABASE_SCHEMA_VERSION: i64 = 23;
+pub const CURRENT_DATABASE_SCHEMA_VERSION: i64 = 24;
 #[derive(Clone)]
 pub struct DbStore {
     conn: Arc<Mutex<Connection>>,
@@ -229,6 +229,9 @@ impl DbStore {
         }
         if version < 23 {
             conn.execute_batch(include_str!("../migrations/023_agent_session_links.sql"))?;
+        }
+        if version < 24 {
+            conn.execute_batch(include_str!("../migrations/024_provider_routing.sql"))?;
         }
         conn.execute(
             "UPDATE provider_calls SET state='failed',usage_status='unavailable',reason='process_restarted_with_call_reserved',finished_at=?1 WHERE state='reserved'",

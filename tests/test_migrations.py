@@ -12,7 +12,7 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MIG = ROOT / "migrations"
-CHAIN = ["001_core.sql", "002_recording.sql", "003_agentic.sql", "004_memory_kinds.sql", "005_generation_stream.sql", "006_provenance_edges.sql", "007_privacy_archive.sql", "008_provider_spend.sql", "009_run_cancellation.sql", "010_retention_maintenance.sql", "011_retrieval_receipts.sql", "012_memory_governance.sql", "013_session_workflows.sql", "014_history_search.sql", "015_causal_coverage.sql", "016_run_capsules.sql", "017_worker_leases.sql", "018_external_effects.sql", "019_tool_effect_kinds.sql", "020_archive_delete_outcomes.sql", "021_external_history.sql", "022_agent_memory_protocol.sql", "023_agent_session_links.sql"]
+CHAIN = ["001_core.sql", "002_recording.sql", "003_agentic.sql", "004_memory_kinds.sql", "005_generation_stream.sql", "006_provenance_edges.sql", "007_privacy_archive.sql", "008_provider_spend.sql", "009_run_cancellation.sql", "010_retention_maintenance.sql", "011_retrieval_receipts.sql", "012_memory_governance.sql", "013_session_workflows.sql", "014_history_search.sql", "015_causal_coverage.sql", "016_run_capsules.sql", "017_worker_leases.sql", "018_external_effects.sql", "019_tool_effect_kinds.sql", "020_archive_delete_outcomes.sql", "021_external_history.sql", "022_agent_memory_protocol.sql", "023_agent_session_links.sql", "024_provider_routing.sql"]
 VERSIONS = [name.split("_", 1)[0] for name in CHAIN]
 LATEST_VERSION = int(VERSIONS[-1])
 OPEN_CONNECTIONS = []
@@ -40,6 +40,7 @@ EXPECTED_TABLES = {
     21: {"external_history_events"},
     22: {"agent_sessions"},
     23: {"agent_session_links"},
+    24: set(),
 }
 
 
@@ -103,6 +104,31 @@ def test_populated_v22_to_v23_preserves_agent_links():
     assert c.execute(
         "SELECT agent_id,agent_session_id,harness_session_id,scope FROM agent_session_links"
     ).fetchone() == ("gpt", "session-1", "session-1", "proj")
+    assert c.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_populated_v23_to_v24_pins_environment_provider_without_secret():
+    c = fresh()
+    apply(c, 23)
+    now = "2026-01-01T00:00:00Z"
+    c.execute("INSERT INTO sessions(id,scope,created_at) VALUES('s1','proj',?)", (now,))
+    c.execute(
+        "INSERT INTO messages(id,session_id,role,content,status,created_at)"
+        " VALUES('req','s1','user','hello','pending',?)",
+        (now,),
+    )
+    c.execute(
+        "INSERT INTO chat_receipts(request_id,session_id,scope,model,signature,redacted,state,captured_at,updated_at)"
+        " VALUES('req','s1','proj','m','sig',0,'captured',?,?)",
+        (now, now),
+    )
+    c.executescript((MIG / "024_provider_routing.sql").read_text())
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 24
+    assert c.execute(
+        "SELECT provider_id,provider_version FROM chat_receipts WHERE request_id='req'"
+    ).fetchone() == ("environment", 1)
+    columns = {row[1] for row in c.execute("PRAGMA table_info(chat_receipts)")}
+    assert "api_key" not in columns and "provider_key" not in columns
     assert c.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
@@ -825,6 +851,8 @@ def main():
         test_full_chain()
         test_021_populated_upgrade_and_receipt_atomicity()
         test_v2_to_v3()
+        test_populated_v22_to_v23_preserves_agent_links()
+        test_populated_v23_to_v24_pins_environment_provider_without_secret()
         test_populated_v3_to_v4()
         test_004_memory_categories_and_embedding_constraints()
         test_003_constraints()

@@ -4,6 +4,7 @@ use crate::{
     agent_loop, agentic_sql as agentic, context,
     ingest::Event,
     memory_agents::{BoxFuture, BufferedGeneration, GenerationSink, MemoryAgents, ModelUsage},
+    providers::ProviderRegistry,
     recording_sql as sql, safety,
     storage::{now, uid, DbStore, Recall, ScopeConfig},
     tools::Registry,
@@ -165,9 +166,14 @@ pub struct Generation {
     pub session: String,
     pub scope: String,
     pub model: String,
+    pub provider_id: String,
+    pub provider_version: u64,
     pub prompt: String,
     pub events: Vec<Event>,
 }
+
+type RetrySource = (String, String, String, String, String, bool, String, u64);
+type ClaimedRecording = (String, String, String, String, String, u64, String, i64);
 
 pub fn recover(c: &mut Connection) -> Result<()> {
     let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -270,31 +276,46 @@ fn cancel_pending_tx(tx: &rusqlite::Transaction<'_>, request: &str, stamp: &str)
 
 fn receipt(c: &Connection, request: &str) -> Result<Option<Value>> {
     let row = c.query_row(
-        "SELECT r.request_id,r.session_id,r.scope,r.model,r.redacted,r.state,r.error_code,r.captured_at,r.updated_at,r.context_json,a.content,o.job_id,j.status,c.cancel_requested_at,c.cancelled_at,c.safe_boundary_seq,c.retry_of,c.retried_by FROM chat_receipts r LEFT JOIN messages a ON a.id=r.answer_id LEFT JOIN recording_outbox o ON o.request_id=r.request_id LEFT JOIN jobs j ON j.id=o.job_id LEFT JOIN run_controls c ON c.request_id=r.request_id WHERE r.request_id=?1",
+        "SELECT r.request_id,r.session_id,r.scope,r.model,r.provider_id,r.provider_version,r.redacted,r.state,r.error_code,r.captured_at,r.updated_at,r.context_json,a.content,o.job_id,j.status,c.cancel_requested_at,c.cancelled_at,c.safe_boundary_seq,c.retry_of,c.retried_by FROM chat_receipts r LEFT JOIN messages a ON a.id=r.answer_id LEFT JOIN recording_outbox o ON o.request_id=r.request_id LEFT JOIN jobs j ON j.id=o.job_id LEFT JOIN run_controls c ON c.request_id=r.request_id WHERE r.request_id=?1",
         [request], |r| {
-            let state: String = r.get(5)?;
-            let context: Option<String> = r.get(9)?;
+            let state: String = r.get(7)?;
+            let context: Option<String> = r.get(11)?;
             let context: Value = context.and_then(|v| serde_json::from_str(&v).ok()).unwrap_or(Value::Null);
-            let job_status: Option<String> = r.get(12)?;
+            let job_status: Option<String> = r.get(14)?;
             let memory_status = job_status.unwrap_or_else(|| if RequestState::parse(&state).is_some_and(RequestState::is_pending) {"waiting_for_turn".into()} else {"deferred".into()});
             Ok(json!({"request_id":r.get::<_,String>(0)?,"session_id":r.get::<_,String>(1)?,
-                "scope":r.get::<_,String>(2)?,"model":r.get::<_,String>(3)?,"redacted":r.get::<_,bool>(4)?,
-                "state":state,"error_code":r.get::<_,Option<String>>(6)?,"captured_at":r.get::<_,String>(7)?,
-                "updated_at":r.get::<_,String>(8)?,"response":r.get::<_,Option<String>>(10)?,
-                "memory_job_id":r.get::<_,Option<String>>(11)?,"memory_status":memory_status,
+                "scope":r.get::<_,String>(2)?,"model":r.get::<_,String>(3)?,
+                "provider_id":r.get::<_,String>(4)?,"provider_version":r.get::<_,i64>(5)?,
+                "redacted":r.get::<_,bool>(6)?,
+                "state":state,"error_code":r.get::<_,Option<String>>(8)?,"captured_at":r.get::<_,String>(9)?,
+                "updated_at":r.get::<_,String>(10)?,"response":r.get::<_,Option<String>>(12)?,
+                "memory_job_id":r.get::<_,Option<String>>(13)?,"memory_status":memory_status,
                 "recording":"sanitized_local","context_available":!context.is_null(),
                 "recalled":context.get("memories").cloned().unwrap_or(json!([])),
                 "recalled_context_applied":context.get("memories").and_then(Value::as_array).is_some_and(|m|!m.is_empty()),
                 "confirmation_prompt":null,
-                "cancel_requested_at":r.get::<_,Option<String>>(13)?,"cancelled_at":r.get::<_,Option<String>>(14)?,
-                "safe_boundary_seq":r.get::<_,Option<i64>>(15)?,"retry_of":r.get::<_,Option<String>>(16)?,
-                "retried_by":r.get::<_,Option<String>>(17)?}))
+                "cancel_requested_at":r.get::<_,Option<String>>(15)?,"cancelled_at":r.get::<_,Option<String>>(16)?,
+                "safe_boundary_seq":r.get::<_,Option<i64>>(17)?,"retry_of":r.get::<_,Option<String>>(18)?,
+                "retried_by":r.get::<_,Option<String>>(19)?}))
         }).optional()?;
     Ok(row)
 }
 
 impl DbStore {
+    #[cfg(test)]
     pub async fn capture_chat(&self, input: CaptureInput) -> Result<Admission> {
+        self.capture_chat_with_provider(input, "environment".into(), 1)
+            .await
+    }
+    pub async fn capture_chat_with_provider(
+        &self,
+        input: CaptureInput,
+        provider_id: String,
+        provider_version: u64,
+    ) -> Result<Admission> {
+        if provider_id.is_empty() || provider_id.len() > 64 || provider_version == 0 {
+            bail!("invalid provider routing metadata");
+        }
         self.run(move |c| {
             let tx=c.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let prior: Option<String> = tx.query_row("SELECT signature FROM chat_receipts WHERE request_id=?1", [&input.request], |r|r.get(0)).optional()?;
@@ -311,7 +332,7 @@ impl DbStore {
             if tx.query_row("SELECT EXISTS(SELECT 1 FROM chat_receipts WHERE session_id=?1 AND state IN ('captured','generating'))",[&input.session],|r|r.get::<_,bool>(0))? {return Ok(Admission::Busy);}
             let stamp=now();
             tx.execute(sql::INSERT_MESSAGE,params![input.request,input.session,input.prompt,stamp])?;
-            tx.execute(sql::INSERT_RECEIPT,params![input.request,input.session,input.scope,input.model,input.signature,input.redacted,stamp])?;
+            tx.execute(sql::INSERT_RECEIPT,params![input.request,input.session,input.scope,input.model,input.signature,input.redacted,stamp,provider_id,provider_version])?;
             tx.execute(sql::INSERT_OUTBOX,params![input.request,stamp])?;
             tx.execute(sql::EVENT,params![input.request,"captured",stamp])?;
             let result=receipt(&tx,&input.request)?.ok_or_else(||anyhow::anyhow!("chat receipt {} vanished inside its own insert transaction",input.request))?;
@@ -382,12 +403,12 @@ impl DbStore {
     pub async fn retry_recording(&self, request: String) -> Result<RetryAdmission> {
         self.run(move |c| {
             let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            let source: Option<(String, String, String, String, String, bool)> = tx.query_row(
-                "SELECT r.state,r.session_id,r.scope,r.model,m.content,r.redacted FROM chat_receipts r JOIN messages m ON m.id=r.request_id WHERE r.request_id=?1",
+            let source: Option<RetrySource> = tx.query_row(
+                "SELECT r.state,r.session_id,r.scope,r.model,m.content,r.redacted,r.provider_id,r.provider_version FROM chat_receipts r JOIN messages m ON m.id=r.request_id WHERE r.request_id=?1",
                 [&request],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?)),
             ).optional()?;
-            let Some((state, session, scope, model, prompt, redacted)) = source else {
+            let Some((state, session, scope, model, prompt, redacted, provider_id, provider_version)) = source else {
                 return Ok(RetryAdmission::NotFound);
             };
             // Retryable is narrower than terminal: `complete` is also terminal,
@@ -448,7 +469,7 @@ impl DbStore {
             let stamp = now();
             let signature = safety::fingerprint(&json!({"retry_of":request,"request":retry,"prompt":prompt}).to_string());
             tx.execute(sql::INSERT_MESSAGE, params![retry, session, prompt, stamp])?;
-            tx.execute(sql::INSERT_RECEIPT, params![retry, session, scope, model, signature, redacted, stamp])?;
+            tx.execute(sql::INSERT_RECEIPT, params![retry, session, scope, model, signature, redacted, stamp, provider_id, provider_version])?;
             tx.execute(sql::INSERT_OUTBOX, params![retry, stamp])?;
             tx.execute(sql::EVENT, params![retry, "captured", stamp])?;
             tx.execute(
@@ -500,10 +521,10 @@ impl DbStore {
         let claimed = self
             .run(move |c| {
             let tx=c.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            let row:Option<(String,String,String,String,String,i64)>=tx.query_row(
-                "SELECT r.request_id,r.session_id,r.scope,r.model,m.content,m.seq FROM chat_receipts r JOIN messages m ON m.id=r.request_id WHERE r.state='captured' ORDER BY m.seq LIMIT 1",[],
-                |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional()?;
-            let Some((request,session,scope,model,prompt,seq))=row else {return Ok(None)};
+            let row:Option<ClaimedRecording>=tx.query_row(
+                "SELECT r.request_id,r.session_id,r.scope,r.model,r.provider_id,r.provider_version,m.content,m.seq FROM chat_receipts r JOIN messages m ON m.id=r.request_id WHERE r.state='captured' ORDER BY m.seq LIMIT 1",[],
+                |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?))).optional()?;
+            let Some((request,session,scope,model,provider_id,provider_version,prompt,seq))=row else {return Ok(None)};
             // Admission permits one unfinished turn per session, so completed pairs
             // remain ordered. Other sessions can queue independently.
             let mut events={
@@ -543,7 +564,7 @@ impl DbStore {
             };
             tx.execute(sql::EVENT,params![request,"generation_started",now()])?;
             tx.commit()?;
-            Ok(Some((Generation{request,session,scope,model,prompt,events}, lease)))
+            Ok(Some((Generation{request,session,scope,model,provider_id,provider_version,prompt,events}, lease)))
         }).await?;
         // Remembered after the commit: the fence this process must present on every later write
         // for this turn. Re-reading the row at write time would authorize a holder the database
@@ -912,7 +933,8 @@ pub(crate) async fn generate(
         return store.fail_recording(turn.request, "context_failed").await;
     }
     let receipt = json!({"format_version":2,"adapter":if agentic_turn {"tool_calls_v1"} else {"text_completion_v1"},
-        "model":turn.model,"provider_messages":messages.clone(),"provider_tools":tools.clone(),"memories":memories,
+        "model":turn.model,"provider":{"id":turn.provider_id,"version":turn.provider_version},
+        "provider_messages":messages.clone(),"provider_tools":tools.clone(),"memories":memories,
         "context_receipt":context_receipt,
         "scope":{"root_path":scope.root_path.clone(),"permission_mode":scope.permission_mode.clone(),"diagnostics_cmd":scope.diagnostics_cmd.clone(),"tools_enabled":agentic_turn},
         "note":"Exact sanitized message and tool arrays prepared for the provider's FIRST call in this turn, not model reasoning or proof of provider receipt. Later calls append tool results; each one stores its own full message array and tool names in turn_steps.input_json."});
@@ -986,7 +1008,7 @@ pub(crate) async fn generate(
 
 pub async fn worker(
     store: DbStore,
-    agents: MemoryAgents,
+    providers: ProviderRegistry,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
     loop {
@@ -1001,9 +1023,24 @@ pub async fn worker(
                 // of a turn that is still making progress.
                 let lease = store.held_lease(&id);
                 let db = store.clone();
-                let provider = agents.clone();
+                let provider_registry = providers.clone();
+                let provider_id = turn.provider_id.clone();
+                let provider_version = turn.provider_version;
                 // Observe panics as well as returned errors; no HTTP request owns this work.
-                let mut task = tokio::spawn(async move { generate(&db, &provider, turn).await });
+                let mut task = tokio::spawn(async move {
+                    let provider = match provider_registry
+                        .agents_for(&provider_id, provider_version)
+                        .await
+                    {
+                        Ok(provider) => provider,
+                        Err(_) => {
+                            db.fail_recording(turn.request.clone(), "provider_config_failed")
+                                .await?;
+                            return Ok(());
+                        }
+                    };
+                    generate(&db, &provider, turn).await
+                });
                 let result = loop {
                     // A third of the TTL: two consecutive missed heartbeats still leave the lease
                     // valid, so a single slow tick does not cost a working turn its ownership.

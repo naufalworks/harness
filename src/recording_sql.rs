@@ -1,6 +1,6 @@
 // Shared executable statements: offline contract tests read these exact strings.
 pub const INSERT_MESSAGE: &str = r#"INSERT INTO messages(id,session_id,role,content,status,created_at) VALUES(?1,?2,'user',?3,'pending',?4)"#;
-pub const INSERT_RECEIPT: &str = r#"INSERT INTO chat_receipts(request_id,session_id,scope,model,signature,redacted,state,captured_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,'captured',?7,?7)"#;
+pub const INSERT_RECEIPT: &str = r#"INSERT INTO chat_receipts(request_id,session_id,scope,model,signature,redacted,state,captured_at,updated_at,provider_id,provider_version) VALUES(?1,?2,?3,?4,?5,?6,'captured',?7,?7,?8,?9)"#;
 pub const INSERT_OUTBOX: &str =
     r#"INSERT INTO recording_outbox(request_id,created_at) VALUES(?1,?2)"#;
 pub const EVENT: &str =

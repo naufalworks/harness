@@ -443,6 +443,15 @@ struct UsageWire {
 
 impl MemoryAgents {
     pub fn new(base_url: &str, api_key: &str, model: &str) -> Result<Self> {
+        Self::new_with_resolution(base_url, api_key, model, None)
+    }
+
+    pub(crate) fn new_with_resolution(
+        base_url: &str,
+        api_key: &str,
+        model: &str,
+        resolved: Option<std::net::SocketAddr>,
+    ) -> Result<Self> {
         let url = reqwest::Url::parse(base_url)?;
         if url.scheme() != "https"
             && !(url.scheme() == "http"
@@ -450,12 +459,18 @@ impl MemoryAgents {
         {
             bail!("provider URL must use HTTPS or loopback HTTP");
         }
+        let mut client = Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(90))
+            .redirect(reqwest::redirect::Policy::none());
+        if let Some(address) = resolved {
+            let host = url
+                .host_str()
+                .ok_or_else(|| anyhow::anyhow!("provider URL has no host"))?;
+            client = client.resolve(host, address);
+        }
         Ok(Self {
-            http: Client::builder()
-                .connect_timeout(Duration::from_secs(10))
-                .timeout(Duration::from_secs(90))
-                .redirect(reqwest::redirect::Policy::none())
-                .build()?,
+            http: client.build()?,
             base_url: base_url.trim_end_matches('/').into(),
             api_key: api_key.into(),
             model: model.into(),
@@ -1179,7 +1194,7 @@ fn decode_model_turn(message: Value, usage: Option<UsageWire>) -> Result<ModelTu
 
 pub async fn worker(
     store: DbStore,
-    agents: MemoryAgents,
+    providers: crate::providers::ProviderRegistry,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
     loop {
@@ -1191,6 +1206,7 @@ pub async fn worker(
                 let id = job.id.clone();
                 let attempts = job.attempts;
                 let result = async {
+                    let agents = providers.selected_agents().await?;
                     let model = store.role_model("extraction", &agents.model).await?;
                     let request = job.source_id.clone();
                     let extraction = agents.extract(&model, &job.events);

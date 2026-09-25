@@ -23,7 +23,7 @@ def statement(prefix):
         text=json.loads('"'+text+'"')
         if text.startswith(prefix):return text
     raise AssertionError('Missing statement: '+prefix)
-CLAIM_SELECT=statement('SELECT r.request_id,r.session_id,r.scope,r.model,m.content')
+CLAIM_SELECT=statement('SELECT r.request_id,r.session_id,r.scope,r.model,r.provider_id,r.provider_version,m.content')
 OUTBOX_SELECT=statement('SELECT o.request_id,r.scope')
 HISTORY=statement('SELECT m.seq,m.id,m.role')
 SESSIONS=statement('SELECT s.id,s.scope,s.created_at')
@@ -35,7 +35,7 @@ class Recorder:
         if fresh:
             # P14-T01: the receipt read now joins run_controls, so the fixture applies 009 too.
             # P14-T02: the session list now reads title/archived_at/forked_from, so 013 is required.
-            for name in ['001_core.sql','002_recording.sql','003_agentic.sql','004_memory_kinds.sql','009_run_cancellation.sql','013_session_workflows.sql']:self.c.executescript((ROOT/'migrations'/name).read_text())
+            for name in ['001_core.sql','002_recording.sql','003_agentic.sql','004_memory_kinds.sql','009_run_cancellation.sql','013_session_workflows.sql','024_provider_routing.sql']:self.c.executescript((ROOT/'migrations'/name).read_text())
     def tx(self,fn):
         self.c.execute('BEGIN IMMEDIATE')
         try:out=fn();self.c.execute('COMMIT');return out
@@ -50,7 +50,7 @@ class Recorder:
             if self.c.execute('SELECT scope FROM sessions WHERE id=?',(session,)).fetchone()[0]!=scope:return 'scope_conflict'
             if self.c.execute("SELECT count(*) FROM chat_receipts WHERE session_id=? AND state IN ('captured','generating')",(session,)).fetchone()[0]:return 'busy'
             self.execute('INSERT_MESSAGE',request,session,prompt,'now')
-            self.execute('INSERT_RECEIPT',request,session,scope,'synthetic-model',signature,False,'now')
+            self.execute('INSERT_RECEIPT',request,session,scope,'synthetic-model',signature,False,'now','environment',1)
             self.execute('INSERT_OUTBOX',request,'now');self.event(request,'captured');return 'saved'
         return self.tx(body)
     def claim(self):

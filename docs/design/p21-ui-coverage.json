@@ -94,7 +94,7 @@
       "status": "ui_partial",
       "surface": "model settings",
       "anchor": "view-settings",
-      "detail": "One startup-configured provider; /models is shown as text and model roles are typed manually. No runtime custom provider editor or model picker (P21-T02–T05).",
+      "detail": "One startup-configured provider; /models is shown as text and model roles are typed manually. No runtime custom provider editor or model picker (P21-T02\u2013T05).",
       "operations": [
         "GET /config",
         "POST /config",
@@ -117,10 +117,15 @@
       "status": "api_only",
       "surface": "provider and producer integration",
       "anchor": null,
-      "detail": "Compatibility chat endpoint and authenticated producer ingestion are integration contracts; no separate owner control is claimed.",
+      "detail": "Provider profile CRUD/selection/testing and external producer ingestion are authenticated backend contracts. Provider management is API-only until P21-T04 adds reviewed browser controls; producer ingestion remains an integration surface.",
       "operations": [
         "POST /chat",
-        "POST /external-history/events"
+        "POST /external-history/events",
+        "GET /providers",
+        "POST /providers",
+        "DELETE /providers/{id}",
+        "POST /providers/{id}/select",
+        "POST /providers/{id}/test"
       ]
     },
     {

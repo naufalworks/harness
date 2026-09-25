@@ -1629,15 +1629,17 @@ P20's schema/memory and P19's truthful transcript boundaries.
 - result-verify: 4 new coverage-contract tests, docs/route/ledger checks, Ruff, JS syntax, and both Chromium mocked browser suites passed. Tests fail when a route is added without classification or when the present UI settings gaps are mislabeled complete; no production changes were made.
 
 ### P21-T02 · Safe runtime custom-provider configuration and secrets
-- status: todo
+- status: done
 - priority: high
 - lane: provider-backend
 - parallel: no
 - depends: P21-T01
 - design: docs/design/p21-ui-control-center.md
-- files: src/memory_agents.rs, src/main.rs, src/api/, src/storage/, docs/api.yaml, tests/
+- files: src/providers.rs, src/providers_tests.rs, src/memory_agents.rs, src/main.rs, src/api/, src/recording.rs, src/recording_sql.rs, src/storage.rs, migrations/024_provider_routing.sql, docs/api.yaml, docs/ARCHITECTURE.md, docs/design/p21-ui-coverage.json, tests/
 - done-when: an owner can add/edit/test/choose/delete an OpenAI-compatible provider ID with validated baseUrl, api type and discovery policy; its API key stays exclusively in a private atomic 0600 secret store or separately-keyed encryption, never in ordinary SQLite, GET responses, logs or exports. Pin provider version to admitted turns, keep in-flight turns stable, allow explicit rotation without corrupting P20 state, and preserve the existing environment fallback. Deny SSRF, redirects, DNS rebinding and invalid URL/scheme/path combinations with mock-server tests.
 - verify: cargo test --locked && bash scripts/verify_release.sh
+- result: Added authenticated runtime provider profile CRUD/selection/test APIs with the startup environment provider retained as the fallback. Saved secrets live only in an atomic 0600 `.harness/providers.json` under a real 0700 directory; GET/public projections expose only key presence. Provider changes are serialized and append versioned configurations. Schema 024 stores only provider ID/version on each admitted receipt, preserving a stable provider for queued/in-flight turns and retries even after later edits or deletion. Custom-provider network use validates HTTPS (loopback HTTP only behind an explicit development opt-in), rejects URL credentials/query/fragment and forbidden/private/metadata/IPv4-transition targets, disables redirects, re-resolves and pins a validated socket address, and bounds provider response/time behavior through the existing adapter.
+- result-verify: 373 Rust tests passed after the final secret-store hardening, strict Clippy with `-D warnings` passed, migrations 001→024 preserved data/FTS/FKs, recording contracts passed, provider tests cover private-store permissions/SQLite exclusion/version pinning/redirect refusal/internal-network policy/IPv6 transition cases/symlink refusal, and the strict local release gate passed mocked Chromium plus real browser→Axum→SQLite→filesystem→provider E2E and failure-path E2E. Local release-quality explicitly leaves coverage, signing, and cross-target checks to release-evidence CI; no T02 production deployment is claimed here.
 
 ### P21-T03 · Provider model discovery, capability testing and fallback
 - status: todo

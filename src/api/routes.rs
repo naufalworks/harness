@@ -8,7 +8,7 @@ use crate::api::error::{db_error, invalid, ApiError, ApiResult, JsonBody};
 use crate::api::stream::{activity, activity_stream, generation, generation_stream};
 use crate::archive::{ArchiveStore, PrivacyAction};
 use crate::export::audit;
-use crate::{agent_loop, ingest, recording, safety, storage, tools, Harness};
+use crate::{agent_loop, ingest, providers, recording, safety, storage, tools, Harness};
 use anyhow::Result;
 use axum::{
     body::Bytes,
@@ -16,7 +16,7 @@ use axum::{
     http::{header, StatusCode},
     middleware,
     response::{IntoResponse, Response},
-    routing::{get, patch, post},
+    routing::{delete, get, patch, post},
     Json, Router,
 };
 use serde::Deserialize;
@@ -68,15 +68,25 @@ async fn admit_chat(h: &Harness, req: ChatRequest) -> ApiResult<Value> {
     // Fingerprint SANITIZED content only; never retain a brute-forceable hash of a secret.
     // Default-model changes do not turn a repeated request into a new paid generation.
     let signature=safety::fingerprint(&json!({"session":session,"scope":req.scope,"prompt":prompt,"model_override":req.model,"redacted":redacted}).to_string());
+    let provider = h.providers.selected_ref().map_err(|_| {
+        ApiError(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Provider configuration unavailable",
+        )
+    })?;
     let model = match req.model {
         Some(m) => m,
         None => h
             .store
-            .role_model("main", &h.agents.model)
+            .role_model("main", &provider.default_model)
             .await
             .map_err(db_error)?,
     };
-    match h.store.capture_chat(recording::CaptureInput{request,session,scope:req.scope,prompt,model,signature,redacted}).await.map_err(db_error)? {
+    match h.store.capture_chat_with_provider(
+        recording::CaptureInput{request,session,scope:req.scope,prompt,model,signature,redacted},
+        provider.id,
+        provider.version,
+    ).await.map_err(db_error)? {
         recording::Admission::Saved(receipt)=>Ok(receipt),
         recording::Admission::Conflict=>Err(ApiError(StatusCode::CONFLICT,"Request identifier already belongs to different content; nothing new was recorded")),
         recording::Admission::ScopeConflict=>Err(ApiError(StatusCode::CONFLICT,"Session belongs to a different scope; start a new conversation")),
@@ -515,9 +525,65 @@ async fn set_config(
     Ok(Json(json!({"status":"saved"})))
 }
 async fn models(State(h): State<Harness>) -> ApiResult<Json<Value>> {
-    Ok(Json(h.agents.list_models().await.map_err(|_| {
+    let agents = h
+        .providers
+        .selected_agents()
+        .await
+        .map_err(|_| ApiError(StatusCode::BAD_GATEWAY, "Unable to load provider models"))?;
+    Ok(Json(agents.list_models().await.map_err(|_| {
         ApiError(StatusCode::BAD_GATEWAY, "Unable to load provider models")
     })?))
+}
+async fn provider_profiles(State(h): State<Harness>) -> ApiResult<Json<Value>> {
+    Ok(Json(h.providers.public_state().map_err(|_| {
+        ApiError(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Provider configuration unavailable",
+        )
+    })?))
+}
+async fn upsert_provider(
+    State(h): State<Harness>,
+    JsonBody(input): JsonBody<providers::ProviderInput>,
+) -> ApiResult<Json<Value>> {
+    let provider = h
+        .providers
+        .upsert(input)
+        .await
+        .map_err(|_| invalid("Invalid provider configuration"))?;
+    Ok(Json(serde_json::to_value(provider).map_err(|_| {
+        ApiError(StatusCode::INTERNAL_SERVER_ERROR, "Provider save failed")
+    })?))
+}
+async fn select_provider(
+    State(h): State<Harness>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    let selected = h
+        .providers
+        .select(&id)
+        .await
+        .map_err(|_| invalid("Provider could not be selected"))?;
+    Ok(Json(json!({
+        "status":"selected",
+        "providerId":selected.id,
+        "version":selected.version
+    })))
+}
+async fn test_provider(State(h): State<Harness>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
+    Ok(Json(h.providers.test_provider(&id).await.map_err(
+        |_| ApiError(StatusCode::BAD_GATEWAY, "Provider connection test failed"),
+    )?))
+}
+async fn delete_provider(
+    State(h): State<Harness>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    h.providers
+        .delete(&id)
+        .await
+        .map_err(|_| invalid("Provider could not be deleted"))?;
+    Ok(Json(json!({"status":"deleted"})))
 }
 async fn jobs(State(h): State<Harness>) -> ApiResult<Json<Value>> {
     Ok(Json(h.store.jobs().await.map_err(db_error)?))
@@ -2049,6 +2115,10 @@ pub(crate) fn router(state: Harness) -> Router {
         .route("/sessions/{id}", patch(update_session))
         .route("/sessions/{id}/fork", post(fork_session))
         .route("/models", get(models))
+        .route("/providers", get(provider_profiles).post(upsert_provider))
+        .route("/providers/{id}", delete(delete_provider))
+        .route("/providers/{id}/select", post(select_provider))
+        .route("/providers/{id}/test", post(test_provider))
         .route("/config", get(get_config).post(set_config))
         .route("/memory/status", get(status))
         .route("/memory/health", get(memory_health))

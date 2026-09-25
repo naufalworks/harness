@@ -1335,6 +1335,97 @@ paths:
           $ref: '#/components/responses/Error'
         '5XX':
           $ref: '#/components/responses/Error'
+  /providers:
+    get:
+      operationId: providerProfiles
+      summary: List provider metadata without credentials.
+      responses:
+        '200':
+          description: Provider IDs, endpoints, versions, selection state, and key-presence flags.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+    post:
+      operationId: upsertProvider
+      summary: Add or version an OpenAI-compatible provider profile.
+      description: |
+        apiKey is required for a new provider and optional when updating an
+        existing provider. The credential is stored in the private provider
+        secret store and is never returned by this API.
+      requestBody:
+        required: true
+        content:
+          application/json: {}
+      responses:
+        '200':
+          description: Sanitized provider metadata.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /providers/{id}:
+    delete:
+      operationId: deleteProvider
+      summary: Hide a saved provider from future selection.
+      description: Historical private versions remain available to already-admitted work.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Provider deleted from future selection.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /providers/{id}/select:
+    post:
+      operationId: selectProvider
+      summary: Select the provider used by subsequently admitted work.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Selected provider ID and version.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /providers/{id}/test:
+    post:
+      operationId: testProvider
+      summary: Run a bounded authenticated provider connection test.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Sanitized connection-test result.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
   /config:
     get:
       operationId: getConfig

@@ -13,10 +13,25 @@ fn test_identity() -> Arc<RuntimeIdentity> {
 fn test_workers() -> Arc<WorkerHealth> {
     Arc::new(WorkerHealth::ready())
 }
+fn test_providers(store: &DbStore) -> ProviderRegistry {
+    ProviderRegistry::open_for_test(
+        std::env::temp_dir().join(format!(
+            "harness-provider-main-test-{}.json",
+            uuid::Uuid::new_v4()
+        )),
+        "http://127.0.0.1:9",
+        "synthetic",
+        "test",
+        store.clone(),
+        true,
+    )
+    .unwrap()
+}
 fn app_with_workers(store: DbStore, workers: Arc<WorkerHealth>) -> Router {
+    let providers = test_providers(&store);
     router(Harness {
         store,
-        agents: MemoryAgents::new("http://127.0.0.1:9", "synthetic", "test").unwrap(),
+        providers,
         auth: Arc::new(AuthState::new(
             "x".repeat(32),
             None,
@@ -127,9 +142,10 @@ fn archive_fixture() -> (std::path::PathBuf, Arc<archive::ArchiveStore>) {
     (dir, Arc::new(store))
 }
 fn app_with_archive(store: DbStore, archive: Arc<archive::ArchiveStore>) -> Router {
+    let providers = test_providers(&store);
     router(Harness {
         store,
-        agents: MemoryAgents::new("http://127.0.0.1:9", "synthetic", "test").unwrap(),
+        providers,
         auth: Arc::new(AuthState::new(
             "x".repeat(32),
             None,
@@ -327,9 +343,11 @@ async fn auth_default_body_limit_rejects_oversized_json() {
 }
 #[tokio::test]
 async fn auth_proxy_identity_and_hsts_are_explicit_opt_ins() {
+    let store = DbStore::init(":memory:").unwrap();
+    let providers = test_providers(&store);
     let state = Harness {
-        store: DbStore::init(":memory:").unwrap(),
-        agents: MemoryAgents::new("http://127.0.0.1:9", "synthetic", "test").unwrap(),
+        store,
+        providers,
         auth: Arc::new(AuthState::new(
             "x".repeat(32),
             None,
@@ -740,9 +758,11 @@ fn frontend_bounds_long_lists() {
 }
 #[tokio::test]
 async fn configured_origin_is_allowed() {
+    let store = DbStore::init(":memory:").unwrap();
+    let providers = test_providers(&store);
     let state = Harness {
-        store: DbStore::init(":memory:").unwrap(),
-        agents: MemoryAgents::new("http://127.0.0.1:9", "synthetic", "test").unwrap(),
+        store,
+        providers,
         auth: Arc::new(AuthState::new(
             "x".repeat(32),
             None,
@@ -799,6 +819,154 @@ async fn body_json(response: Response) -> Value {
     )
     .unwrap()
 }
+
+#[tokio::test]
+async fn provider_profile_is_secret_safe_and_chat_pins_admission_version() {
+    let store = DbStore::init(":memory:").unwrap();
+    let app = app_with(store.clone());
+    let secret = "sk-http-provider-secret";
+    let provider = json!({
+        "id":"custom",
+        "baseUrl":"http://127.0.0.1:9/v1",
+        "apiKey":secret,
+        "api":"openai-completions",
+        "discovery":{"type":"proxy"}
+    });
+    let saved = app
+        .clone()
+        .oneshot(
+            authorized("POST", "/providers")
+                .header("Content-Type", "application/json")
+                .body(Body::from(provider.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(saved.status(), StatusCode::OK);
+    let saved = body_json(saved).await;
+    assert_eq!(saved["id"], json!("custom"));
+    assert_eq!(saved["version"], json!(1));
+    assert_eq!(saved["keyPresent"], json!(true));
+    assert!(!saved.to_string().contains(secret));
+
+    let selected = app
+        .clone()
+        .oneshot(
+            authorized("POST", "/providers/custom/select")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(selected.status(), StatusCode::OK);
+
+    let request_id = storage::uid();
+    let session_id = storage::uid();
+    let admitted = app
+        .clone()
+        .oneshot(
+            authorized("POST", "/chat/submit")
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "request_id":request_id,
+                        "session_id":session_id,
+                        "scope":"global",
+                        "prompt":"pin this provider version"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(admitted.status(), StatusCode::ACCEPTED);
+    let admitted = body_json(admitted).await;
+    assert_eq!(admitted["provider_id"], json!("custom"));
+    assert_eq!(admitted["provider_version"], json!(1));
+    assert!(!admitted.to_string().contains(secret));
+
+    // Editing the provider creates version 2 while retaining the key only in the private
+    // provider store. The already-admitted receipt remains pinned to version 1.
+    let edited = app
+        .clone()
+        .oneshot(
+            authorized("POST", "/providers")
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "id":"custom",
+                        "baseUrl":"http://127.0.0.1:10/v1",
+                        "api":"openai-completions",
+                        "discovery":{"type":"proxy"}
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(edited.status(), StatusCode::OK);
+    assert_eq!(body_json(edited).await["version"], json!(2));
+
+    let receipt = app
+        .clone()
+        .oneshot(
+            authorized("GET", &format!("/chat/requests/{request_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let receipt = body_json(receipt).await;
+    assert_eq!(receipt["provider_id"], json!("custom"));
+    assert_eq!(receipt["provider_version"], json!(1));
+
+    let listed = app
+        .clone()
+        .oneshot(authorized("GET", "/providers").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let listed = body_json(listed).await;
+    assert_eq!(listed["selected"], json!("custom"));
+    assert!(!listed.to_string().contains(secret));
+    assert!(listed["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|provider| provider["id"] == "custom" && provider["version"] == 2));
+
+    let cannot_delete_selected = app
+        .clone()
+        .oneshot(
+            authorized("DELETE", "/providers/custom")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(cannot_delete_selected.status(), StatusCode::BAD_REQUEST);
+    let environment = app
+        .clone()
+        .oneshot(
+            authorized("POST", "/providers/environment/select")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(environment.status(), StatusCode::OK);
+    let deleted = app
+        .oneshot(
+            authorized("DELETE", "/providers/custom")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(deleted.status(), StatusCode::OK);
+}
+
 #[tokio::test]
 async fn queued_cancellation_is_durable_and_idempotent() {
     let store = DbStore::init(":memory:").unwrap();

@@ -36,6 +36,7 @@ mod patch; // P12-T04 explicit absent/null/value semantics for PATCH bodies
 mod plugins; // P18-T02 digest-pinned bounded extensions: providers, plugins, benchmark packs
 mod process_lock;
 mod processes; // P14-T01 live process-group handles so an explicit cancel can stop blocked work
+mod providers; // P21 runtime provider profiles; secrets stay outside SQLite and Git
 mod recording;
 mod recording_sql;
 mod repo_map; // P3-T04 bounded per-scope file/symbol map
@@ -47,8 +48,8 @@ mod subagent; // P5-T03 read-only exploration sub-agent: tools, bounds, report s
 mod tools; // P1-T05/T06 tool registry (needs-verify: written without cargo) // P4-T02 deterministic offline vectors and cosine scoring
 use api::auth::AuthState;
 use api::routes::router;
-use memory_agents::MemoryAgents;
 use process_lock::ProcessLock;
+use providers::ProviderRegistry;
 use storage::DbStore;
 
 const BUILD_COMMIT: &str = env!("HARNESS_GIT_COMMIT");
@@ -92,7 +93,7 @@ impl WorkerHealth {
 #[derive(Clone)]
 struct Harness {
     store: DbStore,
-    agents: MemoryAgents,
+    providers: ProviderRegistry,
     auth: Arc<AuthState>,
     port: u16,
     origins: Arc<Vec<String>>,
@@ -206,12 +207,10 @@ async fn main() -> Result<()> {
             }
         }
     }
-    let agents = MemoryAgents::new(
-        &env::var("HARNESS_BASE_URL").unwrap_or_else(|_| "https://api.longcat.chat/openai".into()),
-        &key,
-        &env::var("HARNESS_MODEL").unwrap_or_else(|_| "LongCat-2.0".into()),
-    )?
-    .with_spend_store(store.clone());
+    let base_url =
+        env::var("HARNESS_BASE_URL").unwrap_or_else(|_| "https://api.longcat.chat/openai".into());
+    let default_model = env::var("HARNESS_MODEL").unwrap_or_else(|_| "LongCat-2.0".into());
+    let providers = ProviderRegistry::open(&base_url, &key, &default_model, store.clone())?;
     let mut origins = vec![
         format!("http://127.0.0.1:{}", addr.port()),
         format!("http://localhost:{}", addr.port()),
@@ -235,7 +234,7 @@ async fn main() -> Result<()> {
     );
     let state = Harness {
         store: store.clone(),
-        agents: agents.clone(),
+        providers: providers.clone(),
         auth: Arc::new(
             AuthState::new(
                 token,
@@ -258,16 +257,16 @@ async fn main() -> Result<()> {
     workers.recording.store(true, Ordering::Release);
     let worker_health = workers.clone();
     let recording_store = store.clone();
-    let recording_agents = agents.clone();
+    let recording_providers = providers.clone();
     let recording_shutdown = shutdown_rx.clone();
     let recording_handle = tokio::spawn(async move {
-        recording::worker(recording_store, recording_agents, recording_shutdown).await;
+        recording::worker(recording_store, recording_providers, recording_shutdown).await;
         worker_health.recording.store(false, Ordering::Release);
     });
     workers.extraction.store(true, Ordering::Release);
     let worker_health = workers.clone();
     let extraction_handle = tokio::spawn(async move {
-        memory_agents::worker(store, agents, shutdown_rx).await;
+        memory_agents::worker(store, providers, shutdown_rx).await;
         worker_health.extraction.store(false, Ordering::Release);
     });
     println!("harness listening on {{http://{addr}}} (authenticated, single-user)");

@@ -1,5 +1,29 @@
 # PROGRESS — journal
 
+## 2026-09-25 · P21-T02 secure runtime provider backend complete; CI/promotion pending
+
+Implemented the backend boundary required before any custom-provider UI:
+authenticated add/edit/test/select/delete APIs, persistent environment-provider
+fallback, append-only provider versions, and schema 024 receipt routing metadata.
+Secrets are not stored in SQLite: saved credentials live in atomic private
+`.harness/providers.json` with 0600 file / real 0700 parent checks, and public
+responses expose only key presence. Admitted turns and safe retries retain
+provider ID/version, so later rotation, selection, or deletion cannot silently
+change provider configuration for already-recorded work.
+
+Custom endpoints validate the OpenAI-compatible contract, disallow URL
+credentials/query/fragment and ordinary plaintext HTTP, block loopback/private/
+link-local/metadata/documentation/transition-network targets, refuse redirects,
+and pin a freshly validated DNS result into the client. Final local evidence:
+373 Rust tests, strict Clippy, migrations 001→024, recording and UI-coverage
+contracts, strict release-quality, mocked Chromium, and real browser-to-Axum
+E2E all passed. The local release verifier correctly leaves coverage,
+Sigstore/signature, and cross-target checks to release-evidence CI.
+
+P21-T03 through P21-T10 remain `todo`. T02 is backend/API-only by design;
+the custom-provider editor requested by the owner is P21-T04. Production was
+not restarted or migrated by this task.
+
 ## 2026-09-25 · P21-T01 actual UI coverage inventory complete; implementation tasks remain
 
 Compared every shipped method+path to OpenAPI and present browser affordances:
