@@ -4,6 +4,11 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 fn temp_root() -> PathBuf {
     let path = std::env::temp_dir().join(format!("harness-provider-test-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&path).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
     path
 }
 
@@ -286,4 +291,44 @@ async fn secret_store_refuses_symlinked_parent_directory() {
     assert!(result.is_err());
     assert!(!real.join("providers.json").exists());
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn existing_shared_parent_is_refused_without_changing_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let parent = std::env::temp_dir().join(format!(
+        "harness-provider-shared-parent-test-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&parent).unwrap();
+    std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let db = parent.join("db.sqlite");
+    let store = DbStore::init(db.to_str().unwrap()).unwrap();
+    let registry = ProviderRegistry::open_for_test(
+        parent.join("providers.json"),
+        "http://127.0.0.1:9",
+        "environment-secret",
+        "model",
+        store,
+        true,
+    )
+    .unwrap();
+    let (address, _server) = one_response("200 OK", &[], r#"{\"data\":[]}"#).await;
+    let result = registry
+        .upsert(input(
+            "shared",
+            format!("http://127.0.0.1:{}/v1", address.port()),
+            Some("sk-shared-parent-test"),
+        ))
+        .await;
+    assert!(result.is_err());
+    assert_eq!(
+        std::fs::metadata(&parent).unwrap().permissions().mode() & 0o777,
+        0o755,
+        "the provider store must never chmod an existing shared directory"
+    );
+    assert!(!parent.join("providers.json").exists());
+    let _ = std::fs::remove_dir_all(parent);
 }

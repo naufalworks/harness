@@ -14,11 +14,18 @@ fn test_workers() -> Arc<WorkerHealth> {
     Arc::new(WorkerHealth::ready())
 }
 fn test_providers(store: &DbStore) -> ProviderRegistry {
+    let directory = std::env::temp_dir().join(format!(
+        "harness-provider-main-test-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
     ProviderRegistry::open_for_test(
-        std::env::temp_dir().join(format!(
-            "harness-provider-main-test-{}.json",
-            uuid::Uuid::new_v4()
-        )),
+        directory.join("providers.json"),
         "http://127.0.0.1:9",
         "synthetic",
         "test",

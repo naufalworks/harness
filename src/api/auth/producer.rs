@@ -286,11 +286,18 @@ mod tests {
         use std::sync::Arc;
         use tower::ServiceExt;
         let store = crate::storage::DbStore::init(":memory:").unwrap();
+        let directory = std::env::temp_dir().join(format!(
+            "harness-provider-producer-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
         let providers = crate::providers::ProviderRegistry::open_for_test(
-            std::env::temp_dir().join(format!(
-                "harness-provider-producer-test-{}.json",
-                uuid::Uuid::new_v4()
-            )),
+            directory.join("providers.json"),
             "http://127.0.0.1:9",
             "synthetic",
             "test",

@@ -788,13 +788,20 @@ fn persist_store(path: &Path, state: &ProviderFile) -> Result<()> {
         if metadata.file_type().is_symlink() || !metadata.is_dir() {
             bail!("provider secret directory must be a real directory");
         }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if metadata.permissions().mode() & 0o077 != 0 {
+                bail!("provider secret directory permissions must be 0700");
+            }
+        }
     } else {
         fs::create_dir_all(parent)?;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+        }
     }
     if path.exists() && fs::symlink_metadata(path)?.file_type().is_symlink() {
         bail!("provider secret store cannot be a symlink");

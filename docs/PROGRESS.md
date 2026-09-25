@@ -15,10 +15,19 @@ Custom endpoints validate the OpenAI-compatible contract, disallow URL
 credentials/query/fragment and ordinary plaintext HTTP, block loopback/private/
 link-local/metadata/documentation/transition-network targets, refuse redirects,
 and pin a freshly validated DNS result into the client. Final local evidence:
-373 Rust tests, strict Clippy, migrations 001→024, recording and UI-coverage
+374 Rust tests, strict Clippy, migrations 001→024, recording and UI-coverage
 contracts, strict release-quality, mocked Chromium, and real browser-to-Axum
 E2E all passed. The local release verifier correctly leaves coverage,
 Sigstore/signature, and cross-target checks to release-evidence CI.
+
+The first GitHub quality/release-evidence run caught a test-isolation flaw:
+test provider files were placed directly under the shared `/tmp` directory,
+and the secret-store writer attempted to chmod its existing parent to 0700.
+That is now fail-closed instead: an existing parent must already be private,
+only a newly created provider directory is chmodded, and test fixtures create
+their own 0700 directories. The exact CI-failing HTTP test, seven provider
+security tests, strict Clippy, and the full 374-test Rust suite pass while
+`/tmp` remains 1777.
 
 P21-T03 through P21-T10 remain `todo`. T02 is backend/API-only by design;
 the custom-provider editor requested by the owner is P21-T04. Production was
