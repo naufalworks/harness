@@ -223,17 +223,60 @@
 
       <section id="view-settings" class="view pageview" hidden>
         <div class="pagecol">
-          <h2>Project &amp; models</h2>
-          <p class="muted">The main model answers. The extraction model proposes memories. The verification model checks file and symbol claims against recorded tool evidence. Recall combines local FTS5 and deterministic offline vectors—no network or extra recall model call.</p>
+          <h2>Project, providers &amp; models</h2>
+          <p class="muted">Configure the server-side project scope, provider connection, and model roles used by new work. Existing admitted turns keep the provider/model version they already recorded.</p>
           <details id="p21-capabilities" class="panel">
             <summary>What the UI can do today · P21 feature status</summary>
             <h3>Available now</h3>
-            <p>Chat and durable activity, approval prompts, reviewed memory suggestions, sanitized history and exports, transcript imports, and project settings are available in the navigation. You can type a server project path and type model IDs; Show provider model names lists IDs from the one configured provider.</p>
+            <p>Chat and durable activity, approval prompts, reviewed memory suggestions, sanitized history and exports, transcript imports, project settings, and custom provider management are available in the navigation. Provider API keys are write-only: the UI can replace one but never read it back.</p>
             <h3>Not yet available in the UI</h3>
-            <p>Adding or editing a custom provider and its API key, selecting models from a dropdown, and browsing folders on the Harness server are planned P21 work. Editing the model names below does not change the provider connection.</p>
+            <p>Selecting model roles from discovered provider IDs and browsing folders on the Harness server are planned P21 work. Model names below are still typed manually until that work lands.</p>
             <h3>Advanced API-only operations</h3>
             <p>Some diagnostics, governance, recovery, and exact-original archive operations have authenticated APIs but no complete browser controls yet. The activity panel shows recorded work, not the model's private reasoning. Unavailable external conversation text cannot be recovered from tool records.</p>
           </details>
+          <section class="panel" aria-labelledby="provider-title">
+            <div class="sectionhead compact">
+              <div>
+                <h3 id="provider-title">Providers &amp; secrets</h3>
+                <p class="muted small">The selected provider is used only for newly admitted work. Stored API keys are never displayed.</p>
+              </div>
+              <button id="provider-add" class="secondary" type="button">Add provider</button>
+            </div>
+            <p id="provider-status" class="muted small" role="status" aria-live="polite"></p>
+            <div id="provider-list" class="provider-list"><p class="empty">Open this view to load providers.</p></div>
+            <form id="providerform" class="provider-editor" hidden autocomplete="off">
+              <h3 id="provider-form-title">Add provider</h3>
+              <input id="provider-editing-original" type="hidden" value="">
+              <label for="providerid">Provider ID</label>
+              <input id="providerid" maxlength="64" pattern="[a-z0-9][a-z0-9_-]{0,63}" spellcheck="false" autocomplete="off" required>
+              <label for="providerbaseurl">Base URL</label>
+              <input id="providerbaseurl" type="url" maxlength="2048" placeholder="https://api.example.com/v1" spellcheck="false" autocomplete="off" required>
+              <div class="grid2">
+                <div>
+                  <label for="providerapi">API adapter</label>
+                  <select id="providerapi"><option value="openai-completions">openai-completions</option></select>
+                </div>
+                <div>
+                  <label for="providerdiscovery">Discovery</label>
+                  <select id="providerdiscovery"><option value="proxy">proxy</option></select>
+                </div>
+              </div>
+              <label for="providerkey">API key</label>
+              <input id="providerkey" type="password" maxlength="4096" autocomplete="new-password" spellcheck="false">
+              <p id="provider-key-hint" class="muted small">Required for a new provider. When editing, leave blank to keep the stored key.</p>
+              <div class="row actions">
+                <button id="provider-save" type="submit">Save provider</button>
+                <button id="provider-cancel" class="secondary" type="button">Cancel</button>
+              </div>
+              <details class="provider-paste">
+                <summary>Paste bounded YAML / JSON</summary>
+                <p class="muted small">Paste one provider object. Parsing fills this form only; it never saves or selects automatically.</p>
+                <label for="providerpaste">Provider configuration</label>
+                <textarea id="providerpaste" rows="7" maxlength="8192" spellcheck="false" autocomplete="off" placeholder="my-provider:&#10;  baseUrl: https://api.example.com/v1&#10;  apiKey: &lt;enter-secret-in-UI&gt;&#10;  api: openai-completions&#10;  discovery:&#10;    type: proxy"></textarea>
+                <button id="provider-parse" class="secondary" type="button">Parse into form</button>
+              </details>
+            </form>
+          </section>
           <form id="settingsform" class="panel">
             <label for="mainmodel">Main model</label>
             <input id="mainmodel" maxlength="128" placeholder="Use server default">

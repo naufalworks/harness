@@ -97,6 +97,28 @@ class UiCoverageContract(unittest.TestCase):
         self.assertIn("Not yet available in the UI", self.index)
         self.assertIn("model's private reasoning", self.index)
 
+    def test_provider_management_is_ui_supported(self) -> None:
+        classified = {
+            op: group
+            for group in self.matrix["groups"]
+            for op in group["operations"]
+        }
+        for op in (
+            "GET /providers",
+            "POST /providers",
+            "DELETE /providers/{id}",
+            "POST /providers/{id}/select",
+            "POST /providers/{id}/test",
+        ):
+            with self.subTest(operation=op):
+                self.assertEqual(classified[op]["status"], "ui_supported")
+                self.assertEqual(classified[op]["anchor"], "provider-list")
+        for marker in ("provider-list", "providerform", "providerkey", "providerpaste"):
+            self.assertIn(f'id="{marker}"', self.index)
+        self.assertIn("write-only", self.index)
+        self.assertIn("clearProviderEditor", self.frontend)
+        self.assertIn("parseProviderPaste", self.frontend)
+
     def test_no_provider_credentials_in_matrix_or_UI_inventory(self) -> None:
         text = MATRIX.read_text(encoding="utf-8")
         self.assertNotRegex(text, r"sk-[A-Za-z0-9_-]{12,}")

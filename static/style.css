@@ -212,6 +212,21 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere}
 .panel>button{margin-top:10px}
 .panel .check{display:flex;gap:10px;align-items:flex-start;font-weight:400;font-size:13px;margin:16px 0}
 .panel .check input{flex-shrink:0;margin-top:1px}
+.sectionhead.compact{margin:0 0 10px}
+.sectionhead.compact h3{margin:0}
+.provider-list{display:flex;flex-direction:column;gap:10px}
+.provider-card{border:1px solid var(--border);border-radius:10px;padding:12px;background:var(--canvas);overflow-wrap:anywhere}
+.provider-card-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.provider-card p{margin:5px 0 0}
+.provider-card .actions{margin-top:10px;flex-wrap:wrap}
+.provider-editor{margin-top:14px;border-top:1px solid var(--border);padding-top:14px}
+.provider-editor>h3{margin-top:0}
+.provider-paste{margin-top:14px}
+.provider-paste>summary{cursor:pointer;font-weight:600}
+.provider-paste textarea{font-family:var(--mono);font-size:12px}
+.badge.subtle{background:transparent;color:var(--text-3)}
+.danger{border-color:color-mix(in srgb,var(--red) 45%,var(--border));color:var(--red)}
+.error{color:var(--red)}
 .settings-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:12px}
 .settings-grid label{margin-top:0;font-size:12px}
 #modelnames{margin:12px 0 0;padding:12px;background:var(--code-bg);border:1px solid var(--border);border-radius:10px;max-height:300px;overflow:auto;font:12px/1.6 var(--mono)}

@@ -114,18 +114,26 @@
       ]
     },
     {
-      "status": "api_only",
-      "surface": "provider and producer integration",
-      "anchor": null,
-      "detail": "Provider profile CRUD/selection/testing and external producer ingestion are authenticated backend contracts. Provider management is API-only until P21-T04 adds reviewed browser controls; producer ingestion remains an integration surface.",
+      "status": "ui_supported",
+      "surface": "provider management",
+      "anchor": "provider-list",
+      "detail": "Providers & secrets lists the environment and saved profiles, shows the selected provider, and provides reviewed add/edit/test/select/delete controls. API keys are write-only and are never returned by GET or persisted in browser storage; deleting a selected provider is refused until another profile is selected.",
       "operations": [
-        "POST /chat",
-        "POST /external-history/events",
         "GET /providers",
         "POST /providers",
         "DELETE /providers/{id}",
         "POST /providers/{id}/select",
         "POST /providers/{id}/test"
+      ]
+    },
+    {
+      "status": "api_only",
+      "surface": "producer integration",
+      "anchor": null,
+      "detail": "Raw chat submission and external producer event ingestion are authenticated integration surfaces used by clients/producers rather than standalone owner configuration actions. Their user-visible effects are covered by the Chat and External development sessions UI rather than exposing raw request builders.",
+      "operations": [
+        "POST /chat",
+        "POST /external-history/events"
       ]
     },
     {

@@ -1,6 +1,7 @@
 # P21 — UI control center and configuration coverage
 
-Status: design and backlog only. P21 is **not implemented** by adding this document.
+Status: implementation in progress. P21-T01 through P21-T04 are implemented; later
+tasks remain gated by the task ledger and final P21-T10 release verification.
 
 ## Goal
 
@@ -54,13 +55,14 @@ server-side directory names and retain a typed-path option.
 
 ## Provider configuration contract
 
-**Implemented backend in P21-T02:** provider metadata/secret persistence,
+**Implemented backend in P21-T02 and owner UI in P21-T04:** provider metadata/secret persistence,
 selection, connection-test endpoint, environment fallback, provider-version
-pinning on admitted turns, and the network/SSRF boundary below. These endpoints
-remain deliberately classified API-only until P21-T04 adds the reviewed UI.
-P21-T03 still owns richer discovery/capability semantics; a successful T02
-connection test only proves the selected provider returned a valid model-list
-shape.
+pinning on admitted turns, and the network/SSRF boundary below. The reviewed
+Providers & secrets surface now lists profiles, identifies the selected provider,
+and supports add/edit/test/select/delete without ever reading a stored key back
+into the browser. P21-T03 owns the richer discovery/capability semantics; a
+successful provider test proves only the selected provider's bounded model-list
+discovery result and leaves generation/tools/streaming/usage explicitly untested.
 
 Accept an owner-entered structured form **or** an optional bounded YAML/JSON paste
 with identical validation. Example is deliberately a placeholder, not a real key:
@@ -106,6 +108,19 @@ iamhc:
 - Startup `.env` provider remains a migration-compatible fallback until the owner
   explicitly selects a saved provider; no breaking migration or default endpoint
   change. Harness is a provider **client**, not a public OpenAI proxy service.
+
+### P21-T04 bounded provider editor
+
+The owner may use structured fields or paste one bounded JSON/YAML provider object.
+Paste parsing is deliberately a small exact-contract parser rather than a general
+YAML interpreter: it accepts only provider ID, `baseUrl`, `apiKey`,
+`api: openai-completions`, and `discovery.type: proxy`, with byte/field limits
+and unknown/duplicate-field refusal. Parsing fills the form and clears the paste
+buffer; it never saves or selects automatically. Stored keys remain write-only:
+editing with a blank key omits `apiKey` so the backend keeps the existing secret,
+and successful save, cancel, lock, and form reset clear secret inputs from the DOM.
+Browser storage is reserved for non-secret UI/session state and never receives a
+provider key.
 
 ## Model selection
 

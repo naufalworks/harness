@@ -7,6 +7,11 @@ const root=path.resolve(__dirname,'..');const out=process.env.QA_DIR || path.joi
  try{
   const page=await browser.newPage({viewport:{width:1120,height:900},colorScheme:'light'});const errors=[];page.on('pageerror',e=>errors.push(String(e)));
   let importCandidate=true,inlineCandidate=true,inlineData=null,failConfirm=false,chatHistory=[],receipt=null,importCalls=0,retryCalls=0,reverts=0,editCalls=0,savedConfig=null,previewCalls=0;
+  let selectedProvider='environment',providerSecret=null,providerPosts=[];
+  const providerRows=()=>[
+   {id:'environment',baseUrl:'https://startup.example/v1',api:'openai-completions',discovery:{type:'proxy'},version:1,selected:selectedProvider==='environment',keyPresent:true,source:'environment'},
+   ...(providerSecret===null?[]:[{id:'ui-provider',baseUrl:'https://api.example.com/v1',api:'openai-completions',discovery:{type:'proxy'},version:providerPosts.length,selected:selectedProvider==='ui-provider',keyPresent:true,source:'saved'}])
+  ];
   const malicious='<img src=x onerror="window.INJECTED=1">';
   // P16-T01 fixtures. The graph carries one recorded dependency, one row that merely
   // co-occurred (temporal proximity), and an omitted-node cursor so expansion is exercised.
@@ -114,6 +119,19 @@ const root=path.resolve(__dirname,'..');const out=process.env.QA_DIR || path.joi
    }else if(p==='/jobs')result={jobs:[{id:'failed-job',status:retryCalls?'pending':'failed',scope:'global',attempts:3,error:'Extraction failed; check provider configuration.'}]};
    else if(p==='/jobs/failed-job/retry'){retryCalls++;result={status:'queued'};}
    else if(p==='/memory/ingest'){importCalls++;result={duplicate:false,chunks_queued:2,warnings:[]};}
+   else if(p==='/providers'){
+    if(req.method()==='GET')result={selected:selectedProvider,providers:providerRows()};
+    else {
+     const body=JSON.parse(req.postData());providerPosts.push(body);
+     if(body.apiKey)providerSecret=body.apiKey;
+     else assert(providerSecret,'blank-key edit must preserve an existing synthetic secret');
+     result={id:body.id,baseUrl:body.baseUrl,api:body.api,discovery:body.discovery,version:providerPosts.length,selected:selectedProvider===body.id,keyPresent:true,source:'saved'};
+    }
+   }
+   else if(p==='/providers/ui-provider/test')result={providerId:'ui-provider',version:providerPosts.length,connectionStatus:'reached_provider',discovery:{type:'proxy',status:'available',errorCode:null,modelCount:2},capabilities:{generation:{status:'untested'},tools:{status:'untested'},streaming:{status:'untested'},usage:{status:'untested'}},manualModelIdAllowed:true,data:[{id:'model-a'},{id:'model-b'}]};
+   else if(p==='/providers/environment/select'){selectedProvider='environment';result={status:'selected',providerId:'environment',version:1};}
+   else if(p==='/providers/ui-provider/select'){selectedProvider='ui-provider';result={status:'selected',providerId:'ui-provider',version:providerPosts.length};}
+   else if(p==='/providers/ui-provider'&&req.method()==='DELETE'){providerSecret=null;selectedProvider='environment';result={status:'deleted'};}
    else if(p==='/config'){
     if(req.method()==='GET')result={main:'synthetic-main',extraction:'synthetic-small',verification:'synthetic-verifier'};
     else {savedConfig=JSON.parse(req.postData());result={status:'saved'};}
@@ -231,6 +249,47 @@ const root=path.resolve(__dirname,'..');const out=process.env.QA_DIR || path.joi
   await page.setInputFiles('#file',{name:'sample.jsonl',mimeType:'application/json',buffer:Buffer.from('{"type":"message","message":{"role":"user","content":"I prefer Rust"}}')});
   await page.check('#consent');await page.click('#importbutton');await page.waitForFunction(()=>document.getElementById('notice').textContent.includes('Queued 2'));assert.strictEqual(importCalls,1);
   await page.click('[data-view="settings"]');await page.waitForFunction(()=>document.getElementById('mainmodel').value==='synthetic-main');
+  await page.waitForFunction(()=>document.querySelector('#provider-list')?.textContent.includes('environment'));
+  assert(!(await page.locator('#provider-list').innerText()).includes('synthetic-ui-secret'),'provider list must never display provider secrets');
+  await page.click('#provider-add');
+  await page.locator('.provider-paste>summary').click();
+  const pastedSecret='synthetic-ui-secret';
+  await page.fill('#providerpaste','ui-provider:\n  baseUrl: https://api.example.com/v1\n  apiKey: '+pastedSecret+'\n  api: openai-completions\n  discovery:\n    type: proxy');
+  await page.click('#provider-parse');
+  assert.strictEqual(await page.locator('#providerpaste').inputValue(),'','successful parse clears the paste field');
+  assert.strictEqual(await page.locator('#providerid').inputValue(),'ui-provider');
+  assert.strictEqual(await page.locator('#providerkey').inputValue(),pastedSecret);
+  const browserStorage=await page.evaluate(()=>JSON.stringify({...localStorage,...sessionStorage}));
+  assert(!browserStorage.includes(pastedSecret),'provider key must not enter browser storage');
+  await page.click('#provider-save');
+  await page.waitForFunction(()=>document.querySelector('#provider-list')?.textContent.includes('ui-provider'));
+  assert.strictEqual(providerSecret,pastedSecret);
+  assert.strictEqual(await page.locator('#providerkey').inputValue(),'','provider key is cleared after save');
+  assert(!(await page.locator('body').innerText()).includes(pastedSecret),'provider key must not render into visible DOM');
+  const savedCard=page.locator('.provider-card').filter({hasText:'ui-provider'});
+  await savedCard.getByRole('button',{name:'Edit'}).click();
+  assert.strictEqual(await page.locator('#providerkey').inputValue(),'','stored key is never redisplayed while editing');
+  await page.click('#provider-save');
+  assert.strictEqual(providerPosts.at(-1).apiKey,undefined,'blank-key edit omits apiKey so backend retains it');
+  assert.strictEqual(providerSecret,pastedSecret);
+  await savedCard.getByRole('button',{name:'Test discovery'}).click();
+  await page.waitForFunction(()=>document.querySelector('#provider-status')?.textContent.includes('discovery available'));
+  assert((await page.locator('#provider-status').innerText()).includes('remain untested'));
+  await savedCard.getByRole('button',{name:'Select'}).click();
+  await page.waitForFunction(()=>document.querySelector('#provider-status')?.textContent.includes('Selected provider: ui-provider'));
+  assert(await page.locator('.provider-card').filter({hasText:'ui-provider'}).getByRole('button',{name:'Delete'}).isDisabled(),'selected provider cannot be deleted from UI');
+  const envCard=page.locator('.provider-card').filter({hasText:'environment'});
+  await envCard.getByRole('button',{name:'Select'}).click();
+  const removable=page.locator('.provider-card').filter({hasText:'ui-provider'});
+  page.once('dialog',dialog=>dialog.accept());
+  await removable.getByRole('button',{name:'Delete'}).click();
+  await page.waitForFunction(()=>!document.querySelector('#provider-list')?.textContent.includes('ui-provider'));
+  assert.strictEqual(providerSecret,null);
+  await page.click('#provider-add');
+  await page.fill('#providerpaste','{"oops":{"baseUrl":"https://api.example.com/v1","api":"openai-completions","discovery":{"type":"proxy"},"unknown":true}}');
+  await page.click('#provider-parse');
+  assert((await page.locator('#provider-status').innerText()).includes('unsupported field'));
+  await page.click('#provider-cancel');
   assert.strictEqual(await page.locator('#verificationmodel').inputValue(),'synthetic-verifier');
   await page.fill('#verificationmodel','synthetic-verifier-2');await page.click('#settingsform button[type="submit"]');
   await page.waitForFunction(()=>document.getElementById('notice').textContent.includes('Model settings saved'));
@@ -379,10 +438,13 @@ const root=path.resolve(__dirname,'..');const out=process.env.QA_DIR || path.joi
     assert(coverageText.includes(phrase), 'capability inventory omits: ' + phrase);
   }
   assert(coverageText.includes('browsing folders on the Harness server'));
-  assert(coverageText.includes('Adding or editing a custom provider'));
+  assert(coverageText.includes('custom provider management'));
+  assert(coverageText.includes('write-only'));
   assert.strictEqual(await page.locator('#p21-capabilities input').count(), 0, 'inventory must not contain inert configuration fields');
   await page.click('#lock');assert(await page.locator('#workspace').isHidden());assert.strictEqual(await page.locator('#candidates').innerText(),'');
   assert.strictEqual(await page.locator('#verificationmodel').inputValue(),'');
+  assert.strictEqual(await page.locator('#providerkey').inputValue(),'');
+  assert.strictEqual(await page.locator('#providerpaste').inputValue(),'');
   assert.deepStrictEqual(errors,[]);
   const result={status:'passed',scope:'Mocked API browser checks; Rust server not executed',checks:['connect','keyboard_drawer_escape','token_not_persisted','conversation','inline_suggestion_tray','suggestion_edit','suggestion_dismiss','diff_card_rendered','diff_card_revert','diff_card_create_revert','verification_badge','verification_claim_text_inert','verification_model_setting','retrieval_receipt_panel','retrieval_receipt_text_inert','retrieval_preview_rehearsal','incident_confidence_labels','incident_temporal_proximity_not_causation','incident_server_side_search','incident_kind_status_filters','incident_bounded_expansion_cursor','incident_chronological_timeline','history_search_citations','history_forget_distinct_from_source_delete','history_forget_retains_content','history_source_delete_confirmed_and_irreversible','history_privacy_audit_trail','export_preview_before_release','export_digest_pinned_at_review','import_inbox_only','memory_evidence','html_injection_rendered_as_text','failed_approval_recoverable','suggestion_save','import','job_retry','model_settings','project_dashboard','mobile_overflow','dark_mode','lock','no_javascript_exceptions']};
   fs.writeFileSync(path.join(out,'ui-results.json'),JSON.stringify(result,null,2));console.log(JSON.stringify(result));

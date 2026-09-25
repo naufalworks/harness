@@ -60,6 +60,7 @@ function rememberPending(value) {
 // cautious path it had before.
 async function api(path, body) { return apiRequest(path, { token, body }); }
 async function apiPatch(path, body) { return apiRequest(path, { token, body, method: 'PATCH' }); }
+async function apiDelete(path) { return apiRequest(path, { token, method: 'DELETE' }); }
 async function exchangeBrowserSession(masterToken) { return apiExchangeSession(masterToken); }
 function node(tag, text, cls) { const element = document.createElement(tag); if (text !== undefined) element.textContent = text; if (cls) element.className = cls; return element; }
 function persistSession() { sessionStorage.setItem('harness_scope', scope); sessionStorage.setItem('harness_session', session); }
@@ -444,6 +445,9 @@ $('lock').addEventListener('click', () => {
   $('workspace').hidden = true; $('auth').hidden = false; setConnectionState('locked', 'Locked');
   for (const id of ['log','candidates','jobs','recalled','sessionlist','retrieval-list']) $(id).replaceChildren();
   $('modelnames').textContent = ''; $('stats').textContent = ''; $('mainmodel').value = ''; $('extractmodel').value = ''; $('verificationmodel').value = ''; $('prompt').value = ''; $('file').value = ''; $('consent').checked = false;
+  clearProviderEditor();
+  $('provider-list').replaceChildren();
+  $('provider-status').textContent = '';
   $('setup-banner').hidden = true; $('scopelist').replaceChildren();
   notice('Locked. Unsaved draft text was cleared; recorded work stays on the server.');
 });
@@ -573,6 +577,219 @@ $('importform').addEventListener('submit', async event => {
   try { const request = { name: file.name, content: await file.text(), scope }; if ($('format').value) request.format = $('format').value; const result = await api('/memory/ingest', request); notice(result.duplicate ? 'This source was already imported. No duplicate jobs were created.' : `Queued ${result.chunks_queued} chunks. ${result.warnings.join(' ')}`); await loadJobs(); await refreshStatus(); }
   catch (error) { notice(error.message, true); } finally { $('importbutton').disabled = false; }
 });
+let providerState = { selected: null, providers: [] };
+const PROVIDER_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+function providerStatus(text, error = false) {
+  $('provider-status').textContent = text;
+  $('provider-status').classList.toggle('error', error);
+}
+function clearProviderEditor() {
+  const form = $('providerform');
+  if (!form) return;
+  form.reset();
+  $('provider-editing-original').value = '';
+  $('providerid').disabled = false;
+  $('providerkey').value = '';
+  $('providerpaste').value = '';
+  $('provider-form-title').textContent = 'Add provider';
+  $('provider-key-hint').textContent = 'Required for a new provider. When editing, leave blank to keep the stored key.';
+  form.hidden = true;
+}
+function openProviderEditor(provider = null) {
+  clearProviderEditor();
+  $('providerform').hidden = false;
+  if (provider) {
+    $('provider-form-title').textContent = `Edit ${String(provider.id)}`;
+    $('provider-editing-original').value = String(provider.id);
+    $('providerid').value = String(provider.id);
+    $('providerid').disabled = true;
+    $('providerbaseurl').value = String(provider.baseUrl || '');
+    $('providerapi').value = String(provider.api || 'openai-completions');
+    $('providerdiscovery').value = String(provider.discovery?.type || 'proxy');
+    $('provider-key-hint').textContent = provider.keyPresent
+      ? 'A key is stored. Leave this blank to keep it, or enter a replacement.'
+      : 'No stored key is present. Enter a key before saving.';
+  }
+  $('providerid').focus();
+}
+function renderProviders(data) {
+  providerState = {
+    selected: typeof data?.selected === 'string' ? data.selected : null,
+    providers: Array.isArray(data?.providers) ? data.providers : [],
+  };
+  const list = $('provider-list');
+  list.replaceChildren();
+  if (!providerState.providers.length) {
+    list.append(node('p', 'No provider profiles are available.', 'empty'));
+    return;
+  }
+  for (const provider of providerState.providers) {
+    const card = node('article', undefined, 'provider-card');
+    const heading = node('div', undefined, 'provider-card-head');
+    const title = node('strong', String(provider.id || 'unnamed provider'));
+    heading.append(title);
+    if (provider.selected) heading.append(node('span', 'Selected', 'badge'));
+    else heading.append(node('span', 'Available', 'badge subtle'));
+    card.append(heading);
+    card.append(
+      node('p', String(provider.baseUrl || ''), 'mono small'),
+      node('p', `${String(provider.api || 'unknown adapter')} · discovery ${String(provider.discovery?.type || 'unknown')} · version ${String(provider.version ?? '?')}`, 'muted small'),
+      node('p', provider.keyPresent ? 'API key: stored (hidden)' : 'API key: missing', 'muted small'),
+    );
+    const actions = node('div', undefined, 'row actions');
+    const test = node('button', 'Test discovery', 'secondary'); test.type = 'button';
+    test.addEventListener('click', async () => {
+      test.disabled = true; providerStatus(`Testing ${String(provider.id)}…`);
+      try {
+        const result = await api(`/providers/${encodeURIComponent(provider.id)}/test`, {});
+        const state = String(result.discovery?.status || 'unknown');
+        const count = Number(result.discovery?.modelCount || 0);
+        providerStatus(`Tested ${String(provider.id)}: discovery ${state}${state === 'available' ? ` · ${count} model ID${count === 1 ? '' : 's'}` : ''}. Generation/tools/streaming/usage remain untested.`);
+      } catch (error) { providerStatus(`Provider test failed: ${error.message}`, true); }
+      finally { test.disabled = false; }
+    });
+    actions.append(test);
+    if (!provider.selected) {
+      const select = node('button', 'Select', 'secondary'); select.type = 'button';
+      select.addEventListener('click', async () => {
+        select.disabled = true;
+        try {
+          await api(`/providers/${encodeURIComponent(provider.id)}/select`, {});
+          providerStatus(`Selected ${String(provider.id)} for newly admitted work.`);
+          await loadProviders();
+        } catch (error) { providerStatus(error.message, true); select.disabled = false; }
+      });
+      actions.append(select);
+    }
+    if (provider.source === 'saved') {
+      const edit = node('button', 'Edit', 'secondary'); edit.type = 'button'; edit.addEventListener('click', () => openProviderEditor(provider)); actions.append(edit);
+      const remove = node('button', 'Delete', 'secondary danger'); remove.type = 'button';
+      if (provider.selected) {
+        remove.disabled = true;
+        remove.title = 'Select another provider before deleting this one.';
+      } else remove.addEventListener('click', async () => {
+        if (!window.confirm(`Delete provider “${String(provider.id)}” from future selection? Historical admitted work keeps its pinned provider version.`)) return;
+        remove.disabled = true;
+        try { await apiDelete(`/providers/${encodeURIComponent(provider.id)}`); providerStatus(`Deleted ${String(provider.id)} from future selection.`); await loadProviders(); }
+        catch (error) { providerStatus(error.message, true); remove.disabled = false; }
+      });
+      actions.append(remove);
+    } else {
+      const environment = node('span', 'Startup environment provider · edit in server environment', 'muted small');
+      actions.append(environment);
+    }
+    card.append(actions);
+    list.append(card);
+  }
+}
+async function loadProviders() {
+  providerStatus('Loading providers…');
+  try {
+    const data = await api('/providers');
+    renderProviders(data);
+    providerStatus(providerState.selected ? `Selected provider: ${providerState.selected}` : 'No selected provider.');
+  } catch (error) {
+    providerStatus(`Could not load providers. ${error.message}`, true);
+    throw error;
+  }
+}
+function providerScalar(value) {
+  const v = value.trim();
+  if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) return v.slice(1, -1);
+  return v;
+}
+function validateProviderPasteObject(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Paste must contain one provider object.');
+  let id, config;
+  if (typeof raw.id === 'string') {
+    const allowed = new Set(['id','baseUrl','apiKey','api','discovery']);
+    for (const key of Object.keys(raw)) if (!allowed.has(key)) throw new Error('Paste contains an unsupported field.');
+    id = raw.id; config = raw;
+  } else {
+    const keys = Object.keys(raw);
+    if (keys.length !== 1) throw new Error('Paste must contain exactly one provider ID.');
+    id = keys[0]; config = raw[id];
+  }
+  if (!PROVIDER_ID_RE.test(id)) throw new Error('Provider ID must use lowercase letters, digits, _ or - and start with a letter or digit.');
+  if (!config || typeof config !== 'object' || Array.isArray(config)) throw new Error('Provider configuration must be an object.');
+  const allowed = new Set(['baseUrl','apiKey','api','discovery', ...(config === raw ? ['id'] : [])]);
+  for (const key of Object.keys(config)) if (!allowed.has(key)) throw new Error('Paste contains an unsupported field.');
+  if (typeof config.baseUrl !== 'string' || !config.baseUrl || config.baseUrl.length > 2048) throw new Error('baseUrl is required and must be bounded.');
+  if (config.api !== 'openai-completions') throw new Error('Only api: openai-completions is supported.');
+  if (!config.discovery || typeof config.discovery !== 'object' || Array.isArray(config.discovery) || Object.keys(config.discovery).some(key => key !== 'type') || config.discovery.type !== 'proxy') throw new Error('Only discovery.type: proxy is supported.');
+  if (config.apiKey !== undefined && (typeof config.apiKey !== 'string' || config.apiKey.length > 4096)) throw new Error('apiKey must be a bounded string.');
+  return { id, baseUrl: config.baseUrl, apiKey: config.apiKey || '', api: config.api, discovery: { type: config.discovery.type } };
+}
+function parseProviderPaste(text) {
+  if (typeof text !== 'string' || !text.trim() || new TextEncoder().encode(text).length > 8192) throw new Error('Paste must contain 1–8192 UTF-8 bytes.');
+  const trimmed = text.trim();
+  if (trimmed.startsWith('{')) return validateProviderPasteObject(JSON.parse(trimmed));
+  if (text.includes('\t')) throw new Error('YAML tabs are not supported.');
+  const lines = text.split(/\r?\n/).filter(line => line.trim());
+  if (lines.length < 5 || lines.length > 8) throw new Error('YAML must use the bounded provider template.');
+  const root = lines.shift().match(/^([a-z0-9][a-z0-9_-]{0,63}):\s*$/);
+  if (!root) throw new Error('YAML must start with one provider ID.');
+  const config = {};
+  let inDiscovery = false;
+  for (const line of lines) {
+    const discoveryHead = line.match(/^  discovery:\s*$/);
+    if (discoveryHead) {
+      if (inDiscovery || config.discovery) throw new Error('Duplicate discovery block.');
+      config.discovery = {}; inDiscovery = true; continue;
+    }
+    if (inDiscovery) {
+      const type = line.match(/^    type:\s*(.+?)\s*$/);
+      if (!type || config.discovery.type !== undefined) throw new Error('Only discovery.type is allowed.');
+      config.discovery.type = providerScalar(type[1]); inDiscovery = false; continue;
+    }
+    const field = line.match(/^  (baseUrl|apiKey|api):\s*(.*?)\s*$/);
+    if (!field || config[field[1]] !== undefined) throw new Error('YAML contains an unsupported or duplicate field.');
+    config[field[1]] = providerScalar(field[2]);
+  }
+  return validateProviderPasteObject({ [root[1]]: config });
+}
+$('provider-add').addEventListener('click', () => openProviderEditor());
+$('provider-cancel').addEventListener('click', () => { clearProviderEditor(); providerStatus('Provider edit cancelled.'); });
+$('provider-parse').addEventListener('click', () => {
+  try {
+    const parsed = parseProviderPaste($('providerpaste').value);
+    $('providerid').disabled = false;
+    $('provider-editing-original').value = '';
+    $('providerid').value = parsed.id;
+    $('providerbaseurl').value = parsed.baseUrl;
+    $('providerapi').value = parsed.api;
+    $('providerdiscovery').value = parsed.discovery.type;
+    $('providerkey').value = parsed.apiKey;
+    $('providerpaste').value = '';
+    $('provider-form-title').textContent = 'Review parsed provider';
+    providerStatus('Parsed into the form. Review it, then save explicitly.');
+  } catch (error) { providerStatus(`Could not parse provider configuration. ${error.message}`, true); }
+});
+$('providerform').addEventListener('submit', async event => {
+  event.preventDefault();
+  const id = $('providerid').value.trim();
+  const editing = $('provider-editing-original').value;
+  const key = $('providerkey').value;
+  if (!PROVIDER_ID_RE.test(id)) return providerStatus('Provider ID must use lowercase letters, digits, _ or - and start with a letter or digit.', true);
+  if (editing && editing !== id) return providerStatus('Provider ID cannot be renamed while editing. Add a new provider instead.', true);
+  if (!editing && !key) return providerStatus('A new provider requires an API key.', true);
+  const payload = {
+    id,
+    baseUrl: $('providerbaseurl').value.trim(),
+    api: $('providerapi').value,
+    discovery: { type: $('providerdiscovery').value },
+  };
+  if (key) payload.apiKey = key;
+  $('provider-save').disabled = true;
+  try {
+    await api('/providers', payload);
+    const message = editing ? `Saved a new version of ${id}. The stored key was ${key ? 'replaced' : 'kept'}.` : `Saved provider ${id}. Select it explicitly when ready.`;
+    clearProviderEditor();
+    providerStatus(message);
+    await loadProviders();
+  } catch (error) { providerStatus(`Provider was not saved. ${error.message}`, true); }
+  finally { $('provider-save').disabled = false; $('providerkey').value = ''; }
+});
 $('settingsform').addEventListener('submit', async event => { event.preventDefault(); try { await api('/config', { main: $('mainmodel').value.trim(), extraction: $('extractmodel').value.trim(), verification: $('verificationmodel').value.trim() }); notice('Model settings saved.'); } catch (error) { notice(error.message, true); } });
 $('loadmodels').addEventListener('click', async () => { try { const data = await api('/models'); $('modelnames').textContent = data.data.map(m => String(m.id)).join('\n'); } catch (error) { notice(error.message, true); } });
 $('refreshmemory').addEventListener('click', () => loadCandidates().catch(e => notice(e.message, true)));
@@ -581,7 +798,7 @@ $('refreshprocesses').addEventListener('click', () => loadProcesses().catch(e =>
 $('refreshgit').addEventListener('click', () => loadGitState().catch(e => notice(e.message, true)));
 for (const tab of document.querySelectorAll('[data-view]')) tab.addEventListener('click', async () => {
   for (const t of document.querySelectorAll('[data-view]')) { const active = t === tab; t.classList.toggle('active', active); t.setAttribute('aria-pressed', String(active)); $(`view-${t.dataset.view}`).hidden = !active; }
-  try { if (tab.dataset.view === 'memory') await loadCandidates(); if (tab.dataset.view === 'imports') { await loadJobs(); await loadProcesses(); await loadGitState(); } if (tab.dataset.view === 'settings') { const data = await api('/config'); $('mainmodel').value = data.main || ''; $('extractmodel').value = data.extraction || ''; $('verificationmodel').value = data.verification || ''; } } catch (error) { notice(error.message, true); }
+  try { if (tab.dataset.view === 'memory') await loadCandidates(); if (tab.dataset.view === 'imports') { await loadJobs(); await loadProcesses(); await loadGitState(); } if (tab.dataset.view === 'settings') { const [data] = await Promise.all([api('/config'), loadProviders()]); $('mainmodel').value = data.main || ''; $('extractmodel').value = data.extraction || ''; $('verificationmodel').value = data.verification || ''; } } catch (error) { notice(error.message, true); }
 });
 // P11-T05: the two always-on clocks are now one tick, installed at the end of this file.
 

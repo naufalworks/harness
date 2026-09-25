@@ -1642,7 +1642,7 @@ P20's schema/memory and P19's truthful transcript boundaries.
 - result-verify: 374 Rust tests passed after the final secret-store hardening, strict Clippy with `-D warnings` passed, migrations 001→024 preserved data/FTS/FKs, recording contracts passed, provider tests cover private-store permissions/SQLite exclusion/version pinning/redirect refusal/internal-network policy/IPv6 transition cases/symlink refusal/shared-parent non-mutation, and the strict local release gate passed mocked Chromium plus real browser→Axum→SQLite→filesystem→provider E2E and failure-path E2E. The first CI run exposed a test-isolation bug where a test store directly under `/tmp` could chmod that shared parent; the fix now refuses non-private existing parents, uses dedicated 0700 test directories, preserves `/tmp` at 1777, and passes the exact failed HTTP test plus the full suite. Local release-quality explicitly leaves coverage, signing, and cross-target checks to release-evidence CI; no T02 production deployment is claimed here.
 
 ### P21-T03 · Provider model discovery, capability testing and fallback
-- status: todo
+- status: done
 - priority: high
 - lane: provider-backend
 - parallel: no
@@ -1651,9 +1651,11 @@ P20's schema/memory and P19's truthful transcript boundaries.
 - files: src/memory_agents.rs, src/api/, docs/api.yaml, tests/
 - done-when: authenticated proxy discovery invokes only the chosen provider's bounded /models and returns sanitized IDs; connection checks report tested vs untested tools/streaming/usage without conflating a model list with successful generation. Timeout, 401, empty/malformed/unsupported /models and manual model IDs are visible and never fall back to another provider.
 - verify: cargo test --locked && bash scripts/verify_e2e.sh
+- result: Selected-provider model discovery now uses only that provider's bounded authenticated `/models` call and returns exact validated/deduplicated IDs with explicit available/empty/unavailable failure states. Discovery never falls back across providers, manual IDs remain explicitly allowed, and generation/tools/streaming/usage remain `untested` rather than being inferred from a successful model-list response.
+- result-verify: Commit `46f4615` passed GitHub Actions run `36110954525` and is verified live: production `/health` reports the exact commit, schema 24 and both workers healthy; the running binary SHA matches `target/release/harness`; `/memory/health` is OK at 699 memories / 700 revisions / 699 embeddings; the pre-deploy recovery backup is verified. Provider GET output exposes no credential material.
 
 ### P21-T04 · Custom API editor in UI, including YAML/JSON paste
-- status: todo
+- status: done
 - priority: high
 - lane: provider-ui
 - parallel: no
@@ -1662,6 +1664,8 @@ P20's schema/memory and P19's truthful transcript boundaries.
 - files: static/index.html, static/app.js, static/api.js, static/style.css, tests/recording_ui.cjs, tests/browser_e2e.cjs
 - done-when: owner UI can list, add, edit, test, choose and remove provider profiles with structured inputs or bounded paste of the example YAML/JSON vocabulary (baseUrl, apiKey, api: openai-completions, discovery.type: proxy); never display stored secrets or persist input in browser storage; distinguish validation, save, rotation and test outcomes; protect destructive actions with confirmation.
 - verify: bash scripts/verify_browser.sh && bash scripts/verify_e2e.sh
+- result: Added a Providers & secrets owner surface with selected/environment-provider labeling, add/edit/test/select/delete controls, password-only key entry, blank-key rotation semantics, destructive confirmation, and a deliberately bounded JSON/YAML parser that accepts only the supported provider vocabulary, fills the form for review, clears the paste buffer, and never auto-saves or auto-selects. Saved keys are never read back, rendered, placed in URLs, or written to browser storage; save/cancel/lock clear secret inputs.
+- result-verify: Both mocked Chromium suites pass the provider editor, hostile-text, storage and lock/reset checks. The real browser→Axum test creates/edits/tests/selects/deletes a provider against a loopback mock in an isolated temporary working directory, proves the synthetic key is absent from GET responses/browser storage/SQLite, and preserves the existing tool/permission workflow. Failure-path E2E also passes denial, crash recovery, cancellation/safe retry and unsafe-retry refusal after isolating each test's private provider store.
 
 ### P21-T05 · Select main, extraction and verification models from /models
 - status: todo
