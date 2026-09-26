@@ -365,6 +365,16 @@
             <button id="railclose" class="iconbtn" type="button" title="Close panel" aria-label="Close activity panel"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 3l10 10M13 3L3 13"/></svg></button>
           </div>
         </div>
+        <section id="agent-runtime" class="overview-panel" aria-label="Recorded runtime activity">
+          <div class="subhead"><strong>Runtime</strong><span id="activity-elapsed" class="muted">—</span></div>
+          <dl class="overview-grid">
+            <div><dt>Phase</dt><dd id="activity-phase">Saved</dd></div>
+            <div><dt>Provider</dt><dd id="activity-provider">Unknown</dd></div>
+            <div><dt>Model</dt><dd id="activity-model">Unknown</dd></div>
+            <div><dt>Routing</dt><dd id="activity-routing">Recorded turn</dd></div>
+          </dl>
+          <p class="muted small">This panel shows recorded phases, tool/permission activity and safe previews. Private model reasoning and scratchpad text are not displayed.</p>
+        </section>
         <section id="agent-plan" class="plan-strip" hidden>
           <div class="subhead"><strong>Plan</strong><span id="plan-count" class="muted"></span></div>
           <div id="plan-items"></div>

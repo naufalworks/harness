@@ -1,6 +1,6 @@
 # P21 — UI control center and configuration coverage
 
-Status: implementation in progress. P21-T01 through P21-T07 are implemented; later
+Status: implementation in progress. P21-T01 through P21-T08 are implemented; later
 tasks remain gated by the task ledger and final P21-T10 release verification.
 
 ## Goal
@@ -204,6 +204,15 @@ supplies an approved, shareable reasoning-summary field, support it only through
 an opt-in, schema-validated, redacted adapter and clear provenance; default UI
 shows event-based progress. Keep context receipts clearly labeled as model
 inputs rather than evidence of what the model thought.
+
+P21-T08 implements that boundary in the shipped rail. The runtime header reads
+provider ID/version and model from the durable admission receipt and derives its
+phase only from recorded request/step/permission state. Elapsed time uses the
+recorded capture/update timestamps. Ordinary tool calls retain bounded input and
+output previews, but provider/model-call, verification, compaction, sub-agent and
+`think` scratchpad payloads are withheld from the owner-facing step projection;
+only their status, timing, usage and safe tool-owned summary remain visible. Harness
+does not currently claim or synthesize a provider reasoning-summary field.
 
 ## Feature coverage inventory and UI acceptance
 

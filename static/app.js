@@ -255,7 +255,7 @@ function generationView(requestId) {
   if (generationStream.view?.isConnected && generationStream.view.dataset.requestId === requestId) return generationStream.view;
   const box = node('article', undefined, 'message assistant generation-message generating');
   box.dataset.requestId = requestId; box.dataset.state = 'generating'; box.setAttribute('aria-live', 'polite');
-  box.append(node('strong', 'Harness'), node('span', 'Waiting for the recorded answer…', 'generation-content'), node('span', 'Thinking…', 'muted generation-state'));
+  box.append(node('strong', 'Harness'), node('span', 'Waiting for the recorded answer…', 'generation-content'), node('span', 'Generating…', 'muted generation-state'));
   const empty = $('log').querySelector(':scope > .empty'); if (empty) empty.remove();
   $('log').append(box); generationStream.view = box;
   $('chatscroll').scrollTop = $('chatscroll').scrollHeight;
@@ -268,11 +268,11 @@ function renderGenerationEvent(event) {
   const box = generationView(event.request_id);
   box.classList.remove('generating','complete','failed','interrupted'); box.classList.add(state); box.dataset.state = state;
   const content = box.querySelector('.generation-content'); const label = box.querySelector('.generation-state');
-  if (state === 'chunk') { if (box.dataset.chunked !== 'true') { content.textContent = ''; box.dataset.chunked = 'true'; } content.textContent += typeof event.content === 'string' ? event.content : ''; label.textContent = 'Thinking\u2026'; }
+  if (state === 'chunk') { if (box.dataset.chunked !== 'true') { content.textContent = ''; box.dataset.chunked = 'true'; } content.textContent += typeof event.content === 'string' ? event.content : ''; label.textContent = 'Generating\u2026'; }
   if (state === 'complete') { content.textContent = typeof event.content === 'string' ? event.content : ''; label.textContent = 'Done · saved response'; }
   else if (state === 'failed') { content.textContent = 'The provider failed before an answer was saved.'; label.textContent = `Failed${event.error_code ? ` · ${event.error_code}` : ''}`; }
   else if (state === 'interrupted') { content.textContent = 'The server restarted before an answer was saved. Nothing was resent.'; label.textContent = 'Interrupted'; }
-  else { content.textContent = 'Waiting for the recorded answer…'; label.textContent = 'Thinking…'; }
+  else { content.textContent = 'Waiting for the recorded answer…'; label.textContent = 'Generating…'; }
   $('chatscroll').scrollTop = $('chatscroll').scrollHeight;
 }
 function applyGenerationEvent(event) {
@@ -1021,13 +1021,19 @@ function renderAgentSteps(steps) {
     heading.append(node('span', step.summary || (step.status === 'running' ? 'working…' : 'step recorded'), 'step-summary'));
     heading.append(node('span', agentMeta(step), 'step-meta'));
     const body = node('div', undefined, 'step-details');
-    body.append(node('div', undefined, 'step-preview'));
-    body.firstChild.append(node('strong', 'Input'), node('pre', step.input_preview || '(none)'));
-    const output = node('div', undefined, 'step-preview');
-    output.append(node('strong', 'Output'), node('pre', step.output_preview || '(none)'));
-    body.append(output);
-    if (step.previews_capped) body.append(node('p', 'Preview capped at 2 KB.', 'muted'));
-    if (step.truncated) body.append(node('p', 'Tool output was capped.', 'muted'));
+    if (step.preview_visibility === 'private_hidden') {
+      body.append(node('p', step.tool_name === 'think'
+        ? 'Private scratchpad content is intentionally hidden. Only the recorded step status is shown.'
+        : 'Provider/model working payload is intentionally hidden. This activity view shows recorded status and usage, not private reasoning.', 'muted'));
+    } else {
+      body.append(node('div', undefined, 'step-preview'));
+      body.firstChild.append(node('strong', 'Input'), node('pre', step.input_preview || '(none)'));
+      const output = node('div', undefined, 'step-preview');
+      output.append(node('strong', 'Output'), node('pre', step.output_preview || '(none)'));
+      body.append(output);
+      if (step.previews_capped) body.append(node('p', 'Preview capped at 2 KB.', 'muted'));
+      if (step.truncated) body.append(node('p', 'Tool output was capped.', 'muted'));
+    }
     detail.append(heading, body);
     list.append(detail);
   }
@@ -1107,7 +1113,44 @@ function renderAgentPermission(permission) {
 }
 
 function agentStatusLabel(state) {
-  return {captured:'Saved · queued', generating:'Thinking…', complete:'Done', failed:'Saved · answer failed', interrupted:'Saved · interrupted'}[state] || 'Saved';
+  return {captured:'Saved · queued', generating:'Generating…', complete:'Done', failed:'Saved · answer failed', interrupted:'Saved · interrupted'}[state] || 'Saved';
+}
+function activityPhase(receipt, steps, permission, verification) {
+  if (receipt?.cancelled_at) return 'Cancelled at recorded boundary';
+  if (receipt?.cancel_requested_at && !receipt?.cancelled_at) return 'Cancellation requested';
+  if (permission) return 'Waiting for approval';
+  const running = (steps || []).find(step => step.status === 'running');
+  if (running?.kind === 'verification') return 'Verifying answer';
+  if (running?.kind === 'model_call') return 'Generating with model';
+  if (running?.kind === 'tool_call') return `Running tool${running.tool_name ? ` · ${running.tool_name}` : ''}`;
+  if (running?.kind === 'subagent') return 'Delegated work running';
+  if (running?.kind === 'compaction') return 'Compacting recorded context';
+  if (running) return 'Recorded work running';
+  if (receipt?.state === 'captured') return 'Queued';
+  if (receipt?.state === 'generating') return verification?.status ? 'Finalizing recorded work' : 'Processing recorded work';
+  if (receipt?.state === 'complete') return 'Complete';
+  if (receipt?.state === 'failed') return 'Failed';
+  if (receipt?.state === 'interrupted') return 'Interrupted';
+  return 'Saved';
+}
+function activityElapsed(receipt) {
+  const start = Date.parse(receipt?.captured_at || '');
+  if (!Number.isFinite(start)) return 'Elapsed unavailable';
+  const terminal = ['complete','failed','interrupted'].includes(receipt?.state);
+  const recordedEnd = Date.parse(receipt?.updated_at || '');
+  const end = terminal && Number.isFinite(recordedEnd) ? recordedEnd : Date.now();
+  const seconds = Math.max(0, Math.round((end - start) / 1000));
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')} elapsed`;
+}
+function renderActivityRuntime(receipt, steps, permission, verification) {
+  const provider = typeof receipt?.provider_id === 'string' && receipt.provider_id ? receipt.provider_id : 'Unknown';
+  const model = typeof receipt?.model === 'string' && receipt.model ? receipt.model : 'Unknown';
+  const version = Number(receipt?.provider_version);
+  $('activity-phase').textContent = activityPhase(receipt, steps, permission, verification);
+  $('activity-provider').textContent = provider;
+  $('activity-model').textContent = model;
+  $('activity-routing').textContent = Number.isInteger(version) && version > 0 ? `Pinned provider version ${version}` : 'Recorded turn';
+  $('activity-elapsed').textContent = activityElapsed(receipt);
 }
 
 // P2-T03: diff cards. A diff is tool text, so each line becomes a <span> built from textContent
@@ -1331,6 +1374,9 @@ async function refreshAgentTurn(receipt) {
     // A turn recorded before this route existed simply has no retrieval receipt; that is not a
     // reason to blank the rest of the rail.
     api(`/chat/requests/${encodeURIComponent(requestId)}/retrieval`).catch(() => null),
+    // Routing/model/timestamps come from the durable admission receipt. It contains provider ID
+    // and pinned version, never the provider credential.
+    api(`/chat/requests/${encodeURIComponent(requestId)}`).catch(() => receipt || null),
   ]);
   if (!token || requestId !== (pending?.request_id || requestId) || sessionId !== session) return;
   agentState.requestId = requestId; agentState.sessionId = sessionId; agentState.scope = turnScope;
@@ -1355,6 +1401,7 @@ async function refreshAgentTurn(receipt) {
   $('usage-cost').textContent = 'Tokens only · no price configured';
   const match = (data[2].permissions || []).find(item => item.request_id === requestId);
   renderAgentPermission(match || null);
+  renderActivityRuntime(data[6] || receipt || {}, agentState.steps, match || null, agentState.verification);
   if (!match && !agentState.steps.length && !(data[1].items || []).length && !agentState.changes.length && !agentState.verification) { $('agent-turn').hidden = true; $('rail').hidden = true; }
 }
 

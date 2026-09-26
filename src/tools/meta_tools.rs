@@ -46,9 +46,9 @@ impl Tool for Think {
                 format!("a thought holds at most {THOUGHT_MAX} characters"),
             );
         }
-        // The text is the step output: the UI renders it as a collapsed reasoning card, and the
-        // model can read its own scratchpad back later. The one-word acknowledgement is the
-        // summary, so the transcript is not padded with it.
+        // The text is retained in the durable step so the model can read its own scratchpad back
+        // later. Owner-facing step projections deliberately hide both the input and output of
+        // `think`; the one-word acknowledgement is the only safe activity summary.
         ToolResult::ok("noted", thought.to_string())
     }
 }

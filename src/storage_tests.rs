@@ -2805,6 +2805,38 @@ async fn turn_steps_projects_a_bounded_latest_verification() {
 }
 
 #[tokio::test]
+async fn turn_steps_hide_private_model_and_think_payloads_but_keep_tool_previews() {
+    let db = DbStore::init(":memory:").unwrap();
+    db.run(|c| {
+        let stamp = now();
+        c.execute("INSERT INTO sessions(id,scope,created_at) VALUES('session-private','global',?1)",[&stamp])?;
+        c.execute("INSERT INTO messages(id,session_id,role,content,status,created_at) VALUES('request-private','session-private','user','hi','pending',?1)",[&stamp])?;
+        c.execute("INSERT INTO chat_receipts(request_id,session_id,scope,model,signature,redacted,state,captured_at,updated_at) VALUES('request-private','session-private','global','main','sig-private',0,'generating',?1,?1)",[&stamp])?;
+
+        c.execute(crate::agentic_sql::STEP_BEGIN,params!["model-private","request-private",None::<String>,0,"model_call",None::<String>,None::<String>,json!({"messages":[{"role":"assistant","content":"PRIVATE-MODEL-WORKING"}]}).to_string(),stamp])?;
+        c.execute(crate::agentic_sql::STEP_FINISH,params!["model-private","complete",json!({"text":"PRIVATE-MODEL-OUTPUT"}).to_string(),10,0,Some(2_i64),Some(3_i64),None::<String>,now()])?;
+
+        c.execute(crate::agentic_sql::STEP_BEGIN,params!["think-private","request-private",None::<String>,1,"tool_call",Some("think"),Some("call-think"),json!({"thought":"PRIVATE-SCRATCHPAD-TEXT"}).to_string(),stamp])?;
+        c.execute(crate::agentic_sql::STEP_FINISH,params!["think-private","complete",json!({"summary":"noted","content":"PRIVATE-SCRATCHPAD-TEXT"}).to_string(),20,0,None::<i64>,None::<i64>,None::<String>,now()])?;
+
+        c.execute(crate::agentic_sql::STEP_BEGIN,params!["read-visible","request-private",None::<String>,2,"tool_call",Some("read"),Some("call-read"),json!({"path":"notes.md"}).to_string(),stamp])?;
+        c.execute(crate::agentic_sql::STEP_FINISH,params!["read-visible","complete",json!({"summary":"read notes.md","content":"VISIBLE-TOOL-OUTPUT"}).to_string(),19,0,None::<i64>,None::<i64>,None::<String>,now()])?;
+        Ok(())
+    }).await.unwrap();
+
+    let response = db.turn_steps("request-private".into()).await.unwrap();
+    let serialized = response.to_string();
+    assert!(!serialized.contains("PRIVATE-MODEL-WORKING"));
+    assert!(!serialized.contains("PRIVATE-MODEL-OUTPUT"));
+    assert!(!serialized.contains("PRIVATE-SCRATCHPAD-TEXT"));
+    assert!(serialized.contains("VISIBLE-TOOL-OUTPUT"));
+    assert_eq!(response["steps"][0]["preview_visibility"], "private_hidden");
+    assert_eq!(response["steps"][1]["preview_visibility"], "private_hidden");
+    assert_eq!(response["steps"][1]["summary"], "noted");
+    assert_eq!(response["steps"][2]["preview_visibility"], "bounded_tool");
+}
+
+#[tokio::test]
 async fn scopes_merge_partial_updates_and_gate_tools() {
     let db = DbStore::init(":memory:").unwrap();
     assert!(

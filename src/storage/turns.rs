@@ -17,26 +17,34 @@ impl DbStore {
     // ---- P1-T12 read side: what the UI polls between turns ----------------------------
     // These only read rows the loop already committed. Nothing here recomputes a summary or
     // re-renders a diff, so the UI can never show a version of the turn the record disagrees with.
-    /// Every step of one turn in `seq` order. `input_preview`/`output_preview` are the first
-    /// 2 KB of the stored JSON as text (`SQL substr`), so a long tool output or a whole message
-    /// array cannot blow up a poll; `previews_capped` says when that cut happened, because a
-    /// chopped JSON string that pretends to be complete is worse than no preview at all.
+    /// Every step of one turn in `seq` order. Tool previews are the first 2 KB of stored JSON,
+    /// except for the private `think` scratchpad. Provider/model-call, verification, compaction
+    /// and sub-agent payloads are also deliberately withheld from this owner-facing projection:
+    /// they can contain provider messages, tool arguments or other model-private working text.
+    /// The UI gets durable status/usage/timing plus ordinary tool previews without turning a
+    /// debugging endpoint into a raw chain-of-thought surface.
     /// `summary` is the tool's own phrase, read back from the finished step's output; a step that
     /// is still running has none yet, and its `tool_started` activity event carries it instead.
     pub async fn turn_steps(&self, request_id: String) -> Result<Value> {
         self.run(move|c|{
             let mut stmt=c.prepare(crate::agentic_sql::STEPS_LIST)?;
             let rows=stmt.query_map([&request_id],|r|{
-                let input:Option<String>=r.get(6)?;
-                let output:Option<String>=r.get(7)?;
+                let kind:String=r.get(2)?;
+                let tool_name:Option<String>=r.get(4)?;
+                let stored_input:Option<String>=r.get(6)?;
+                let stored_output:Option<String>=r.get(7)?;
+                let private_preview = kind != "tool_call" || tool_name.as_deref() == Some("think");
+                let input=(!private_preview).then_some(stored_input.clone()).flatten();
+                let output=(!private_preview).then_some(stored_output.clone()).flatten();
                 let capped=[input.as_deref(),output.as_deref()].iter().flatten().any(|p|p.len()>=PREVIEW_BYTES);
-                let summary=output.as_deref().and_then(|p|serde_json::from_str::<Value>(p).ok())
+                let summary=stored_output.as_deref().and_then(|p|serde_json::from_str::<Value>(p).ok())
                     .and_then(|v|v.get("summary").and_then(Value::as_str).map(str::to_string));
                 Ok(json!({
-                    "id":r.get::<_,String>(0)?,"seq":r.get::<_,i64>(1)?,"kind":r.get::<_,String>(2)?,
-                    "status":r.get::<_,String>(3)?,"tool_name":r.get::<_,Option<String>>(4)?,
+                    "id":r.get::<_,String>(0)?,"seq":r.get::<_,i64>(1)?,"kind":kind,
+                    "status":r.get::<_,String>(3)?,"tool_name":tool_name,
                     "tool_call_id":r.get::<_,Option<String>>(5)?,"summary":summary,
                     "input_preview":input,"output_preview":output,"previews_capped":capped,
+                    "preview_visibility":if private_preview {"private_hidden"} else {"bounded_tool"},
                     "output_bytes":r.get::<_,i64>(8)?,"truncated":r.get::<_,i64>(9)?==1,
                     "tokens_in":r.get::<_,Option<i64>>(10)?,"tokens_out":r.get::<_,Option<i64>>(11)?,
                     "error_code":r.get::<_,Option<String>>(12)?,

@@ -1707,7 +1707,7 @@ P20's schema/memory and P19's truthful transcript boundaries.
 - result-verify: Mocked Chromium covers allowlist browsing, denial recovery, cancel semantics, unchanged permission mode and the narrow/mobile layout. The real browser→Axum E2E configures a disposable browse root, proves an outside-root browse is denied without changing the typed draft, selects the project through the server picker, then saves and uses that project in the existing filesystem/provider workflow.
 
 ### P21-T08 · Truthful live work and model activity UI
-- status: todo
+- status: done
 - priority: medium
 - lane: activity-ui
 - parallel: no
@@ -1716,6 +1716,8 @@ P20's schema/memory and P19's truthful transcript boundaries.
 - files: static/index.html, static/app.js, static/api.js, src/api/stream.rs, tests/recording_ui.cjs, tests/browser_e2e.cjs
 - done-when: plan, model/provider label, status, elapsed time, bounded tool/permission activity, verification, usage and recovery are discoverable and accurately resumed after reload; show redacted provider-supplied reasoning **summary** only when explicitly available and validated, never raw hidden chain-of-thought or fabricated activity. Missing transcript remains explicitly unavailable.
 - verify: bash scripts/verify_browser.sh && bash scripts/verify_e2e.sh
+- result: The durable activity rail now exposes recorded phase, elapsed time, pinned provider ID/version, model, plan, tool/permission state, verification, usage, file/recovery activity and existing reload/SSE-resume behavior. User-visible generation copy says Generating rather than implying hidden thought. The step projection now withholds provider/model-call, verification, compaction, sub-agent and `think` scratchpad payloads while retaining bounded previews for ordinary tools; the UI explicitly labels those private payloads as hidden.
+- result-verify: Storage tests prove model-call and `think` private text never appears in the owner-facing step projection while an ordinary tool preview remains available. Mocked Chromium verifies runtime provider/model/version/phase/elapsed labels and the private-scratchpad boundary; the real browser→Axum E2E verifies the pinned runtime label while a turn is waiting for approval, then continues through the existing filesystem/provider/verification flow. Browser and real E2E suites pass.
 
 ### P21-T09 · Complete owner-facing feature navigation and accessibility
 - status: todo
