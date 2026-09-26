@@ -1,5 +1,37 @@
 # PROGRESS — journal
 
+## 2026-09-26 · P21 UI control center complete and production-verified
+
+Completed P21-T01 through P21-T10. The owner-facing Control center now covers
+write-only custom provider management, selected-provider model discovery with
+main/extraction/verification roles and manual fallback, an allowlisted server
+folder chooser plus typed absolute paths, and a durable runtime activity view.
+The activity projection shows recorded phase/provider/model/timing/tool/permission/
+verification/usage evidence while withholding provider/model working payloads and
+the `think` scratchpad from owner-facing step previews.
+
+Final release E2E covers provider secret non-disclosure, provider selection change
+while an admitted turn waits for approval, key rotation across registry restart,
+model discovery failure/manual fallback, folder escape denial, permission flow,
+lost/recovered work and existing crash/cancel/safe-retry boundaries. The strict
+local release gate passed; its network-only scanner/signature/cross-target skips
+were supplied by GitHub rather than treated as passes. Exact candidate
+`3a1843b678f771ad2b284c0f2a0c5b642427a096` passed branch CI `36229029198`
+and main CI `36229553686`, including quality, browser-e2e, supply-chain and
+release-evidence.
+
+Before promotion, `.harness/backups/pre-p21-final-20260926T082415Z.sqlite` was
+created from the live SQLite database and cleanly re-opened at schema 24 with
+699 memories, 700 revisions and 699 embeddings. Production deployment
+`deploy-20260926T083212Z-3a1843b` verified the exact commit, running/on-disk
+binary identity, schema 24, database readiness and both workers. Post-deploy
+memory health is OK at the unchanged 699/700/699 baseline. The public provider
+projection contains no credential field, `environment` remains selected,
+selected-provider model discovery is available with manual fallback, and the
+server folder browser is explicitly allowlisted to `/root/workspace`. A live
+Chromium pass verified Control center, provider/model discovery and folder picker
+with no provider credential in DOM/browser storage and no page errors.
+
 ## 2026-09-25 · P21-T02 secure runtime provider backend complete; CI/promotion pending
 
 Implemented the backend boundary required before any custom-provider UI:

@@ -1,7 +1,7 @@
 # P21 — UI control center and configuration coverage
 
-Status: implementation in progress. P21-T01 through P21-T09 are implemented; final
-tasks remain gated by the task ledger and final P21-T10 release verification.
+Status: complete and production-verified. P21-T01 through P21-T10 are recorded in
+the task ledger; the shipped UI/API-only boundary remains enforced by the coverage contract.
 
 ## Goal
 

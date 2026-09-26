@@ -86,7 +86,7 @@ Codex, and future clients resume shared Harness project context without inventin
 conversation text that the client did not provide. P20 is complete; its task evidence is
 recorded in `docs/TASKS.md` and `docs/PROGRESS.md`.
 
-## P21 — UI control center and configuration coverage (planned)
+## P21 — UI control center and configuration coverage (complete)
 
 Audit the existing HTTP surface against current browser controls and close owner
 workflow gaps without equating backend availability with usable UI. Build securely

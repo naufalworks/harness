@@ -1733,7 +1733,7 @@ P20's schema/memory and P19's truthful transcript boundaries.
 - result-verify: The route-to-UI matrix remains fail-closed and now points project configuration at the actual project form. Browser tests assert the Control center labels, jump destinations, keyboard focusability and labelled regions while retaining the existing mobile/dark-mode/hostile-text checks. Existing destructive provider/process/history/export controls retain explicit confirmation and permission boundaries.
 
 ### P21-T10 · End-to-end provider/folder/UI release and production gate
-- status: todo
+- status: done
 - priority: high
 - lane: release
 - parallel: no
@@ -1742,3 +1742,5 @@ P20's schema/memory and P19's truthful transcript boundaries.
 - files: scripts/verify_release.sh, tests/browser_e2e.cjs, tests/browser_e2e_failure.cjs, tests/, docs/PROGRESS.md
 - done-when: disposable real-browser/provider/SQLite tests cover secret non-disclosure, provider switch mid-turn, key rotation/restart, /models failures, manual model fallback, folder sandbox escapes, lost ACK and resumed activity; strict gates pass and a verified recovery snapshot precedes a clean pushed and deployed commit with unchanged memory baseline, expected binary/schema and ready workers.
 - verify: bash scripts/verify_release.sh && python3 scripts/check_docs.py
+- result: Final release coverage adds provider selection changes while a turn is paused on approval, registry key rotation across restart with historical provider versions still resolvable, production-env isolation for compiled integration tests, and the T08 private-preview expectations in the HTTP regression suite. The strict local release gate passed native/Rust, Python contracts, compiled integrations, supply-chain declarations, property/fuzz/performance/rollback, release artifact/reproducibility, mocked Chromium and real browser→Axum E2E. Network-only audit/signature/cross-target evidence was then supplied by GitHub CI rather than counted as a local pass.
+- result-verify: Exact commit `3a1843b678f771ad2b284c0f2a0c5b642427a096` passed branch CI `36229029198` and main CI `36229553686` (quality, browser-e2e, supply-chain and release-evidence). Pre-deploy recovery snapshot `.harness/backups/pre-p21-final-20260926T082415Z.sqlite` restored/read cleanly at schema 24 with 699 memories, 700 revisions and 699 embeddings. Production deployment `deploy-20260926T083212Z-3a1843b` reports the exact commit and binary hash, schema 24, ready database and both workers; memory health is OK at the same baseline. `/providers` exposes no credential fields, environment remains selected, `/models` is available with manual fallback, `/project-directories` is allowlisted to `/root/workspace`, served UI embeds the exact commit, and a live Chromium pass verified Control center/provider/model/folder operation with no provider secret in DOM/storage and no page errors.
