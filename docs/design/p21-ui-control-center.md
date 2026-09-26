@@ -1,6 +1,6 @@
 # P21 — UI control center and configuration coverage
 
-Status: implementation in progress. P21-T01 through P21-T06 are implemented; later
+Status: implementation in progress. P21-T01 through P21-T07 are implemented; later
 tasks remain gated by the task ledger and final P21-T10 release verification.
 
 ## Goal
@@ -171,7 +171,11 @@ and defaults to deny-all when empty. The endpoint exposes configured roots first
 then bounded directory-only pages with breadcrumbs, parent and cursor metadata.
 Every requested path must be its own canonical spelling inside an allowlisted
 root; `..`, aliases/symlinks, filesystem-root traversal, hidden/sensitive
-directories and Harness data paths are refused. P21-T07 owns the reviewed picker UI.
+directories and Harness data paths are refused. P21-T07 adds the reviewed UI:
+the owner can browse approved server roots with breadcrumbs or type an absolute
+path, cancellation restores the prior draft/permission mode, and selecting a
+folder only copies it into the form until Save project settings explicitly runs
+the existing canonical scope validator.
 
 - Add an authenticated, read-only, bounded directory-list endpoint using a
   configurable list of allowed workspace roots; default to **deny** until an owner

@@ -230,7 +230,7 @@
             <h3>Available now</h3>
             <p>Chat and durable activity, approval prompts, reviewed memory suggestions, sanitized history and exports, transcript imports, project settings, and custom provider management are available in the navigation. Provider API keys are write-only: the UI can replace one but never read it back.</p>
             <h3>Not yet available in the UI</h3>
-            <p>Selecting model roles from discovered provider IDs and browsing folders on the Harness server are planned P21 work. Model names below are still typed manually until that work lands.</p>
+            <p>Some advanced diagnostics, governance, recovery, and exact-original archive operations remain API-only. Provider/model controls and the allowlisted server folder chooser are available below.</p>
             <h3>Advanced API-only operations</h3>
             <p>Some diagnostics, governance, recovery, and exact-original archive operations have authenticated APIs but no complete browser controls yet. The activity panel shows recorded work, not the model's private reasoning. Unavailable external conversation text cannot be recovered from tool records.</p>
           </details>
@@ -307,8 +307,31 @@
           <form id="projectform" class="panel">
             <h3>Project scope settings</h3>
             <p class="muted small">Tools stay disabled until this scope has a valid project root.</p>
-            <label for="rootpath">Root path</label>
-            <input id="rootpath" maxlength="4096" placeholder="/absolute/path/to/project" spellcheck="false">
+            <div class="folder-field">
+              <div>
+                <label for="rootpath">Root path</label>
+                <input id="rootpath" maxlength="4096" placeholder="/absolute/path/to/project" spellcheck="false" autocomplete="off">
+              </div>
+              <button id="folder-open" class="secondary" type="button">Choose folder</button>
+            </div>
+            <p id="folder-selection-note" class="muted small">Type an absolute server path, or choose from directories approved by the server operator. Browsing never grants tool permission and does not save until you submit this form.</p>
+            <section id="folder-browser" class="folder-browser" aria-labelledby="folder-browser-title" hidden>
+              <div class="sectionhead compact">
+                <div>
+                  <h4 id="folder-browser-title">Choose server folder</h4>
+                  <p class="muted small">Only allowlisted server directories are shown. Files, hidden/sensitive folders, symlinks, and paths outside the allowlist are excluded.</p>
+                </div>
+                <button id="folder-cancel" class="secondary" type="button">Cancel</button>
+              </div>
+              <p id="folder-browser-status" class="muted small" role="status" aria-live="polite"></p>
+              <nav id="folder-breadcrumbs" class="folder-breadcrumbs" aria-label="Folder breadcrumbs"></nav>
+              <p id="folder-current" class="mono small" aria-live="polite"></p>
+              <div id="folder-list" class="folder-list"></div>
+              <div class="row actions folder-actions">
+                <button id="folder-more" class="secondary" type="button" hidden>Load more</button>
+                <button id="folder-use" type="button" disabled>Use this folder</button>
+              </div>
+            </section>
             <label for="permissionmode">Permission mode</label>
             <select id="permissionmode">
               <option value="ask">Ask before side effects</option>

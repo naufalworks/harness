@@ -1694,7 +1694,7 @@ P20's schema/memory and P19's truthful transcript boundaries.
 - result-verify: Path-unit tests cover deny-all defaults, pagination, hidden/sensitive filtering, malformed/escape requests and in/out symlinks. HTTP tests prove authentication, root discovery, directory-only output, bounds and denial behavior. Final scope selection continues to use the existing canonical root validator, so a browsed path gains no authority merely by being listed.
 
 ### P21-T07 · Project folder picker plus typed-path option
-- status: todo
+- status: done
 - priority: high
 - lane: project-ui
 - parallel: no
@@ -1703,6 +1703,8 @@ P20's schema/memory and P19's truthful transcript boundaries.
 - files: static/index.html, static/app.js, static/api.js, static/style.css, tests/recording_ui.cjs, tests/browser_e2e.cjs
 - done-when: owner can select a server folder from allowed directories or type an absolute path, see resolved root/scope/permission mode before saving, recover from denial, and cancel without changing scope; a local browser file picker must never be represented as choosing a remote server directory.
 - verify: bash scripts/verify_browser.sh && bash scripts/verify_e2e.sh
+- result: Added an owner-facing server folder chooser beside the typed absolute-path field. The chooser starts from the operator allowlist, renders breadcrumbs and directory-only pages, copies a selected canonical server path into the draft only after an explicit Use action, and still requires the existing Save project settings action before the scope changes. Cancel restores the pre-browser draft and permission mode; browse failures leave both untouched.
+- result-verify: Mocked Chromium covers allowlist browsing, denial recovery, cancel semantics, unchanged permission mode and the narrow/mobile layout. The real browser→Axum E2E configures a disposable browse root, proves an outside-root browse is denied without changing the typed draft, selects the project through the server picker, then saves and uses that project in the existing filesystem/provider workflow.
 
 ### P21-T08 · Truthful live work and model activity UI
 - status: todo

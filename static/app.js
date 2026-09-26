@@ -1413,6 +1413,105 @@ document.addEventListener('visibilitychange', () => {
 });
 startIdleClock();
 
+const folderBrowserState = { path: null, nextCursor: null, typedBeforeOpen: '', permissionBeforeOpen: '' };
+function folderBrowserStatus(text, error = false) {
+  $('folder-browser-status').textContent = text;
+  $('folder-browser-status').classList.toggle('error', error);
+}
+function folderButton(label, path, className = 'secondary') {
+  const button = node('button', label, className); button.type = 'button';
+  button.addEventListener('click', () => browseProjectDirectories(path));
+  return button;
+}
+function renderFolderPage(data, append = false) {
+  const list = $('folder-list');
+  const breadcrumbs = $('folder-breadcrumbs');
+  if (!append) list.replaceChildren();
+  if (!data?.path) {
+    folderBrowserState.path = null; folderBrowserState.nextCursor = null;
+    breadcrumbs.replaceChildren(); $('folder-current').textContent = '';
+    $('folder-use').disabled = true; $('folder-more').hidden = true;
+    const roots = Array.isArray(data?.roots) ? data.roots : [];
+    if (!roots.length) {
+      list.append(node('p', 'No approved server browse roots are configured. You can still type an absolute path and save it explicitly.', 'empty'));
+      folderBrowserStatus('Server folder browsing is deny-all until HARNESS_PROJECT_BROWSE_ROOTS is configured.');
+      return;
+    }
+    for (const root of roots) {
+      if (!root || typeof root.path !== 'string') continue;
+      const entry = folderButton(String(root.name || root.path), root.path, 'secondary folder-entry');
+      entry.setAttribute('aria-label', `Open approved folder ${String(root.name || root.path)}`);
+      list.append(entry);
+    }
+    folderBrowserStatus(`${roots.length} approved server root${roots.length === 1 ? '' : 's'} available. Choose one to browse.`);
+    return;
+  }
+  folderBrowserState.path = String(data.path);
+  folderBrowserState.nextCursor = Number.isInteger(data.nextCursor) ? data.nextCursor : null;
+  if (!append) {
+    breadcrumbs.replaceChildren(folderButton('Approved roots', null));
+    for (const crumb of Array.isArray(data.breadcrumbs) ? data.breadcrumbs : []) {
+      if (!crumb || typeof crumb.path !== 'string') continue;
+      breadcrumbs.append(folderButton(String(crumb.name || crumb.path), crumb.path));
+    }
+  }
+  $('folder-current').textContent = folderBrowserState.path;
+  $('folder-use').disabled = false;
+  for (const directory of Array.isArray(data.directories) ? data.directories : []) {
+    if (!directory || typeof directory.path !== 'string') continue;
+    const entry = folderButton(String(directory.name || directory.path), directory.path, 'secondary folder-entry');
+    entry.setAttribute('aria-label', `Open folder ${String(directory.name || directory.path)}`);
+    list.append(entry);
+  }
+  if (!list.childNodes.length) list.append(node('p', 'No browsable child directories.', 'empty'));
+  $('folder-more').hidden = folderBrowserState.nextCursor === null;
+  folderBrowserStatus('Browsing is read-only. Use this folder copies the path into the form; Save project settings is still required.');
+}
+async function browseProjectDirectories(path = null, cursor = null, append = false) {
+  folderBrowserStatus('Loading approved server folders…');
+  try {
+    const params = new URLSearchParams({limit:'50'});
+    if (path) params.set('path', path);
+    if (cursor !== null && cursor !== undefined) params.set('cursor', String(cursor));
+    const data = await api(`/project-directories?${params}`);
+    renderFolderPage(data, append);
+  } catch (error) {
+    folderBrowserStatus(`Could not browse server folders. ${error.message}`, true);
+  }
+}
+async function openFolderBrowser() {
+  folderBrowserState.typedBeforeOpen = $('rootpath').value;
+  folderBrowserState.permissionBeforeOpen = $('permissionmode').value;
+  $('folder-browser').hidden = false;
+  $('folder-open').setAttribute('aria-expanded', 'true');
+  await browseProjectDirectories();
+  $('folder-browser').querySelector('button')?.focus();
+}
+function cancelFolderBrowser() {
+  $('rootpath').value = folderBrowserState.typedBeforeOpen;
+  $('permissionmode').value = folderBrowserState.permissionBeforeOpen;
+  $('folder-browser').hidden = true;
+  $('folder-open').setAttribute('aria-expanded', 'false');
+  folderBrowserStatus('Folder selection cancelled. No project setting changed.');
+  $('folder-open').focus();
+}
+$('folder-open').setAttribute('aria-expanded', 'false');
+$('folder-open').setAttribute('aria-controls', 'folder-browser');
+$('folder-open').addEventListener('click', () => openFolderBrowser());
+$('folder-cancel').addEventListener('click', cancelFolderBrowser);
+$('folder-use').addEventListener('click', () => {
+  if (!folderBrowserState.path) return;
+  $('rootpath').value = folderBrowserState.path;
+  $('folder-browser').hidden = true;
+  $('folder-open').setAttribute('aria-expanded', 'false');
+  $('folder-selection-note').textContent = 'Folder copied into the draft. Review permission/diagnostics settings, then Save project settings to apply it.';
+  $('rootpath').focus();
+});
+$('folder-more').addEventListener('click', () => {
+  if (!folderBrowserState.path || folderBrowserState.nextCursor === null) return;
+  browseProjectDirectories(folderBrowserState.path, folderBrowserState.nextCursor, true);
+});
+
 function fillProjectSettings(data) {
   $('rootpath').value = data.root_path || '';
   $('permissionmode').value = data.permission_mode || 'ask';

@@ -8,6 +8,7 @@ const root=path.resolve(__dirname,'..');const out=process.env.QA_DIR || path.joi
   const page=await browser.newPage({viewport:{width:1120,height:900},colorScheme:'light'});const errors=[];page.on('pageerror',e=>errors.push(String(e)));
   let importCandidate=true,inlineCandidate=true,inlineData=null,failConfirm=false,chatHistory=[],receipt=null,importCalls=0,retryCalls=0,reverts=0,editCalls=0,savedConfig=null,previewCalls=0;
   let selectedProvider='environment',providerSecret=null,providerPosts=[],modelDiscoveryMode='available';
+  let savedProject={root_path:null,permission_mode:'ask',diagnostics_cmd:null,max_steps:40,max_tool_bytes:400000,max_wall_seconds:900};
   const providerRows=()=>[
    {id:'environment',baseUrl:'https://startup.example/v1',api:'openai-completions',discovery:{type:'proxy'},version:1,selected:selectedProvider==='environment',keyPresent:true,source:'environment'},
    ...(providerSecret===null?[]:[{id:'ui-provider',baseUrl:'https://api.example.com/v1',api:'openai-completions',discovery:{type:'proxy'},version:providerPosts.length,selected:selectedProvider==='ui-provider',keyPresent:true,source:'saved'}])
@@ -97,7 +98,18 @@ const root=path.resolve(__dirname,'..');const out=process.env.QA_DIR || path.joi
    let result={};
    if(p==='/health')result={ready:true,commit:'__HARNESS_BUILD_COMMIT__',binary_sha256:'0'.repeat(64),schema_version:6,database:{ready:true},workers:{recording:true,extraction:true}};
    else if(p==='/memory/status')result={active_memories:importCandidate?1:2,pending_confirmations:Number(importCandidate)+Number(inlineCandidate&&inlineData),queued_jobs:0,failed_jobs:1};
-   else if(p==='/scopes')result={scopes:[{scope:'global',root_path:null,permission_mode:'ask'}]};
+   else if(p==='/scopes')result={scopes:[{scope:'global',root_path:savedProject.root_path,permission_mode:savedProject.permission_mode}]};
+   else if(p==='/scopes/global'){
+    if(req.method()==='GET')result=savedProject;
+    else {savedProject={...savedProject,...JSON.parse(req.postData())};result={status:'saved'};}
+   }
+   else if(p==='/project-directories'){
+    const requested=u.searchParams.get('path');
+    if(!requested)result={configured:true,defaultDeny:false,roots:[{name:'workspaces',path:'/srv/workspaces'}],path:null,root:null,parent:null,breadcrumbs:[],directories:[],nextCursor:null,limit:50};
+    else if(requested==='/srv/workspaces')result={configured:true,defaultDeny:false,roots:[{name:'workspaces',path:'/srv/workspaces'}],path:'/srv/workspaces',root:'/srv/workspaces',parent:null,breadcrumbs:[{name:'workspaces',path:'/srv/workspaces'}],directories:[{name:'alpha',path:'/srv/workspaces/alpha'}],nextCursor:null,limit:50};
+    else if(requested==='/srv/workspaces/alpha')result={configured:true,defaultDeny:false,roots:[{name:'workspaces',path:'/srv/workspaces'}],path:'/srv/workspaces/alpha',root:'/srv/workspaces',parent:'/srv/workspaces',breadcrumbs:[{name:'workspaces',path:'/srv/workspaces'},{name:'alpha',path:'/srv/workspaces/alpha'}],directories:[],nextCursor:null,limit:50};
+    else return route.fulfill({status:403,json:{error:'Directory is outside approved browse roots',code:'forbidden',retryable:false}});
+   }
    else if(p==='/sessions')result={sessions:[]};
    else if(p.startsWith('/sessions/'))result={scope:'global',messages:chatHistory,has_more:false};
    else if(p.startsWith('/chat/requests/')&&p.endsWith('/steps'))result={steps:agentSteps,verification};
@@ -326,7 +338,20 @@ const root=path.resolve(__dirname,'..');const out=process.env.QA_DIR || path.joi
   await page.click('[data-view="chat"]');await page.click('[data-view="settings"]');await page.waitForFunction(()=>document.getElementById('mainmodel').value==='manual-main-id');
   assert.strictEqual(await page.locator('#mainmodel-origin').innerText(),'Manual exact ID','manual role survives settings reload');
   assert((await page.locator('#modelnames').textContent()).includes('onerror'));
-  assert.strictEqual(await page.locator('#modelnames img').count(),0);await shot('settings-desktop');
+  assert.strictEqual(await page.locator('#modelnames img').count(),0);
+  await page.fill('#rootpath','/typed/draft');await page.selectOption('#permissionmode','auto_edit');await page.click('#folder-open');
+  await page.waitForFunction(()=>document.querySelectorAll('#folder-list .folder-entry').length===1);
+  await page.evaluate(()=>browseProjectDirectories('/etc'));await page.waitForFunction(()=>document.querySelector('#folder-browser-status')?.textContent.includes('Could not browse'));
+  assert.strictEqual(await page.locator('#rootpath').inputValue(),'/typed/draft');assert.strictEqual(await page.locator('#permissionmode').inputValue(),'auto_edit');
+  await page.click('#folder-cancel');assert.strictEqual(await page.locator('#rootpath').inputValue(),'/typed/draft');assert.strictEqual(await page.locator('#permissionmode').inputValue(),'auto_edit');
+  await page.click('#folder-open');await page.waitForFunction(()=>document.querySelectorAll('#folder-list .folder-entry').length===1);await page.locator('#folder-list .folder-entry').first().click();
+  await page.waitForFunction(()=>document.querySelector('#folder-current')?.textContent==='/srv/workspaces');await page.locator('#folder-list .folder-entry').filter({hasText:'alpha'}).click();
+  await page.waitForFunction(()=>document.querySelector('#folder-current')?.textContent==='/srv/workspaces/alpha');await page.click('#folder-use');
+  assert.strictEqual(await page.locator('#rootpath').inputValue(),'/srv/workspaces/alpha');assert.strictEqual(await page.locator('#permissionmode').inputValue(),'auto_edit','folder selection must not alter permission mode');
+  if(await page.locator('#rail').isVisible())await page.click('#railclose');
+  await page.click('#folder-open');await page.waitForFunction(()=>!document.querySelector('#folder-browser').hidden);await page.setViewportSize({width:390,height:844});await shot('settings-folder-mobile');await page.setViewportSize({width:1120,height:900});await page.click('#folder-cancel');
+  await shot('settings-desktop');
+  if(!await page.locator('#rail').isVisible())await page.click('#railbtn');
   // ---------------- P16-T01: incident search, timeline and expansion ----------------
   await page.click('[data-view="chat"]');
   await page.waitForSelector('#agent-incident:not([hidden]) .incident-node');
@@ -468,7 +493,7 @@ const root=path.resolve(__dirname,'..');const out=process.env.QA_DIR || path.joi
   for (const phrase of ['Available now', 'Not yet available in the UI', 'Advanced API-only operations', 'model\'s private reasoning']) {
     assert(coverageText.includes(phrase), 'capability inventory omits: ' + phrase);
   }
-  assert(coverageText.includes('browsing folders on the Harness server'));
+  assert(coverageText.includes('allowlisted server folder chooser'));
   assert(coverageText.includes('custom provider management'));
   assert(coverageText.includes('write-only'));
   assert.strictEqual(await page.locator('#p21-capabilities input').count(), 0, 'inventory must not contain inert configuration fields');

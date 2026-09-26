@@ -86,13 +86,16 @@ class UiCoverageContract(unittest.TestCase):
             with self.subTest(operation=op):
                 self.assertEqual(classified[op]["status"], "ui_supported")
                 self.assertEqual(classified[op]["anchor"], "settingsform")
-        for op in ("GET /scopes/{scope}", "POST /scopes/{scope}"):
+        for op in ("GET /project-directories", "GET /scopes", "GET /scopes/{scope}", "POST /scopes/{scope}"):
             with self.subTest(operation=op):
-                self.assertEqual(classified[op]["status"], "ui_partial")
+                self.assertEqual(classified[op]["status"], "ui_supported")
+                self.assertEqual(classified[op]["anchor"], "view-settings")
         self.assertIn("id=\"loadmodels\"", self.index)
         self.assertIn("id=\"provider-model-options\"", self.index)
         self.assertIn("id=\"mainmodel-origin\"", self.index)
         self.assertIn("id=\"rootpath\"", self.index)
+        self.assertIn("id=\"folder-open\"", self.index)
+        self.assertIn("id=\"folder-browser\"", self.index)
         self.assertIn("id=\"p21-capabilities\"", self.index)
         self.assertIn("Not yet available in the UI", self.index)
         self.assertIn("model's private reasoning", self.index)

@@ -233,6 +233,20 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere}
 .model-role span{grid-column:2}
 .settings-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:12px}
 .settings-grid label{margin-top:0;font-size:12px}
+.folder-field{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:end}
+.folder-field>div{min-width:0}
+.folder-field label{margin-top:0}
+.folder-browser{margin:12px 0 16px;padding:14px;border:1px solid var(--border);border-radius:10px;background:var(--canvas)}
+.folder-browser h4{margin:0;font-size:13px}
+.folder-browser .sectionhead{align-items:flex-start}
+.folder-breadcrumbs{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}
+.folder-breadcrumbs button,.folder-entry{max-width:100%;overflow-wrap:anywhere;text-align:left}
+.folder-breadcrumbs button{padding:5px 8px}
+.folder-current{margin:8px 0;overflow-wrap:anywhere}
+.folder-list{display:flex;flex-direction:column;gap:6px;max-height:280px;overflow:auto}
+.folder-entry{width:100%;display:flex;justify-content:space-between;gap:10px;align-items:center}
+.folder-entry span:first-child{min-width:0;overflow-wrap:anywhere}
+.folder-actions{justify-content:flex-end;flex-wrap:wrap;margin-top:10px}
 #modelnames{margin:12px 0 0;padding:12px;background:var(--code-bg);border:1px solid var(--border);border-radius:10px;max-height:300px;overflow:auto;font:12px/1.6 var(--mono)}
 #modelnames:empty{display:none}
 
@@ -500,6 +514,8 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere}
   .message{grid-template-columns:52px minmax(0,1fr);gap:2px 10px}
   .footnote{display:none}
   .settings-grid{grid-template-columns:1fr}
+  .folder-field{grid-template-columns:1fr}
+  .folder-field>button{justify-self:start}
   .setup-banner{flex-direction:column;align-items:stretch}
   .pagecol{padding:20px 16px 40px}
   .candidate .row,.permission-card .row{flex-direction:column;align-items:stretch}
