@@ -189,6 +189,18 @@ implementation order live in `docs/design/p21-ui-control-center.md` and
 `docs/TASKS.md`. P21 is implemented and production-verified; expert/API-only
 operations remain explicitly labelled instead of being represented as browser controls.
 
+## P22 · Full UI/UX redesign and session experience
+
+Redesign the owner-facing product around the approved modern workspace, re-authentication and
+Control Center direction while preserving all P21 security/recovery guarantees. The work includes
+a coherent design system, new responsive application shell, Chat / Work redesign, richer recorded
+runtime activity, a Claude-Code-style **Decision Trace** built only from explicit/recorded metadata,
+session-expiry/re-auth restoration without persisting the master token or resending ambiguous work,
+and redesigned Projects/Folders, Providers/Secrets, Model Roles, Memory, History/Privacy and
+Imports/Jobs surfaces. P22 remains on a separate branch until explicit owner acceptance so the P21
+production baseline can be retained or restored cleanly. Detailed requirements and the executable
+T01-T16 ledger live in `docs/design/p22-ui-redesign.md` and `docs/TASKS.md`.
+
 ## 6. Non-goals (for now)
 Multi-user, remote bind, enabling exact-original archive by default, OpenAI-
 compatible proxy API, autonomous background coding without a human in the loop.

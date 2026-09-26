@@ -1744,3 +1744,187 @@ P20's schema/memory and P19's truthful transcript boundaries.
 - verify: bash scripts/verify_release.sh && python3 scripts/check_docs.py
 - result: Final release coverage adds provider selection changes while a turn is paused on approval, registry key rotation across restart with historical provider versions still resolvable, production-env isolation for compiled integration tests, and the T08 private-preview expectations in the HTTP regression suite. The strict local release gate passed native/Rust, Python contracts, compiled integrations, supply-chain declarations, property/fuzz/performance/rollback, release artifact/reproducibility, mocked Chromium and real browser→Axum E2E. Network-only audit/signature/cross-target evidence was then supplied by GitHub CI rather than counted as a local pass.
 - result-verify: Exact commit `3a1843b678f771ad2b284c0f2a0c5b642427a096` passed branch CI `36229029198` and main CI `36229553686` (quality, browser-e2e, supply-chain and release-evidence). Pre-deploy recovery snapshot `.harness/backups/pre-p21-final-20260926T082415Z.sqlite` restored/read cleanly at schema 24 with 699 memories, 700 revisions and 699 embeddings. Production deployment `deploy-20260926T083212Z-3a1843b` reports the exact commit and binary hash, schema 24, ready database and both workers; memory health is OK at the same baseline. `/providers` exposes no credential fields, environment remains selected, `/models` is available with manual fallback, `/project-directories` is allowlisted to `/root/workspace`, served UI embeds the exact commit, and a live Chromium pass verified Control center/provider/model/folder operation with no provider secret in DOM/storage and no page errors.
+
+## P22 · Full UI/UX Redesign & Session Experience
+
+Design: `docs/design/p22-ui-redesign.md`
+
+P22 is developed on a separate redesign branch until explicit owner approval. P21 remains the
+production fallback. No P22 task may weaken provider-secret handling, scope/path confinement,
+durable admission/recovery, memory integrity, or the private-reasoning boundary.
+
+### P22-T01 · Design system and visual foundation
+- status: todo
+- priority: high
+- lane: ui-foundation
+- parallel: no
+- depends: P21-T10
+- design: docs/design/p22-ui-redesign.md
+- files: static/style.css, static/index.html, tests/ui_smoke.cjs, docs/qa/
+- done-when: typography, spacing, surfaces, buttons, fields, badges, status semantics, focus, dark mode and responsive breakpoints form one coherent system matching the approved redesign direction without breaking existing functionality.
+- verify: bash scripts/verify_browser.sh
+
+### P22-T02 · New application shell, navigation and responsive layout
+- status: todo
+- priority: high
+- lane: ui-shell
+- parallel: no
+- depends: P22-T01
+- design: docs/design/p22-ui-redesign.md
+- files: static/index.html, static/app.js, static/style.css, tests/ui_smoke.cjs
+- done-when: desktop shell provides modern left navigation, project/connection header, recent chats and optional right activity rail; tablet/mobile convert navigation and activity to accessible drawers with no horizontal overflow.
+- verify: bash scripts/verify_browser.sh
+
+### P22-T03 · Full Chat / Work redesign
+- status: todo
+- priority: high
+- lane: chat-ui
+- parallel: no
+- depends: P22-T02
+- design: docs/design/p22-ui-redesign.md
+- files: static/index.html, static/app.js, static/style.css, tests/recording_ui.cjs, tests/ui_smoke.cjs
+- done-when: conversation hierarchy, composer, artifact/file cards, project/model context and terminal states are clear, modern and responsive while durable acknowledgement/recovery behavior remains unchanged.
+- verify: bash scripts/verify_browser.sh && bash scripts/verify_e2e.sh
+
+### P22-T04 · Runtime Activity panel redesign
+- status: todo
+- priority: high
+- lane: activity-ui
+- parallel: no
+- depends: P22-T02
+- design: docs/design/p22-ui-redesign.md
+- files: static/index.html, static/app.js, static/style.css, tests/ui_smoke.cjs, tests/browser_e2e.cjs
+- done-when: provider/model, recorded phase, elapsed time, usage, tool/permission activity, verification and recovery are scannable in the right rail and restore truthfully after reload.
+- verify: bash scripts/verify_browser.sh && bash scripts/verify_e2e.sh
+
+### P22-T05 · Decision Trace / Claude-Code-style work visibility
+- status: todo
+- priority: high
+- lane: activity-ui
+- parallel: no
+- depends: P22-T04
+- design: docs/design/p22-ui-redesign.md
+- files: src/storage/turns.rs, static/index.html, static/app.js, src/storage_tests.rs, tests/ui_smoke.cjs
+- done-when: the UI can show goal, recorded plan/action, safe reason/provenance when explicitly available, evidence, next step and result without exposing hidden chain-of-thought, raw provider scratchpad or `think` contents; fabricated reasoning is impossible by contract.
+- verify: cargo test --locked && bash scripts/verify_browser.sh
+
+### P22-T06 · Tool Calls, Permissions and Verification UX
+- status: todo
+- priority: high
+- lane: activity-ui
+- parallel: no
+- depends: P22-T04
+- design: docs/design/p22-ui-redesign.md
+- files: static/index.html, static/app.js, static/style.css, tests/ui_smoke.cjs, tests/browser_e2e.cjs
+- done-when: tool calls, permission requests, changes and verification are grouped, readable and actionable with safe previews, durations, explicit approve/deny states and no private/model payload leakage.
+- verify: bash scripts/verify_browser.sh && bash scripts/verify_e2e.sh
+
+### P22-T07 · Session expiry, re-authentication and session restore
+- status: todo
+- priority: critical
+- lane: auth-ui
+- parallel: no
+- depends: P22-T02
+- design: docs/design/p22-ui-redesign.md
+- files: src/api/auth.rs, src/main.rs, static/index.html, static/api.js, static/app.js, static/style.css, tests/recording_ui.cjs, tests/browser_e2e.cjs
+- done-when: active use can refresh/slide the short-lived browser session without persisting the master token; terminal 401 transitions to a dedicated Session expired first screen; re-entering the Harness access token restores the same workspace/conversation/pending receipt without automatic resend; manual Lock remains a stronger clear operation.
+- verify: cargo test --locked && bash scripts/verify_browser.sh && bash scripts/verify_e2e.sh
+
+### P22-T08 · Projects / Folders redesign
+- status: todo
+- priority: medium
+- lane: control-center
+- parallel: no
+- depends: P22-T02
+- design: docs/design/p22-ui-redesign.md
+- files: static/index.html, static/app.js, static/style.css, tests/ui_smoke.cjs, tests/browser_e2e.cjs
+- done-when: project scope and approved server folders use the redesigned side panel/modal with breadcrumbs, typed path, selected path preview, explicit confirm/cancel and unchanged permission semantics.
+- verify: bash scripts/verify_browser.sh && bash scripts/verify_e2e.sh
+
+### P22-T09 · Providers / Secrets redesign
+- status: todo
+- priority: high
+- lane: control-center
+- parallel: no
+- depends: P22-T02
+- design: docs/design/p22-ui-redesign.md
+- files: static/index.html, static/app.js, static/style.css, tests/ui_smoke.cjs, tests/browser_e2e.cjs
+- done-when: selected provider, connection/discovery state and add/edit/test/select/delete actions are obvious in the new design while stored keys remain write-only and absent from DOM/storage/API responses.
+- verify: bash scripts/verify_browser.sh && bash scripts/verify_e2e.sh
+
+### P22-T10 · Model Roles and capability-status redesign
+- status: todo
+- priority: medium
+- lane: control-center
+- parallel: no
+- depends: P22-T09
+- design: docs/design/p22-ui-redesign.md
+- files: static/index.html, static/app.js, static/style.css, tests/ui_smoke.cjs
+- done-when: Main, Extraction and Verification model controls clearly distinguish selected provider, discovered/manual origin, discovery availability and separately tested capabilities.
+- verify: bash scripts/verify_browser.sh
+
+### P22-T11 · Inbox / Memory redesign
+- status: todo
+- priority: medium
+- lane: memory-ui
+- parallel: no
+- depends: P22-T02
+- design: docs/design/p22-ui-redesign.md
+- files: static/index.html, static/app.js, static/style.css, tests/ui_smoke.cjs
+- done-when: memory status, candidates, evidence, confirmation/rejection and empty/loading states match the new design without changing P20 memory semantics.
+- verify: bash scripts/verify_browser.sh
+
+### P22-T12 · History / Privacy redesign
+- status: todo
+- priority: medium
+- lane: history-ui
+- parallel: no
+- depends: P22-T02
+- design: docs/design/p22-ui-redesign.md
+- files: static/index.html, static/app.js, static/style.css, tests/ui_smoke.cjs
+- done-when: session/history search, privacy actions, forget/source-delete distinctions, export preview and unavailable transcript states use the new design and preserve existing truth boundaries.
+- verify: bash scripts/verify_browser.sh
+
+### P22-T13 · Imports / Jobs redesign
+- status: todo
+- priority: medium
+- lane: jobs-ui
+- parallel: no
+- depends: P22-T02
+- design: docs/design/p22-ui-redesign.md
+- files: static/index.html, static/app.js, static/style.css, tests/ui_smoke.cjs
+- done-when: import, review, job state, retry and failure UX use the new design with clear progress and no hidden automatic action.
+- verify: bash scripts/verify_browser.sh
+
+### P22-T14 · Loading, empty, error and recovery states
+- status: todo
+- priority: high
+- lane: ux-states
+- parallel: no
+- depends: P22-T03, P22-T07, P22-T08, P22-T09
+- design: docs/design/p22-ui-redesign.md
+- files: static/index.html, static/app.js, static/style.css, tests/recording_ui.cjs, tests/ui_smoke.cjs
+- done-when: loading/no-data/offline/context/provider/model/folder/permission/retry/interruption/session-expiry/stale-build states are explicitly designed, source-correct and preserve unsaved safe state.
+- verify: bash scripts/verify_browser.sh && bash scripts/verify_e2e.sh
+
+### P22-T15 · Accessibility, keyboard, responsive and dark-mode quality gate
+- status: todo
+- priority: high
+- lane: ux-quality
+- parallel: no
+- depends: P22-T11, P22-T12, P22-T13, P22-T14
+- design: docs/design/p22-ui-redesign.md
+- files: static/index.html, static/app.js, static/style.css, tests/ui_smoke.cjs, tests/recording_ui.cjs
+- done-when: keyboard/focus, semantic labels, aria-live, no-color-only status, reduced-motion, mobile/tablet/desktop, dark mode, hostile strings and long identifiers pass the browser gate.
+- verify: bash scripts/verify_browser.sh
+
+### P22-T16 · Full browser E2E, approval and production release gate
+- status: todo
+- priority: critical
+- lane: release
+- parallel: no
+- depends: P22-T05, P22-T06, P22-T07, P22-T08, P22-T09, P22-T10, P22-T11, P22-T12, P22-T13, P22-T15
+- design: docs/design/p22-ui-redesign.md
+- files: scripts/verify_release.sh, tests/browser_e2e.cjs, tests/browser_e2e_failure.cjs, docs/PROGRESS.md
+- done-when: full strict gates and real browser→Axum→SQLite→filesystem→provider flows pass, session-expiry/re-auth restore never resends ambiguous work, Decision Trace never exposes private reasoning, secrets remain absent, a recovery backup exists, exact CI-green commit is reviewable, and production promotion happens only after explicit owner approval.
+- verify: bash scripts/verify_release.sh && python3 scripts/check_docs.py
