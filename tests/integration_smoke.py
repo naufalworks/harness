@@ -39,7 +39,10 @@ def main():
     if not binary.is_file():raise SystemExit('Build first: cargo build --locked')
     provider=ThreadingHTTPServer(('127.0.0.1',0),Provider);threading.Thread(target=provider.serve_forever,daemon=True).start();port=free_port();token='synthetic-local-token-'+'x'*32;previous='synthetic-previous-token-'+'y'*32
     with tempfile.TemporaryDirectory() as d:
-        env={**os.environ,'HARNESS_API_KEY':'synthetic','HARNESS_AUTH_TOKEN':token,'HARNESS_AUTH_TOKEN_PREVIOUS':previous,'HARNESS_ADDR':f'127.0.0.1:{port}','HARNESS_BASE_URL':f'http://127.0.0.1:{provider.server_port}','HARNESS_DB':str(Path(d)/'test.db'),'HARNESS_MODEL':'synthetic-model'}
+        # Pin every startup setting whose absence would otherwise be filled from the repository's
+        # private .env by dotenv. Release tests must not parse or depend on production-only
+        # producer grants or browse roots.
+        env={**os.environ,'HARNESS_API_KEY':'synthetic','HARNESS_AUTH_TOKEN':token,'HARNESS_AUTH_TOKEN_PREVIOUS':previous,'HARNESS_ADDR':f'127.0.0.1:{port}','HARNESS_BASE_URL':f'http://127.0.0.1:{provider.server_port}','HARNESS_DB':str(Path(d)/'test.db'),'HARNESS_MODEL':'synthetic-model','HARNESS_HISTORY_PRODUCERS':'[]','HARNESS_PROJECT_BROWSE_ROOTS':''}
         app=subprocess.Popen([str(binary)],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
         def call(path,body=None,auth=True,origin=None,bearer=None):
             headers={'Content-Type':'application/json'}

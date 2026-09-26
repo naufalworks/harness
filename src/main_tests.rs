@@ -2152,21 +2152,20 @@ async fn steps_plan_and_activity_read_back_what_the_loop_recorded() {
         (&steps[0]["tokens_in"], &steps[0]["tokens_out"]),
         (&json!(11), &json!(7))
     );
-    assert_eq!(
-        steps[0]["input_preview"].as_str().unwrap().len(),
-        storage::PREVIEW_BYTES,
-        "a huge message array is cut to the preview cap"
-    );
+    assert_eq!(steps[0]["input_preview"], Value::Null);
+    assert_eq!(steps[0]["output_preview"], Value::Null);
+    assert_eq!(steps[0]["preview_visibility"], json!("private_hidden"));
     assert_eq!(
         steps[0]["previews_capped"],
-        json!(true),
-        "the client has to know the preview is not the whole story"
+        json!(false),
+        "private provider/model payloads are withheld rather than partially previewed"
     );
     assert_eq!(steps[0]["summary"], Value::Null, "only a tool names itself");
     assert_eq!(
         (&steps[1]["tool_name"], &steps[1]["summary"]),
         (&json!("edit"), &json!("edit notes.md (+1 -1)"))
     );
+    assert_eq!(steps[1]["preview_visibility"], json!("bounded_tool"));
     assert_eq!(
         (
             &steps[1]["output_bytes"],

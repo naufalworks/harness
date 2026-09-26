@@ -227,6 +227,10 @@ def main() -> None:
             "HARNESS_BASE_URL": f"http://127.0.0.1:{provider.port}",
             "HARNESS_ADDR": f"127.0.0.1:{server_port}",
             "HARNESS_MODEL": "synthetic-model",
+            # dotenv fills missing values from the repository .env; compiled integration tests
+            # must never parse production-only producer grants or browse roots.
+            "HARNESS_HISTORY_PRODUCERS": "[]",
+            "HARNESS_PROJECT_BROWSE_ROOTS": "",
             "PATH": str(fake_bin) + os.pathsep + os.environ.get("PATH", ""),
         }
         app: subprocess.Popen[bytes] | None = None

@@ -192,7 +192,14 @@ def check_scanners_run() -> None:
         tail = output[-1] if output else "no output"
         offline = needs_network and any(
             marker in (result.stderr + result.stdout)
-            for marker in ("failed to fetch", "could not connect", "403 Forbidden", "network failure")
+            for marker in (
+                "failed to fetch",
+                "couldn't fetch advisory database",
+                "failed to connect to remote",
+                "could not connect",
+                "403 Forbidden",
+                "network failure",
+            )
         )
         if offline:
             record("SKIP", area, f"{tool} needs registry access and could not reach it: {tail}")

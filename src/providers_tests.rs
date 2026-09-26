@@ -151,6 +151,51 @@ async fn saved_key_is_private_and_never_in_public_projection() {
 }
 
 #[tokio::test]
+async fn rotated_provider_key_and_pinned_versions_survive_registry_restart() {
+    let root = temp_root();
+    let old_secret = "synthetic-old-provider-secret";
+    let new_secret = "synthetic-new-provider-secret";
+    {
+        let registry = registry(&root, true);
+        let first = registry
+            .upsert(input(
+                "rotated",
+                "http://127.0.0.1:9/v1".into(),
+                Some(old_secret),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(first.version, 1);
+        registry.select("rotated").await.unwrap();
+        let second = registry
+            .upsert(input(
+                "rotated",
+                "http://127.0.0.1:9/v1".into(),
+                Some(new_secret),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(second.version, 2);
+    }
+
+    // Re-open both the SQLite metadata and private provider store exactly as a process restart
+    // does. Future work follows v2 while already-admitted receipts may still resolve v1.
+    let restarted = registry(&root, true);
+    let selected = restarted.selected_ref().unwrap();
+    assert_eq!(selected.id, "rotated");
+    assert_eq!(selected.version, 2);
+    restarted.agents_for("rotated", 1).await.unwrap();
+    restarted.agents_for("rotated", 2).await.unwrap();
+    let public = restarted.public_state().unwrap().to_string();
+    assert!(!public.contains(old_secret));
+    assert!(!public.contains(new_secret));
+    let private = std::fs::read_to_string(root.join("providers.json")).unwrap();
+    assert!(private.contains(old_secret));
+    assert!(private.contains(new_secret));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
 async fn connection_test_uses_bearer_key_and_does_not_follow_redirects() {
     let root = temp_root();
     let registry = registry(&root, true);
