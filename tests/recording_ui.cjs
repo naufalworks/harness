@@ -7,10 +7,10 @@ const root=path.resolve(__dirname,'..'), out=path.join(root,'docs/qa');fs.mkdirS
  try {
   const page=await browser.newPage({viewport:{width:1120,height:900},colorScheme:'light'});
   const errors=[];page.on('pageerror',e=>errors.push(String(e)));
-  const records=new Map();let submits=0, nextState='complete', abortSubmit=false, offline=false, hold=false, polls=0, streams=0, generationStreams=0, generationSeq=0, generationReady=false,cancels=0, retries=0;const generationAfter=[];
+  const records=new Map();let submits=0, nextState='complete', nextError='provider_failed', abortSubmit=false, offline=false, hold=false, polls=0, streams=0, generationStreams=0, generationSeq=0, generationReady=false,cancels=0, retries=0;const generationAfter=[];
   const hostile='<img src=x onerror="window.INJECTED=1">';
-  function receipt(item){return {request_id:item.request_id,session_id:item.session_id,scope:item.scope,model:'synthetic-main',state:hold?'generating':item.final,response:hold?null:item.final==='complete'?'Keep the conversation. Be selective about what becomes memory.':null,memory_status:'deferred',redacted:false,recalled:[],events:[{kind:'captured',at:'2026-09-08T13:01:00Z'},{kind:'generation_started',at:'2026-09-08T13:01:01Z'},{kind:'context_saved',at:'2026-09-08T13:01:01Z'},...(!hold&&item.final==='complete'?[{kind:'answer_saved',at:'2026-09-08T13:01:03Z'}]:[])],context:{model:'synthetic-main',provider_messages:[{role:'user',content:item.prompt}],memories:[{key:'explanation_style',value:'Concise, with runnable examples. '+hostile,revision:4,scope:'global',evidence:{quote:'I like concise explanations with runnable examples.'}}]}};}
-  function generationEvents(item){const state=generationReady&&item.final==='complete'?'complete':receipt(item).state;const events=[{seq:item.generation_start,request_id:item.request_id,state:'generating',content:null,error_code:null,created_at:'2026-09-08T13:01:01Z'}];if(state!=='generating')events.push({seq:item.generation_terminal,request_id:item.request_id,state,content:state==='complete'?'Keep the conversation. Be selective about what becomes memory.':null,error_code:state==='failed'?'provider_failed':state==='interrupted'?'process_restarted':null,created_at:'2026-09-08T13:01:03Z'});return events;}
+  function receipt(item){return {request_id:item.request_id,session_id:item.session_id,scope:item.scope,model:'synthetic-main',state:hold?'generating':item.final,error_code:item.final==='failed'?item.error_code:null,response:hold?null:item.final==='complete'?'Keep the conversation. Be selective about what becomes memory.':null,memory_status:'deferred',redacted:false,recalled:[],events:[{kind:'captured',at:'2026-09-08T13:01:00Z'},{kind:'generation_started',at:'2026-09-08T13:01:01Z'},{kind:'context_saved',at:'2026-09-08T13:01:01Z'},...(!hold&&item.final==='complete'?[{kind:'answer_saved',at:'2026-09-08T13:01:03Z'}]:[])],context:{model:'synthetic-main',provider_messages:[{role:'user',content:item.prompt}],memories:[{key:'explanation_style',value:'Concise, with runnable examples. '+hostile,revision:4,scope:'global',evidence:{quote:'I like concise explanations with runnable examples.'}}]}};}
+  function generationEvents(item){const state=generationReady&&item.final==='complete'?'complete':receipt(item).state;const events=[{seq:item.generation_start,request_id:item.request_id,state:'generating',content:null,error_code:null,created_at:'2026-09-08T13:01:01Z'}];if(state!=='generating')events.push({seq:item.generation_terminal,request_id:item.request_id,state,content:state==='complete'?'Keep the conversation. Be selective about what becomes memory.':null,error_code:state==='failed'?item.error_code:state==='interrupted'?'process_restarted':null,created_at:'2026-09-08T13:01:03Z'});return events;}
   function generationRows(sessionId,after){return [...records.values()].filter(v=>v.session_id===sessionId).flatMap(generationEvents).filter(v=>v.seq>after).sort((a,b)=>a.seq-b.seq);}
   await page.route('http://127.0.0.1:8080/**',async route=>{
    const req=route.request(),u=new URL(req.url()),p=u.pathname;
@@ -34,12 +34,12 @@ const root=path.resolve(__dirname,'..'), out=path.join(root,'docs/qa');fs.mkdirS
    if(p==='/sessions')return route.fulfill({json:{sessions:[...records.values()].map(v=>({id:v.session_id,scope:v.scope,title:v.prompt,message_count:2})),has_more:false}});
    if(p.startsWith('/sessions/')){
     const sid=p.split('/')[2];const msgs=[];let seq=0;
-    for(const v of records.values())if(v.session_id===sid){const d=receipt(v);msgs.push({seq:++seq,id:v.request_id,role:'user',content:v.prompt,status:d.state==='complete'?'complete':d.state==='generating'?'pending':'failed',generation_state:d.state,request_id:v.request_id});if(d.response)msgs.push({seq:++seq,id:v.request_id+'-answer',role:'assistant',content:d.response,status:'complete',request_id:v.request_id});}
+    for(const v of records.values())if(v.session_id===sid){const d=receipt(v);msgs.push({seq:++seq,id:v.request_id,role:'user',content:v.prompt,status:d.state==='complete'?'complete':d.state==='generating'?'pending':'failed',generation_state:d.state,error_code:d.error_code,request_id:v.request_id});if(d.response)msgs.push({seq:++seq,id:v.request_id+'-answer',role:'assistant',content:d.response,status:'complete',request_id:v.request_id});}
     return route.fulfill({json:{scope:'global',messages:msgs,has_more:false}});
    }
    if(p==='/chat/submit'){
     submits++;const body=JSON.parse(req.postData());
-    if(!records.has(body.request_id))records.set(body.request_id,{...body,final:nextState,generation_start:++generationSeq,generation_terminal:++generationSeq});
+    if(!records.has(body.request_id))records.set(body.request_id,{...body,final:nextState,error_code:nextState==='failed'?nextError:null,generation_start:++generationSeq,generation_terminal:++generationSeq});
     if(abortSubmit){abortSubmit=false;return route.abort('failed');}
     return route.fulfill({status:202,json:receipt(records.get(body.request_id))});
    }
@@ -99,6 +99,12 @@ const root=path.resolve(__dirname,'..'), out=path.join(root,'docs/qa');fs.mkdirS
   await page.click('#newchat');hold=true;await page.fill('#prompt','Recover after reloading this tab.');await page.click('#send');await page.waitForFunction(()=>document.getElementById('capturestatus').textContent==='Thinking…');const beforeReload=submits;
   await page.reload();assert(await page.locator('#auth').isVisible());hold=false;await connect();await page.waitForFunction(()=>document.getElementById('notice').textContent.startsWith('Answer saved'));assert.strictEqual(submits,beforeReload);
   assert(!await page.evaluate(()=>JSON.stringify({...localStorage,...sessionStorage}).includes('fixture-token')));
+  // A context-building failure is not a provider failure, live or after history reload.
+  nextState='failed';nextError='context_failed';await page.click('#newchat');await page.fill('#prompt','Context setup failure fixture.');await page.click('#send');
+  await page.waitForFunction(()=>document.querySelector('.generation-message[data-state="failed"]')?.textContent.includes('could not prepare the request context'));
+  assert(!(await page.locator('.generation-message[data-state="failed"]').last().innerText()).includes('provider failed'));
+  await page.reload();await connect();await page.waitForFunction(()=>document.getElementById('log').textContent.includes('could not prepare the request context'));
+  assert(!(await page.locator('.generation-message[data-state="failed"]').last().innerText()).includes('provider failed'));nextError='provider_failed';
   // Provider failure and restart interruption retain the captured user message.
   for(const state of ['failed','interrupted']){
    nextState=state;await page.click('#newchat');await page.fill('#prompt','This message survives '+state+'.');await page.click('#send');

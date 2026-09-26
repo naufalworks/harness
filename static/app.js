@@ -101,6 +101,15 @@ async function showReceipt(id, content, button) {
 // lost by trimming: the server remains the source of truth and "Load older messages" re-fetches
 // anything dropped, so this bounds DOM size and layout cost, never history.
 const MAX_RENDERED_MESSAGES = 300, MAX_RENDERED_SESSIONS = 200;
+function generationFailureMessage(code) {
+  return {
+    context_failed: 'Harness could not prepare the request context. Check the project scope/root, then try again.',
+    provider_failed: 'The provider failed before an answer was saved.',
+    generation_stream_save_failed: 'Harness could not save the generated response stream. No unsaved answer was published.',
+    answer_save_failed: 'Harness received an answer but could not save it. No unsaved answer was published.',
+    worker_failed: 'The generation worker failed before an answer was saved.',
+  }[code] || 'The answer failed before it was saved.';
+}
 function boundLog(prepended = false) {
   const log = $('log');
   let extra = log.childNodes.length - MAX_RENDERED_MESSAGES;
@@ -135,7 +144,7 @@ function message(m, target = $('log')) {
       node('strong', 'Harness'),
       node('span', m.generation_state === 'interrupted'
         ? 'The server restarted before an answer was saved. Nothing was resent.'
-        : 'The provider failed before an answer was saved.'),
+        : generationFailureMessage(m.error_code)),
       node('span', m.generation_state === 'interrupted' ? 'Interrupted' : 'Failed', 'muted generation-state'),
     );
     if (m.request_id) {
@@ -270,7 +279,7 @@ function renderGenerationEvent(event) {
   const content = box.querySelector('.generation-content'); const label = box.querySelector('.generation-state');
   if (state === 'chunk') { if (box.dataset.chunked !== 'true') { content.textContent = ''; box.dataset.chunked = 'true'; } content.textContent += typeof event.content === 'string' ? event.content : ''; label.textContent = 'Generating\u2026'; }
   if (state === 'complete') { content.textContent = typeof event.content === 'string' ? event.content : ''; label.textContent = 'Done · saved response'; }
-  else if (state === 'failed') { content.textContent = 'The provider failed before an answer was saved.'; label.textContent = `Failed${event.error_code ? ` · ${event.error_code}` : ''}`; }
+  else if (state === 'failed') { content.textContent = generationFailureMessage(event.error_code); label.textContent = `Failed${event.error_code ? ` · ${event.error_code}` : ''}`; }
   else if (state === 'interrupted') { content.textContent = 'The server restarted before an answer was saved. Nothing was resent.'; label.textContent = 'Interrupted'; }
   else { content.textContent = 'Waiting for the recorded answer…'; label.textContent = 'Generating…'; }
   $('chatscroll').scrollTop = $('chatscroll').scrollHeight;

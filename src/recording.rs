@@ -736,8 +736,8 @@ impl DbStore {
     pub async fn history(&self, session: String, before: Option<i64>) -> Result<Value> {
         self.run(move|c| {
             let scope:Option<String>=c.query_row("SELECT scope FROM sessions WHERE id=?1",[&session],|r|r.get(0)).optional()?;
-            let mut stmt=c.prepare("SELECT m.seq,m.id,m.role,m.content,m.status,r.state,COALESCE(r.request_id,a.request_id) FROM messages m LEFT JOIN chat_receipts r ON r.request_id=m.id LEFT JOIN chat_receipts a ON a.answer_id=m.id WHERE m.session_id=?1 AND m.seq<?2 ORDER BY m.seq DESC LIMIT 101")?;
-            let mut rows=stmt.query_map(params![session,before.unwrap_or(i64::MAX)],|r|Ok(json!({"seq":r.get::<_,i64>(0)?,"id":r.get::<_,String>(1)?,"role":r.get::<_,String>(2)?,"content":r.get::<_,String>(3)?,"status":r.get::<_,String>(4)?,"generation_state":r.get::<_,Option<String>>(5)?,"request_id":r.get::<_,Option<String>>(6)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            let mut stmt=c.prepare("SELECT m.seq,m.id,m.role,m.content,m.status,r.state,COALESCE(r.request_id,a.request_id),COALESCE(r.error_code,a.error_code) FROM messages m LEFT JOIN chat_receipts r ON r.request_id=m.id LEFT JOIN chat_receipts a ON a.answer_id=m.id WHERE m.session_id=?1 AND m.seq<?2 ORDER BY m.seq DESC LIMIT 101")?;
+            let mut rows=stmt.query_map(params![session,before.unwrap_or(i64::MAX)],|r|Ok(json!({"seq":r.get::<_,i64>(0)?,"id":r.get::<_,String>(1)?,"role":r.get::<_,String>(2)?,"content":r.get::<_,String>(3)?,"status":r.get::<_,String>(4)?,"generation_state":r.get::<_,Option<String>>(5)?,"request_id":r.get::<_,Option<String>>(6)?,"error_code":r.get::<_,Option<String>>(7)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
             let more=rows.len()>100;rows.truncate(100);rows.reverse();
             let cursor=if more {rows.first().and_then(|r|r["seq"].as_i64())} else {None};
             Ok(json!({"scope":scope,"messages":rows,"has_more":more,"next_before_seq":cursor}))

@@ -269,6 +269,21 @@ async fn history_replays_complete_pairs_not_failed_prompts() {
     assert_eq!(next.events[0].id, "a");
     assert_eq!(next.events[2].id, "c");
 }
+
+#[tokio::test]
+async fn history_exposes_failure_code_for_truthful_terminal_ui() {
+    let db = DbStore::init(":memory:").unwrap();
+    start(&db, "failed-context", "s").await;
+    db.fail_recording("failed-context".into(), "context_failed")
+        .await
+        .unwrap();
+    let history = db.history("s".into(), None).await.unwrap();
+    let messages = history["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0]["generation_state"], "failed");
+    assert_eq!(messages[0]["error_code"], "context_failed");
+}
+
 #[tokio::test]
 async fn actual_history_and_sessions_queries_page_older_rows() {
     let db = DbStore::init(":memory:").unwrap();
