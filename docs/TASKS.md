@@ -1681,7 +1681,7 @@ P20's schema/memory and P19's truthful transcript boundaries.
 - result-verify: Mocked Chromium covers available/empty/timeout/network/unauthorized discovery, provider switching, manual fallback, hostile model IDs and reload. Real browser-to-Axum E2E covers selected-provider discovery, provider switching without role reassignment, explicit manual fallback through empty/unauthorized discovery, persisted /config reload, and the existing provider/tool workflow. The browser and E2E verification scripts pass with the repository Cargo toolchain on PATH.
 
 ### P21-T06 · Authorized server-side project directory browser
-- status: todo
+- status: done
 - priority: high
 - lane: filesystem-api
 - parallel: no
@@ -1690,6 +1690,8 @@ P20's schema/memory and P19's truthful transcript boundaries.
 - files: src/api/, src/tools/paths.rs, docs/api.yaml, tests/
 - done-when: an authenticated read-only paginated browse endpoint starts only from explicitly allowed server workspace roots; it lists safe directory names and breadcrumbs, not files, secrets, or the filesystem root. Reuse canonical scope path validation and refuse traversal, symlink escapes, racey swaps, hidden/denied directories and unauthorized roots, including in end-to-end tests.
 - verify: cargo test --locked && bash scripts/verify_e2e.sh
+- result: Added authenticated GET /project-directories with an explicit HARNESS_PROJECT_BROWSE_ROOTS allowlist that defaults to deny-all. The backend returns configured roots or bounded directory-only pages with breadcrumbs, parent and cursor metadata; files, dot/sensitive directories, Harness data, aliases, symlink directories, filesystem-root traversal and paths outside the selected allowlist are refused. Browsing is read-only and does not mutate scopes or permission mode.
+- result-verify: Path-unit tests cover deny-all defaults, pagination, hidden/sensitive filtering, malformed/escape requests and in/out symlinks. HTTP tests prove authentication, root discovery, directory-only output, bounds and denial behavior. Final scope selection continues to use the existing canonical root validator, so a browsed path gains no authority merely by being listed.
 
 ### P21-T07 · Project folder picker plus typed-path option
 - status: todo

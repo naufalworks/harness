@@ -34,11 +34,16 @@ fn test_providers(store: &DbStore) -> ProviderRegistry {
     )
     .unwrap()
 }
-fn app_with_workers(store: DbStore, workers: Arc<WorkerHealth>) -> Router {
+fn app_with_workers_and_roots(
+    store: DbStore,
+    workers: Arc<WorkerHealth>,
+    roots: Vec<std::path::PathBuf>,
+) -> Router {
     let providers = test_providers(&store);
     router(Harness {
         store,
         providers,
+        project_browse_roots: Arc::new(roots),
         auth: Arc::new(AuthState::new(
             "x".repeat(32),
             None,
@@ -57,6 +62,9 @@ fn app_with_workers(store: DbStore, workers: Arc<WorkerHealth>) -> Router {
         hsts: false,
         archive: None,
     })
+}
+fn app_with_workers(store: DbStore, workers: Arc<WorkerHealth>) -> Router {
+    app_with_workers_and_roots(store, workers, Vec::new())
 }
 fn app_with(store: DbStore) -> Router {
     app_with_workers(store, test_workers())
@@ -153,6 +161,7 @@ fn app_with_archive(store: DbStore, archive: Arc<archive::ArchiveStore>) -> Rout
     router(Harness {
         store,
         providers,
+        project_browse_roots: Arc::new(Vec::new()),
         auth: Arc::new(AuthState::new(
             "x".repeat(32),
             None,
@@ -355,6 +364,7 @@ async fn auth_proxy_identity_and_hsts_are_explicit_opt_ins() {
     let state = Harness {
         store,
         providers,
+        project_browse_roots: Arc::new(Vec::new()),
         auth: Arc::new(AuthState::new(
             "x".repeat(32),
             None,
@@ -770,6 +780,7 @@ async fn configured_origin_is_allowed() {
     let state = Harness {
         store,
         providers,
+        project_browse_roots: Arc::new(Vec::new()),
         auth: Arc::new(AuthState::new(
             "x".repeat(32),
             None,
@@ -1737,6 +1748,131 @@ async fn configured_scopes_are_listed_for_the_picker() {
     );
     assert_eq!(rows[1]["root_path"], json!(canonical.to_string_lossy()));
     std::fs::remove_dir_all(dir).ok();
+}
+
+#[tokio::test]
+async fn project_directory_browser_is_authenticated_allowlisted_and_bounded() {
+    let root = std::env::temp_dir().join(format!("harness-browse-api-{}", storage::uid()));
+    let outside = std::env::temp_dir().join(format!("harness-browse-outside-{}", storage::uid()));
+    std::fs::create_dir_all(root.join("alpha/child")).unwrap();
+    std::fs::create_dir_all(root.join("beta")).unwrap();
+    std::fs::create_dir_all(root.join(".hidden")).unwrap();
+    std::fs::create_dir_all(root.join("backups")).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(root.join("file.txt"), "not a directory").unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&outside, root.join("escape-link")).unwrap();
+    let canonical = std::fs::canonicalize(&root).unwrap();
+    let app = app_with_workers_and_roots(
+        DbStore::init(":memory:").unwrap(),
+        test_workers(),
+        vec![canonical.clone()],
+    );
+
+    let unauthenticated = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .uri("/project-directories")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+
+    let roots = app
+        .clone()
+        .oneshot(
+            authorized("GET", "/project-directories")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(roots.status(), StatusCode::OK);
+    let roots = body_json(roots).await;
+    assert_eq!(roots["configured"], json!(true));
+    assert_eq!(
+        roots["roots"][0]["path"],
+        json!(canonical.to_string_lossy())
+    );
+    for uri in [
+        "/project-directories?limit=0",
+        "/project-directories?cursor=1",
+    ] {
+        let response = app
+            .clone()
+            .oneshot(authorized("GET", uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{uri}");
+    }
+
+    let uri = format!(
+        "/project-directories?path={}&limit=100",
+        canonical.display()
+    );
+    let page = app
+        .clone()
+        .oneshot(authorized("GET", &uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(page.status(), StatusCode::OK);
+    let page = body_json(page).await;
+    let names = page["directories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["name"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert!(names.contains(&"alpha"));
+    assert!(names.contains(&"beta"));
+    assert!(!names.contains(&".hidden"));
+    assert!(!names.contains(&"backups"));
+    assert!(!names.contains(&"escape-link"));
+    assert!(!names.contains(&"file.txt"));
+
+    for uri in [
+        "/project-directories?path=/",
+        &format!("/project-directories?path={}/../", canonical.display()),
+        &format!("/project-directories?path={}/.hidden", canonical.display()),
+        &format!(
+            "/project-directories?path={}/escape-link",
+            canonical.display()
+        ),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(authorized("GET", uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert!(
+            matches!(
+                response.status(),
+                StatusCode::BAD_REQUEST | StatusCode::FORBIDDEN
+            ),
+            "{uri} unexpectedly returned {}",
+            response.status()
+        );
+    }
+    let bad_limit = app
+        .oneshot(
+            authorized(
+                "GET",
+                &format!(
+                    "/project-directories?path={}&limit=101",
+                    canonical.display()
+                ),
+            )
+            .body(Body::empty())
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bad_limit.status(), StatusCode::BAD_REQUEST);
+    std::fs::remove_dir_all(root).ok();
+    std::fs::remove_dir_all(outside).ok();
 }
 
 /// P1-T11: one pending approval, listed and then decided over HTTP. The loop is not involved;

@@ -94,6 +94,7 @@ impl WorkerHealth {
 struct Harness {
     store: DbStore,
     providers: ProviderRegistry,
+    project_browse_roots: Arc<Vec<std::path::PathBuf>>,
     auth: Arc<AuthState>,
     port: u16,
     origins: Arc<Vec<String>>,
@@ -211,6 +212,11 @@ async fn main() -> Result<()> {
         env::var("HARNESS_BASE_URL").unwrap_or_else(|_| "https://api.longcat.chat/openai".into());
     let default_model = env::var("HARNESS_MODEL").unwrap_or_else(|_| "LongCat-2.0".into());
     let providers = ProviderRegistry::open(&base_url, &key, &default_model, store.clone())?;
+    let project_browse_roots =
+        tools::paths::browse_roots(&env::var("HARNESS_PROJECT_BROWSE_ROOTS").unwrap_or_default())
+            .map_err(|error| {
+            anyhow::anyhow!("invalid HARNESS_PROJECT_BROWSE_ROOTS: {}", error.detail())
+        })?;
     let mut origins = vec![
         format!("http://127.0.0.1:{}", addr.port()),
         format!("http://localhost:{}", addr.port()),
@@ -235,6 +241,7 @@ async fn main() -> Result<()> {
     let state = Harness {
         store: store.clone(),
         providers: providers.clone(),
+        project_browse_roots: Arc::new(project_browse_roots),
         auth: Arc::new(
             AuthState::new(
                 token,

@@ -1644,6 +1644,46 @@ paths:
           $ref: '#/components/responses/Error'
         '5XX':
           $ref: '#/components/responses/Error'
+  /project-directories:
+    get:
+      operationId: browseProjectDirectories
+      summary: Browse allowlisted server-side project directories.
+      description: |
+        Read-only directory browsing. HARNESS_PROJECT_BROWSE_ROOTS is an explicit
+        operator allowlist and defaults to deny-all. Only real non-hidden directories
+        are returned; files, symlink directories, sensitive paths, filesystem-root
+        traversal and Harness internal data are refused. Browsing does not modify a scope
+        or grant any tool permission.
+      parameters:
+        - name: path
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Canonical absolute directory path under one configured browse root. Omit to list configured roots.
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        '200':
+          description: Configured roots or one bounded directory page with breadcrumbs.
+          content:
+            application/json: {}
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
   /scopes:
     get:
       operationId: listScopes

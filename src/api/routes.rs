@@ -44,6 +44,75 @@ struct ChatRequest {
     #[serde(default = "default_scope")]
     scope: String,
 }
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DirectoryBrowseQuery {
+    path: Option<String>,
+    cursor: Option<usize>,
+    limit: Option<usize>,
+}
+
+fn browse_root_entries(roots: &[std::path::PathBuf]) -> Vec<Value> {
+    roots
+        .iter()
+        .filter_map(|root| {
+            let path = root.to_str()?;
+            let name = root
+                .file_name()
+                .map(|value| value.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.to_string());
+            Some(json!({"name":name,"path":path}))
+        })
+        .collect()
+}
+
+async fn project_directories(
+    State(h): State<Harness>,
+    Query(query): Query<DirectoryBrowseQuery>,
+) -> ApiResult<Json<Value>> {
+    let limit = query.limit.unwrap_or(50);
+    if !(1..=100).contains(&limit) {
+        return Err(invalid("Directory browse limit must be between 1 and 100"));
+    }
+    let roots = browse_root_entries(&h.project_browse_roots);
+    let Some(path) = query.path.as_deref() else {
+        if query.cursor.is_some() {
+            return Err(invalid("Directory browse cursor requires a path"));
+        }
+        return Ok(Json(json!({
+            "configured":!roots.is_empty(),
+            "defaultDeny":roots.is_empty(),
+            "roots":roots,
+            "path":Value::Null,
+            "root":Value::Null,
+            "parent":Value::Null,
+            "breadcrumbs":[],
+            "directories":[],
+            "nextCursor":Value::Null,
+            "limit":limit
+        })));
+    };
+    let page = tools::paths::browse_directories(
+        h.project_browse_roots.as_ref(),
+        path,
+        query.cursor.unwrap_or(0),
+        limit,
+    )
+    .map_err(|error| match error {
+        tools::paths::PathError::Denied | tools::paths::PathError::Escapes => ApiError(
+            StatusCode::FORBIDDEN,
+            "Directory is outside approved browse roots",
+        ),
+        _ => invalid("Invalid directory browse path"),
+    })?;
+    let mut value = serde_json::to_value(page)
+        .map_err(|_| ApiError(StatusCode::INTERNAL_SERVER_ERROR, "Directory browse failed"))?;
+    value["configured"] = json!(true);
+    value["defaultDeny"] = json!(false);
+    value["roots"] = json!(roots);
+    Ok(Json(value))
+}
 async fn admit_chat(h: &Harness, req: ChatRequest) -> ApiResult<Value> {
     safety::scope(&req.scope).map_err(|_| invalid("Invalid scope"))?;
     if req.prompt.trim().is_empty() || req.prompt.len() > 16_000 {
@@ -2132,6 +2201,7 @@ pub(crate) fn router(state: Harness) -> Router {
         .route("/processes", get(active_processes))
         .route("/processes/{pid}/stop", post(stop_process))
         .route("/git/state", get(git_state))
+        .route("/project-directories", get(project_directories))
         .route("/scopes", get(list_scopes))
         .route("/scopes/{scope}", get(get_scope).post(set_scope))
         .route("/permissions", get(permissions))

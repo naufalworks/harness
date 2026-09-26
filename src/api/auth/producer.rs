@@ -308,6 +308,7 @@ mod tests {
         let state = crate::Harness {
             store,
             providers,
+            project_browse_roots: Arc::new(Vec::new()),
             auth: Arc::new(auth()),
             port: 8080,
             origins: Arc::new(vec![]),

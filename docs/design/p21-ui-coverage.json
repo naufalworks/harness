@@ -83,11 +83,20 @@
       "status": "ui_partial",
       "surface": "project settings",
       "anchor": "view-settings",
-      "detail": "Scope and canonical root can be saved through typed paths; no allowlisted server-side folder chooser exists (P21-T06/T07).",
+      "detail": "Scope and canonical root can be saved through typed paths. The allowlisted server-side directory browser exists in P21-T06, but the reviewed folder-picker UI is P21-T07.",
       "operations": [
         "GET /scopes",
         "GET /scopes/{scope}",
         "POST /scopes/{scope}"
+      ]
+    },
+    {
+      "status": "api_only",
+      "surface": "server directory browser",
+      "anchor": null,
+      "detail": "Authenticated read-only directory browsing is implemented and allowlisted, but remains an API-only backend contract until P21-T07 adds the reviewed owner folder picker. It never grants permissions or mutates a scope.",
+      "operations": [
+        "GET /project-directories"
       ]
     },
     {

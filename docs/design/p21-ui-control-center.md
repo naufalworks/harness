@@ -1,6 +1,6 @@
 # P21 — UI control center and configuration coverage
 
-Status: implementation in progress. P21-T01 through P21-T05 are implemented; later
+Status: implementation in progress. P21-T01 through P21-T06 are implemented; later
 tasks remain gated by the task ledger and final P21-T10 release verification.
 
 ## Goal
@@ -164,6 +164,14 @@ streaming, and usage are not thereby proven.
   dropdown, **not** sufficient to assert successful generation or tool support.
 
 ## Server folder chooser
+
+P21-T06 implements the authenticated read-only `GET /project-directories`
+backend. `HARNESS_PROJECT_BROWSE_ROOTS` is a comma-separated operator allowlist
+and defaults to deny-all when empty. The endpoint exposes configured roots first,
+then bounded directory-only pages with breadcrumbs, parent and cursor metadata.
+Every requested path must be its own canonical spelling inside an allowlisted
+root; `..`, aliases/symlinks, filesystem-root traversal, hidden/sensitive
+directories and Harness data paths are refused. P21-T07 owns the reviewed picker UI.
 
 - Add an authenticated, read-only, bounded directory-list endpoint using a
   configurable list of allowed workspace roots; default to **deny** until an owner

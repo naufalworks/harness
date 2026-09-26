@@ -16,6 +16,8 @@ Failed bearer authentication waits a uniform 150 ms before returning 401. Authen
 
 The loopback listener is HTTP, so it does not emit HSTS by default. A TLS-terminating deployment may set `HARNESS_HTTPS_HSTS=1` only when the public origin is HTTPS and all HTTP traffic is permanently redirected; this adds `Strict-Transport-Security: max-age=31536000; includeSubDomains`. Misusing HSTS on a partially migrated domain can make sibling services unreachable.
 
+`HARNESS_PROJECT_BROWSE_ROOTS` is an optional comma-separated allowlist for the authenticated read-only server directory browser. Missing/empty is deny-all. Each configured root is canonicalized at startup and must be an existing directory other than the filesystem root or Harness data directory. Browsing never lists files, hidden/sensitive directories, or symlink directories, and every requested path is re-canonicalized inside an allowlisted root. Selecting a directory is observation only; changing a scope still requires the separate scope-save API and its existing canonical root validation.
+
 ## HTTP surface
 
 Every route the process serves. `scripts/check_docs.py` compares this list
@@ -55,6 +57,7 @@ existence: an unauthenticated request never learns whether a path exists.
 - `GET /processes`
 - `POST /processes/{pid}/stop`
 - `GET /git/state`
+- `GET /project-directories`
 - `GET /scopes`
 - `GET|POST /scopes/{scope}`
 - `GET /permissions`
