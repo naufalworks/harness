@@ -89,7 +89,7 @@ class UiCoverageContract(unittest.TestCase):
         for op in ("GET /project-directories", "GET /scopes", "GET /scopes/{scope}", "POST /scopes/{scope}"):
             with self.subTest(operation=op):
                 self.assertEqual(classified[op]["status"], "ui_supported")
-                self.assertEqual(classified[op]["anchor"], "view-settings")
+                self.assertEqual(classified[op]["anchor"], "projectform")
         self.assertIn("id=\"loadmodels\"", self.index)
         self.assertIn("id=\"provider-model-options\"", self.index)
         self.assertIn("id=\"mainmodel-origin\"", self.index)
@@ -121,6 +121,16 @@ class UiCoverageContract(unittest.TestCase):
         self.assertIn("write-only", self.index)
         self.assertIn("clearProviderEditor", self.frontend)
         self.assertIn("parseProviderPaste", self.frontend)
+
+    def test_control_center_navigation_exposes_reviewed_configuration_surfaces(self) -> None:
+        self.assertIn('id="settings-section-nav"', self.index)
+        self.assertIn('href="#projectform"', self.index)
+        self.assertIn('href="#settings-providers"', self.index)
+        self.assertIn('href="#settingsform"', self.index)
+        self.assertIn('aria-labelledby="project-settings-title"', self.index)
+        self.assertIn('aria-labelledby="provider-title"', self.index)
+        self.assertIn('aria-labelledby="model-roles-title"', self.index)
+        self.assertIn("Control center", self.index)
 
     def test_no_provider_credentials_in_matrix_or_UI_inventory(self) -> None:
         text = MATRIX.read_text(encoding="utf-8")

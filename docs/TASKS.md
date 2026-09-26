@@ -1720,7 +1720,7 @@ P20's schema/memory and P19's truthful transcript boundaries.
 - result-verify: Storage tests prove model-call and `think` private text never appears in the owner-facing step projection while an ordinary tool preview remains available. Mocked Chromium verifies runtime provider/model/version/phase/elapsed labels and the private-scratchpad boundary; the real browser→Axum E2E verifies the pinned runtime label while a turn is waiting for approval, then continues through the existing filesystem/provider/verification flow. Browser and real E2E suites pass.
 
 ### P21-T09 · Complete owner-facing feature navigation and accessibility
-- status: todo
+- status: done
 - priority: medium
 - lane: feature-ui
 - parallel: no
@@ -1729,6 +1729,8 @@ P20's schema/memory and P19's truthful transcript boundaries.
 - files: docs/design/p21-ui-control-center.md, static/index.html, static/app.js, static/style.css, tests/recording_ui.cjs, tests/ui_smoke.cjs
 - done-when: coverage matrix reconciles every API operation to a discoverable UI control or documented expert/API-only rationale; navigation and labels avoid false claims, approvals/deletion require confirmations, and mobile/keyboard/screen-reader/dark-mode/XSS checks pass. Do not silently turn backend-only operations into unreviewed privileged actions.
 - verify: python3 scripts/check_docs.py && bash scripts/verify_browser.sh
+- result: Renamed the combined setup entry to Control center and added native keyboard-focusable navigation for Projects & folders, Providers & secrets, and Model roles. Each reviewed configuration surface has an accessible labelled section/form, status/error announcements remain explicit, and the feature-status panel continues to name expert API-only diagnostics, governance, recovery and archive operations instead of manufacturing privileged browser actions.
+- result-verify: The route-to-UI matrix remains fail-closed and now points project configuration at the actual project form. Browser tests assert the Control center labels, jump destinations, keyboard focusability and labelled regions while retaining the existing mobile/dark-mode/hostile-text checks. Existing destructive provider/process/history/export controls retain explicit confirmation and permission boundaries.
 
 ### P21-T10 · End-to-end provider/folder/UI release and production gate
 - status: todo

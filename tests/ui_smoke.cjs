@@ -271,6 +271,11 @@ const root=path.resolve(__dirname,'..');const out=process.env.QA_DIR || path.joi
   await page.setInputFiles('#file',{name:'sample.jsonl',mimeType:'application/json',buffer:Buffer.from('{"type":"message","message":{"role":"user","content":"I prefer Rust"}}')});
   await page.check('#consent');await page.click('#importbutton');await page.waitForFunction(()=>document.getElementById('notice').textContent.includes('Queued 2'));assert.strictEqual(importCalls,1);
   await page.click('[data-view="settings"]');await page.waitForFunction(()=>document.getElementById('mainmodel').value==='synthetic-main');
+  assert.strictEqual((await page.locator('[data-view="settings"]').innerText()).trim(),'Control center');
+  assert.deepStrictEqual(await page.locator('#settings-section-nav a').allTextContents(),['Projects & folders','Providers & secrets','Model roles']);
+  assert.deepStrictEqual(await page.locator('#settings-section-nav a').evaluateAll(nodes=>nodes.map(node=>node.getAttribute('href'))),['#projectform','#settings-providers','#settingsform']);
+  assert((await page.locator('#settings-section-nav a').first().evaluate(node=>node.tabIndex))>=0,'control-center anchors must be keyboard focusable');
+  assert.strictEqual(await page.locator('#projectform').getAttribute('aria-labelledby'),'project-settings-title');assert.strictEqual(await page.locator('#settingsform').getAttribute('aria-labelledby'),'model-roles-title');assert.strictEqual(await page.locator('#settings-providers').getAttribute('aria-labelledby'),'provider-title');
   await page.waitForFunction(()=>document.querySelector('#provider-list')?.textContent.includes('environment'));
   await page.waitForFunction(()=>document.querySelector('#model-discovery-status')?.textContent.includes('discovered model ID'));
   assert.strictEqual(await page.locator('#mainmodel-origin').innerText(),'Discovered exact ID');

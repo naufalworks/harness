@@ -82,8 +82,8 @@
     {
       "status": "ui_supported",
       "surface": "project settings",
-      "anchor": "view-settings",
-      "detail": "Project settings expose both typed absolute paths and the allowlisted server-side folder chooser. Browsing is read-only, cancel preserves the draft and permission mode, and selecting a folder still requires the existing explicit scope save/canonical validation before tool access changes.",
+      "anchor": "projectform",
+      "detail": "The Control center links directly to Projects & folders. Project settings expose both typed absolute paths and the allowlisted server-side folder chooser. Browsing is read-only, cancel preserves the draft and permission mode, and selecting a folder still requires the existing explicit scope save/canonical validation before tool access changes.",
       "operations": [
         "GET /project-directories",
         "GET /scopes",

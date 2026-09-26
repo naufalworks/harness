@@ -1,6 +1,6 @@
 # P21 — UI control center and configuration coverage
 
-Status: implementation in progress. P21-T01 through P21-T08 are implemented; later
+Status: implementation in progress. P21-T01 through P21-T09 are implemented; final
 tasks remain gated by the task ledger and final P21-T10 release verification.
 
 ## Goal
@@ -225,6 +225,14 @@ evidence must never be converted into a chat transcript. Preserve keyboard,
 screen-reader, small-screen, dark-mode and inert rendering of untrusted text.
 Browser E2E must test secret masking, reload, failed API requests, provider
 switch mid-turn, empty `/models`, denied folder escapes, lost ACK, and restart.
+
+P21-T09 makes the reviewed configuration surfaces discoverable under a single
+**Control center** entry with keyboard-native links to **Projects & folders**,
+**Providers & secrets**, and **Model roles**. Their forms/regions are explicitly
+labelled for assistive technology. The route coverage inventory remains the source
+of truth for what is browser-supported; advanced diagnostics, governance, recovery
+and exact-original archive operations keep their API-only rationale rather than
+gaining unreviewed privileged buttons.
 
 ## Release and acceptance
 

@@ -61,7 +61,7 @@
         <button class="tab" data-view="memory" type="button" aria-pressed="false"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 5.5 8 2l6 3.5M2 5.5V11a1 1 0 0 0 .6.9L8 14.5l5.4-2.6a1 1 0 0 0 .6-.9V5.5M8 8.5v6"/></svg>Inbox <span id="pending" class="count">0</span></button>
         <button class="tab" data-view="history" type="button" aria-pressed="false"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="7" cy="7" r="4.2"/><path d="M10.2 10.2 14 14"/></svg>History &amp; privacy</button>
         <button class="tab" data-view="imports" type="button" aria-pressed="false"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 10V2M5 5l3-3 3 3M3 10v3.5A1.5 1.5 0 0 0 4.5 15h7a1.5 1.5 0 0 0 1.5-1.5V10"/></svg>Imports &amp; jobs</button>
-        <button class="tab" data-view="settings" type="button" aria-pressed="false"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.8v1.6M8 12.6v1.6M1.8 8h1.6M12.6 8h1.6M3.6 3.6l1.1 1.1M11.3 11.3l1.1 1.1M12.4 3.6l-1.1 1.1M4.7 11.3l-1.1 1.1"/></svg>Project &amp; models</button>
+        <button class="tab" data-view="settings" type="button" aria-pressed="false"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.8v1.6M8 12.6v1.6M1.8 8h1.6M12.6 8h1.6M3.6 3.6l1.1 1.1M11.3 11.3l1.1 1.1M12.4 3.6l-1.1 1.1M4.7 11.3l-1.1 1.1"/></svg>Control center</button>
       </nav>
 
       <footer class="sidefoot">
@@ -223,8 +223,13 @@
 
       <section id="view-settings" class="view pageview" hidden>
         <div class="pagecol">
-          <h2>Project, providers &amp; models</h2>
+          <h2 id="control-center-title">Control center</h2>
           <p class="muted">Configure the server-side project scope, provider connection, and model roles used by new work. Existing admitted turns keep the provider/model version they already recorded.</p>
+          <nav id="settings-section-nav" class="settings-section-nav" aria-label="Control center sections">
+            <a href="#projectform">Projects &amp; folders</a>
+            <a href="#settings-providers">Providers &amp; secrets</a>
+            <a href="#settingsform">Model roles</a>
+          </nav>
           <details id="p21-capabilities" class="panel">
             <summary>What the UI can do today · P21 feature status</summary>
             <h3>Available now</h3>
@@ -234,7 +239,7 @@
             <h3>Advanced API-only operations</h3>
             <p>Some diagnostics, governance, recovery, and exact-original archive operations have authenticated APIs but no complete browser controls yet. The activity panel shows recorded work, not the model's private reasoning. Unavailable external conversation text cannot be recovered from tool records.</p>
           </details>
-          <section class="panel" aria-labelledby="provider-title">
+          <section id="settings-providers" class="panel settings-section" aria-labelledby="provider-title">
             <div class="sectionhead compact">
               <div>
                 <h3 id="provider-title">Providers &amp; secrets</h3>
@@ -244,7 +249,7 @@
             </div>
             <p id="provider-status" class="muted small" role="status" aria-live="polite"></p>
             <div id="provider-list" class="provider-list"><p class="empty">Open this view to load providers.</p></div>
-            <form id="providerform" class="provider-editor" hidden autocomplete="off">
+            <form id="providerform" class="provider-editor" hidden autocomplete="off" aria-labelledby="provider-form-title">
               <h3 id="provider-form-title">Add provider</h3>
               <input id="provider-editing-original" type="hidden" value="">
               <label for="providerid">Provider ID</label>
@@ -262,7 +267,7 @@
                 </div>
               </div>
               <label for="providerkey">API key</label>
-              <input id="providerkey" type="password" maxlength="4096" autocomplete="new-password" spellcheck="false">
+              <input id="providerkey" type="password" maxlength="4096" autocomplete="new-password" spellcheck="false" aria-describedby="provider-key-hint">
               <p id="provider-key-hint" class="muted small">Required for a new provider. When editing, leave blank to keep the stored key.</p>
               <div class="row actions">
                 <button id="provider-save" type="submit">Save provider</button>
@@ -277,10 +282,10 @@
               </details>
             </form>
           </section>
-          <form id="settingsform" class="panel">
+          <form id="settingsform" class="panel settings-section" aria-labelledby="model-roles-title">
             <div class="sectionhead compact">
               <div>
-                <h3>Model roles</h3>
+                <h3 id="model-roles-title">Model roles</h3>
                 <p class="muted small">Suggestions come only from the selected provider's <code>/models</code>. You can always type an exact manual model ID; changing provider never changes a saved role automatically.</p>
               </div>
               <button id="loadmodels" class="secondary" type="button">Refresh models</button>
@@ -304,13 +309,13 @@
             </div>
             <button type="submit">Save models</button>
           </form>
-          <form id="projectform" class="panel">
-            <h3>Project scope settings</h3>
+          <form id="projectform" class="panel settings-section" aria-labelledby="project-settings-title">
+            <h3 id="project-settings-title">Projects &amp; folders</h3>
             <p class="muted small">Tools stay disabled until this scope has a valid project root.</p>
             <div class="folder-field">
               <div>
                 <label for="rootpath">Root path</label>
-                <input id="rootpath" maxlength="4096" placeholder="/absolute/path/to/project" spellcheck="false" autocomplete="off">
+                <input id="rootpath" maxlength="4096" placeholder="/absolute/path/to/project" spellcheck="false" autocomplete="off" aria-describedby="folder-selection-note">
               </div>
               <button id="folder-open" class="secondary" type="button">Choose folder</button>
             </div>
