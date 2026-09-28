@@ -37,8 +37,8 @@ impl DbStore {
                 let input=(!private_preview).then_some(stored_input.clone()).flatten();
                 let output=(!private_preview).then_some(stored_output.clone()).flatten();
                 let capped=[input.as_deref(),output.as_deref()].iter().flatten().any(|p|p.len()>=PREVIEW_BYTES);
-                let summary=stored_output.as_deref().and_then(|p|serde_json::from_str::<Value>(p).ok())
-                    .and_then(|v|v.get("summary").and_then(Value::as_str).map(str::to_string));
+                let summary=output.as_deref().and_then(|p|serde_json::from_str::<Value>(p).ok())
+                    .and_then(|v|v.get("summary").and_then(Value::as_str).map(crate::safety::redact));
                 Ok(json!({
                     "id":r.get::<_,String>(0)?,"seq":r.get::<_,i64>(1)?,"kind":kind,
                     "status":r.get::<_,String>(3)?,"tool_name":tool_name,

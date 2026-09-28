@@ -2814,10 +2814,10 @@ async fn turn_steps_hide_private_model_and_think_payloads_but_keep_tool_previews
         c.execute("INSERT INTO chat_receipts(request_id,session_id,scope,model,signature,redacted,state,captured_at,updated_at) VALUES('request-private','session-private','global','main','sig-private',0,'generating',?1,?1)",[&stamp])?;
 
         c.execute(crate::agentic_sql::STEP_BEGIN,params!["model-private","request-private",None::<String>,0,"model_call",None::<String>,None::<String>,json!({"messages":[{"role":"assistant","content":"PRIVATE-MODEL-WORKING"}]}).to_string(),stamp])?;
-        c.execute(crate::agentic_sql::STEP_FINISH,params!["model-private","complete",json!({"text":"PRIVATE-MODEL-OUTPUT"}).to_string(),10,0,Some(2_i64),Some(3_i64),None::<String>,now()])?;
+        c.execute(crate::agentic_sql::STEP_FINISH,params!["model-private","complete",json!({"summary":"PRIVATE-MODEL-SUMMARY","text":"PRIVATE-MODEL-OUTPUT"}).to_string(),10,0,Some(2_i64),Some(3_i64),None::<String>,now()])?;
 
         c.execute(crate::agentic_sql::STEP_BEGIN,params!["think-private","request-private",None::<String>,1,"tool_call",Some("think"),Some("call-think"),json!({"thought":"PRIVATE-SCRATCHPAD-TEXT"}).to_string(),stamp])?;
-        c.execute(crate::agentic_sql::STEP_FINISH,params!["think-private","complete",json!({"summary":"noted","content":"PRIVATE-SCRATCHPAD-TEXT"}).to_string(),20,0,None::<i64>,None::<i64>,None::<String>,now()])?;
+        c.execute(crate::agentic_sql::STEP_FINISH,params!["think-private","complete",json!({"summary":"PRIVATE-SCRATCHPAD-SUMMARY","content":"PRIVATE-SCRATCHPAD-TEXT"}).to_string(),20,0,None::<i64>,None::<i64>,None::<String>,now()])?;
 
         c.execute(crate::agentic_sql::STEP_BEGIN,params!["read-visible","request-private",None::<String>,2,"tool_call",Some("read"),Some("call-read"),json!({"path":"notes.md"}).to_string(),stamp])?;
         c.execute(crate::agentic_sql::STEP_FINISH,params!["read-visible","complete",json!({"summary":"read notes.md","content":"VISIBLE-TOOL-OUTPUT"}).to_string(),19,0,None::<i64>,None::<i64>,None::<String>,now()])?;
@@ -2832,7 +2832,10 @@ async fn turn_steps_hide_private_model_and_think_payloads_but_keep_tool_previews
     assert!(serialized.contains("VISIBLE-TOOL-OUTPUT"));
     assert_eq!(response["steps"][0]["preview_visibility"], "private_hidden");
     assert_eq!(response["steps"][1]["preview_visibility"], "private_hidden");
-    assert_eq!(response["steps"][1]["summary"], "noted");
+    assert!(response["steps"][0]["summary"].is_null());
+    assert!(response["steps"][1]["summary"].is_null());
+    assert!(!serialized.contains("PRIVATE-SCRATCHPAD-SUMMARY"));
+    assert!(!serialized.contains("PRIVATE-MODEL-SUMMARY"));
     assert_eq!(response["steps"][2]["preview_visibility"], "bounded_tool");
 }
 

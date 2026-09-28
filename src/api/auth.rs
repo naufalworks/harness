@@ -116,10 +116,14 @@ impl AuthState {
         let now = Instant::now();
         let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
         sessions.retain(|_, expires| *expires > now);
-        sessions
-            .get(token)
-            .filter(|expires| **expires > now)
-            .map(|_| AuthKind::Session)
+        sessions.get(token).map(|_| AuthKind::Session)
+    }
+    fn refresh_active_session(&self, token: &str) {
+        let now = Instant::now();
+        let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(expires) = sessions.get_mut(token).filter(|expires| **expires > now) {
+            *expires = now + self.session_ttl;
+        }
     }
     fn issue_session(&self) -> (String, u64) {
         let now = Instant::now();
@@ -251,6 +255,17 @@ pub(crate) async fn authenticate(
         )
             .into_response();
     };
+    // Refresh only after authentication, proxy identity, rate, origin and capacity gates.
+    // Passive status polling must not turn an idle session into a perpetual credential.
+    if request
+        .headers()
+        .get("x-harness-active")
+        .is_some_and(|value| value == "1")
+    {
+        if let Some(value) = auth {
+            h.auth.refresh_active_session(value);
+        }
+    }
     next.run(request).await
 }
 pub(crate) async fn create_browser_session(
@@ -341,4 +356,47 @@ pub(crate) async fn headers(
         );
     }
     response
+}
+
+#[cfg(test)]
+mod session_tests {
+    use super::*;
+
+    #[test]
+    fn browser_session_refresh_requires_active_unexpired_session() {
+        let auth = AuthState::new("m".repeat(32), None, Duration::from_secs(900), None);
+        let (session, _) = auth.issue_session();
+        let near_expiry = Instant::now() + Duration::from_secs(10);
+        auth.sessions
+            .lock()
+            .unwrap()
+            .insert(session.clone(), near_expiry);
+        assert_eq!(auth.identify(&session), Some(AuthKind::Session));
+        assert_eq!(
+            auth.sessions.lock().unwrap()[&session],
+            near_expiry,
+            "passive reads do not extend"
+        );
+        auth.refresh_active_session(&session);
+        assert!(auth.sessions.lock().unwrap()[&session] > near_expiry);
+        auth.sessions
+            .lock()
+            .unwrap()
+            .insert(session.clone(), Instant::now() - Duration::from_secs(1));
+        auth.refresh_active_session(&session);
+        assert_eq!(
+            auth.identify(&session),
+            None,
+            "expired credentials cannot be revived"
+        );
+        assert_eq!(auth.identify(&"m".repeat(32)), Some(AuthKind::Master));
+    }
+
+    #[test]
+    fn browser_sessions_are_invalid_after_restart() {
+        let auth = AuthState::new("m".repeat(32), None, Duration::from_secs(900), None);
+        let (session, _) = auth.issue_session();
+        let restarted = AuthState::new("m".repeat(32), None, Duration::from_secs(900), None);
+        assert_eq!(restarted.identify(&session), None);
+    }
 }
