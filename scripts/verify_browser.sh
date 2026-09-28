@@ -16,4 +16,5 @@ echo "Chromium: $CHROMIUM_PATH"
 
 node tests/recording_ui.cjs
 node tests/ui_smoke.cjs
+node tests/p22_ui.cjs
 echo 'Browser suites passed.'

@@ -2,22 +2,47 @@
 <html lang="en">
 <!-- P11-T05: the `?v=` fingerprint is the served build commit, so a cached asset can never
      outlive its build and both files can be cached immutably by the browser. -->
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Harness</title><link rel="stylesheet" href="/style.css?v=__HARNESS_BUILD_COMMIT__"><script src="/api.js?v=__HARNESS_BUILD_COMMIT__" defer></script><script src="/app.js?v=__HARNESS_BUILD_COMMIT__" defer></script></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,interactive-widget=resizes-content"><title>Harness</title><link rel="stylesheet" href="/style.css?v=__HARNESS_BUILD_COMMIT__"><script src="/api.js?v=__HARNESS_BUILD_COMMIT__" defer></script><script src="/app.js?v=__HARNESS_BUILD_COMMIT__" defer></script></head>
 <body>
 <div class="app">
 
-<section id="auth" class="authscreen">
-  <div class="authcard">
-    <div class="mark" aria-hidden="true">h</div>
-    <h1>harness</h1>
-    <p class="muted">Local-first · private by default. Enter your local access token — it stays in this tab only and is cleared on reload.</p>
-    <form id="authform">
-      <label for="token">Access token</label>
-      <div class="row">
-        <input id="token" type="password" required autocomplete="off" placeholder="Local access token">
-        <button type="submit">Connect</button>
+<section id="auth" class="authscreen" data-mode="connect">
+  <header class="authbrandbar">
+    <div class="brand"><span class="mark sm" aria-hidden="true">H</span><span class="brandname">Harness</span></div>
+    <span class="authsecure">Secure local access</span>
+  </header>
+  <div class="authgrid">
+    <div class="authcard">
+      <div class="authicon" aria-hidden="true">↗</div>
+      <p id="auth-kicker" class="eyebrow">PRIVATE WORKSPACE</p>
+      <h1 id="auth-title">Connect to Harness</h1>
+      <p id="auth-copy" class="authcopy">Enter your Harness access token to open this private workspace.</p>
+      <form id="authform">
+        <label for="token">Harness access token</label>
+        <input id="token" type="password" required autocomplete="off" placeholder="Enter your access token" aria-describedby="auth-token-help">
+        <button id="auth-submit" type="submit">Continue</button>
+      </form>
+      <div id="auth-token-help" class="authnote">
+        <strong>Browser-private session</strong>
+        <span>Your master token stays in memory only long enough to create a short-lived browser session. It is never written to browser storage.</span>
       </div>
-    </form>
+      <div class="authtrust" aria-label="Security notes">
+        <span>Write-only credentials</span><span>Tab-local session</span><span>No master-token storage</span>
+      </div>
+    </div>
+    <aside id="auth-restore" class="authrestore" aria-labelledby="auth-restore-title">
+      <div class="restorehead">
+        <span class="restoreicon" aria-hidden="true">▦</span>
+        <div><h2 id="auth-restore-title">Your workspace will be restored</h2><p>After you reconnect, Harness returns to the same safe tab state without resending work.</p></div>
+      </div>
+      <dl class="restorelist">
+        <div><dt>Workspace</dt><dd id="auth-restore-workspace">Local Harness</dd></div>
+        <div><dt>Project scope</dt><dd id="auth-restore-scope">global</dd></div>
+        <div><dt>Conversation</dt><dd id="auth-restore-session">Current tab</dd></div>
+        <div><dt>Pending work</dt><dd id="auth-restore-pending">Nothing waiting</dd></div>
+      </dl>
+      <p class="restorefoot">Re-authentication checks durable receipts first. It never automatically resends an ambiguous request.</p>
+    </aside>
   </div>
 </section>
 
@@ -27,17 +52,23 @@
 <div id="workspace" hidden>
   <header class="topbar">
     <button id="navtoggle" class="iconbtn" type="button" title="Toggle navigation" aria-label="Toggle navigation" aria-controls="sidebar" aria-expanded="false"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M2 4h12M2 8h12M2 12h12"/></svg></button>
-    <div class="brand"><span class="mark sm" aria-hidden="true">h</span><span class="brandname">harness</span></div>
+    <div class="brand"><span class="mark sm" aria-hidden="true">H</span><span class="brandname">Harness</span></div>
+    <div class="header-project" aria-label="Current project scope">
+      <span class="header-project-icon" aria-hidden="true">▣</span>
+      <span><strong id="header-project-name">global</strong><small id="header-project-root">Chat only · no project root</small></span>
+    </div>
     <div class="spacer"></div>
-    <button id="newchat" class="chipbtn" type="button"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg><span>New chat</span></button>
+    <span id="connection" class="badge">Locked</span>
+    <button id="newchat-mobile" class="iconbtn" type="button" title="New chat" aria-label="New chat"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg></button>
     <button id="railbtn" class="iconbtn" type="button" title="Toggle agent activity panel" aria-label="Toggle agent activity panel" aria-controls="rail" aria-expanded="false"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="2" y="3" width="12" height="10" rx="2"/><path d="M10 3v10"/></svg></button>
     <button id="themebtn" class="iconbtn" type="button" title="Toggle light / dark theme" aria-label="Toggle light or dark theme"><svg class="moon" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13.5 9.5A5.5 5.5 0 0 1 6.5 2.5a5.5 5.5 0 1 0 7 7z"/></svg><svg class="sun" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="8" cy="8" r="3"/><path d="M8 1.5v1.5M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1 1M11.6 11.6l1 1M12.6 3.4l-1 1M4.4 11.6l-1 1"/></svg></button>
     <button id="lock" class="iconbtn" type="button" title="Lock — clears the token from this tab" aria-label="Lock"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="3.5" y="7" width="9" height="6.5" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/></svg></button>
-    <span id="connection" class="badge">Locked</span>
   </header>
 
   <div class="bodywrap">
     <aside id="sidebar">
+      <button id="sidebarclose" class="iconbtn" type="button" aria-label="Close navigation">×</button>
+      <button id="newchat" class="newchat" type="button"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg><span>New chat</span><kbd>⌘ K</kbd></button>
       <div class="sideblock">
         <label for="scope" class="sidehead">Project scope</label>
         <input id="scope" value="global" maxlength="80" list="scopelist" aria-describedby="scopehint" spellcheck="false">
@@ -57,10 +88,13 @@
       </details>
 
       <nav class="sidenav" aria-label="Workspace views">
-        <button class="tab active" data-view="chat" type="button" aria-pressed="true"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 10a1.5 1.5 0 0 1-1.5 1.5H5L2 14V3.5A1.5 1.5 0 0 1 3.5 2h9A1.5 1.5 0 0 1 14 3.5z"/></svg>Chat</button>
-        <button class="tab" data-view="memory" type="button" aria-pressed="false"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 5.5 8 2l6 3.5M2 5.5V11a1 1 0 0 0 .6.9L8 14.5l5.4-2.6a1 1 0 0 0 .6-.9V5.5M8 8.5v6"/></svg>Inbox <span id="pending" class="count">0</span></button>
+        <button class="tab active" data-view="chat" type="button" aria-pressed="true"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 10a1.5 1.5 0 0 1-1.5 1.5H5L2 14V3.5A1.5 1.5 0 0 1 3.5 2h9A1.5 1.5 0 0 1 14 3.5z"/></svg>Chat / Work</button>
+        <button class="tab" data-view="memory" type="button" aria-pressed="false"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 5.5 8 2l6 3.5M2 5.5V11a1 1 0 0 0 .6.9L8 14.5l5.4-2.6a1 1 0 0 0 .6-.9V5.5M8 8.5v6"/></svg>Inbox / Memory <span id="pending" class="count">0</span></button>
         <button class="tab" data-view="history" type="button" aria-pressed="false"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="7" cy="7" r="4.2"/><path d="M10.2 10.2 14 14"/></svg>History &amp; privacy</button>
         <button class="tab" data-view="imports" type="button" aria-pressed="false"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 10V2M5 5l3-3 3 3M3 10v3.5A1.5 1.5 0 0 0 4.5 15h7a1.5 1.5 0 0 0 1.5-1.5V10"/></svg>Imports &amp; jobs</button>
+        <span class="nav-divider" aria-hidden="true"></span>
+        <button class="tab" data-open-view="settings" data-section="projectform" type="button" aria-pressed="false">▣ Projects / Folders</button>
+        <button class="tab" data-open-view="settings" data-section="settings-providers" type="button" aria-pressed="false">◇ Providers / Secrets</button>
         <button class="tab" data-view="settings" type="button" aria-pressed="false"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.8v1.6M8 12.6v1.6M1.8 8h1.6M12.6 8h1.6M3.6 3.6l1.1 1.1M11.3 11.3l1.1 1.1M12.4 3.6l-1.1 1.1M4.7 11.3l-1.1 1.1"/></svg>Control center</button>
       </nav>
 
@@ -69,12 +103,13 @@
         <span class="muted small">Single user · one local process</span>
       </footer>
     </aside>
-    <div id="drawerbg"></div>
+    <div id="drawerbg" aria-hidden="true"></div>
 
     <main id="main" tabindex="-1">
       <section id="view-chat" class="view chatview">
         <div id="chatscroll">
           <div class="chatcol">
+            <header class="workspace-intro"><div><p class="eyebrow">CHAT / WORK</p><h1>What will you build today?</h1><p>A focused space for your next step.</p></div></header>
             <section id="setup-banner" class="setup-banner" hidden>
               <div class="setup-text">
                 <strong>Tools are off in this scope</strong>
@@ -84,6 +119,7 @@
             </section>
             <button id="oldermessages" class="secondary wide" type="button" hidden>Load earlier messages</button>
             <div id="log" aria-live="polite"><p class="empty">Say hi to get started. Harness keeps up with the conversation and remembers what matters.</p></div>
+            <section id="file-artifacts" class="file-artifacts" aria-label="Recorded file changes" hidden></section>
             <details id="recalltrace" hidden><summary>Context used for this answer</summary><div id="recalled"></div></details>
           </div>
         </div>
@@ -102,8 +138,9 @@
             <form id="chatform">
               <label for="prompt" class="sr-only">Your message</label>
               <textarea id="prompt" rows="2" maxlength="16000" placeholder="What are we working on?" required></textarea>
+              <div class="composer-context"><span id="composer-scope">global</span><span id="composer-model">Model follows your saved configuration</span></div>
               <div class="sendrow">
-                <span class="composer-meta"><span id="capturestatus" class="statusline" role="status"></span><span class="muted small footnote">Enter to send · Shift+Enter for a new line · saved on this device</span></span>
+                <span class="composer-meta"><span id="capturestatus" class="statusline" role="status"></span><span class="muted small footnote">Enter to send · Shift+Enter for a new line · saved on the Harness server</span></span>
                 <div class="send-actions">
                   <button id="cancelrequest" class="secondary" type="button" hidden title="Stop the running turn at its next recorded boundary">Stop</button>
                   <button id="checkrecording" class="secondary" type="button" hidden>Check status</button>
@@ -119,6 +156,7 @@
 
       <section id="view-memory" class="view pageview" hidden>
         <div class="pagecol">
+          <header class="page-intro"><p class="page-eyebrow">INBOX / MEMORY</p><h1>Keep what matters.</h1><p>Review suggestions and their evidence before adding them to memory.</p></header>
           <div class="sectionhead">
             <h2>Imported memory inbox</h2>
             <button id="refreshmemory" class="secondary" type="button">Refresh inbox</button>
@@ -134,6 +172,7 @@
            shows exactly what would leave before anything leaves. -->
       <section id="view-history" class="view pageview" hidden>
         <div class="pagecol">
+          <header class="page-intro"><p class="page-eyebrow">HISTORY / PRIVACY</p><h1>Your work, under your control.</h1><p>Find recorded conversations, inspect sources and review what you share.</p></header>
           <section class="panel" aria-labelledby="external-title">
             <h2 id="external-title">External development sessions</h2>
             <p>Harness-committed evidence only. Locally captured but undelivered activity is not visible here. Producer receipt of acknowledgement and local backlog are unknown.</p>
@@ -185,6 +224,7 @@
 
       <section id="view-imports" class="view pageview" hidden>
         <div class="pagecol">
+          <header class="page-intro"><p class="page-eyebrow">IMPORTS / JOBS</p><h1>Bring your context along.</h1><p>Import a transcript and track its processing, with your consent at every boundary.</p></header>
           <h2>Bring a conversation with you</h2>
           <p class="muted">Upload a transcript—not a server-side path. Sanitized source text is retained locally. Every normalized chunk is queued for provider extraction.</p>
           <form id="importform" class="panel">
@@ -223,15 +263,15 @@
 
       <section id="view-settings" class="view pageview" hidden>
         <div class="pagecol">
-          <h2 id="control-center-title">Control center</h2>
+          <p class="page-eyebrow">SETTINGS</p><h1 id="control-center-title">Control center</h1>
           <p class="muted">Configure the server-side project scope, provider connection, and model roles used by new work. Existing admitted turns keep the provider/model version they already recorded.</p>
           <nav id="settings-section-nav" class="settings-section-nav" aria-label="Control center sections">
             <a href="#projectform">Projects &amp; folders</a>
             <a href="#settings-providers">Providers &amp; secrets</a>
-            <a href="#settingsform">Model roles</a>
+            <a href="#settingsform">Model roles</a><a href="#settings-diagnostics">Status</a>
           </nav>
           <details id="p21-capabilities" class="panel">
-            <summary>What the UI can do today · P21 feature status</summary>
+            <summary>Available features and advanced operations</summary>
             <h3>Available now</h3>
             <p>Chat and durable activity, approval prompts, reviewed memory suggestions, sanitized history and exports, transcript imports, project settings, and custom provider management are available in the navigation. Provider API keys are write-only: the UI can replace one but never read it back.</p>
             <h3>Not yet available in the UI</h3>
@@ -320,7 +360,7 @@
               <button id="folder-open" class="secondary" type="button">Choose folder</button>
             </div>
             <p id="folder-selection-note" class="muted small">Type an absolute server path, or choose from directories approved by the server operator. Browsing never grants tool permission and does not save until you submit this form.</p>
-            <section id="folder-browser" class="folder-browser" aria-labelledby="folder-browser-title" hidden>
+            <section id="folder-browser" role="dialog" aria-modal="true" class="folder-browser" aria-labelledby="folder-browser-title" hidden>
               <div class="sectionhead compact">
                 <div>
                   <h4 id="folder-browser-title">Choose server folder</h4>
@@ -352,17 +392,24 @@
             </div>
             <button type="submit">Save project settings</button>
           </form>
+          <section id="settings-diagnostics" class="panel settings-section" aria-labelledby="diagnostics-title">
+            <h3 id="diagnostics-title">Connection &amp; session</h3>
+            <p class="muted small">Recorded server health. Model discovery alone does not establish generation, tools or streaming capability.</p>
+            <dl><div><dt>Server</dt><dd id="diagnostic-server">Not checked</dd></div><div><dt>Build</dt><dd id="diagnostic-build">Not checked</dd></div><div><dt>Database</dt><dd id="diagnostic-database">Not checked</dd></div><div><dt>Workers</dt><dd id="diagnostic-workers">Not checked</dd></div></dl>
+            <p class="muted small">Active use refreshes this browser session. Idle expiry or a server restart asks you to reconnect. Manual Lock clears sensitive tab content.</p>
+          </section>
           <pre id="modelnames" hidden></pre>
         </div>
       </section>
     </main>
 
     <aside id="rail" aria-label="Agent activity" hidden>
+      <button id="rail-empty-close" class="secondary" type="button">Close activity</button>
       <section id="agent-turn" hidden aria-live="polite">
         <div class="agent-panel-head">
           <div>
-            <p class="eyebrow">TURN RECORD</p>
-            <h2>Agent activity</h2>
+            <p class="eyebrow">RECORDED WORK</p>
+            <h2>Runtime activity</h2>
           </div>
           <div class="head-actions">
             <span id="verification-badge" class="badge verification-badge" hidden></span>
@@ -370,7 +417,13 @@
             <button id="railclose" class="iconbtn" type="button" title="Close panel" aria-label="Close activity panel"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 3l10 10M13 3L3 13"/></svg></button>
           </div>
         </div>
-        <section id="agent-runtime" class="overview-panel" aria-label="Recorded runtime activity">
+        <nav id="activity-tabs" class="activity-tabs" aria-label="Runtime activity sections">
+          <button class="activity-tab active" data-activity-view="activity" type="button" aria-pressed="true">Activity</button>
+          <button class="activity-tab" data-activity-view="decision" type="button" aria-pressed="false">Decision Trace</button>
+          <button class="activity-tab" data-activity-view="tools" type="button" aria-pressed="false">Tools</button>
+          <button class="activity-tab" data-activity-view="verification" type="button" aria-pressed="false">Verification</button>
+        </nav>
+        <section id="agent-runtime" class="overview-panel" data-activity-content="activity" aria-label="Recorded runtime activity">
           <div class="subhead"><strong>Runtime</strong><span id="activity-elapsed" class="muted">—</span></div>
           <dl class="overview-grid">
             <div><dt>Phase</dt><dd id="activity-phase">Saved</dd></div>
@@ -378,26 +431,32 @@
             <div><dt>Model</dt><dd id="activity-model">Unknown</dd></div>
             <div><dt>Routing</dt><dd id="activity-routing">Recorded turn</dd></div>
           </dl>
-          <p class="muted small">This panel shows recorded phases, tool/permission activity and safe previews. Private model reasoning and scratchpad text are not displayed.</p>
+          <p class="muted small">Private model reasoning and scratchpad text are not displayed.</p>
         </section>
-        <section id="agent-plan" class="plan-strip" hidden>
+        <section id="agent-plan" class="plan-strip" data-activity-content="decision" hidden>
           <div class="subhead"><strong>Plan</strong><span id="plan-count" class="muted"></span></div>
           <div id="plan-items"></div>
         </section>
-        <section id="agent-steps" class="steps-panel" hidden>
+        <section id="agent-decision" class="decision-panel" data-activity-content="decision">
+          <div class="subhead"><strong>Decision trace</strong><span class="muted">Recorded evidence</span></div>
+          <p class="muted small">A concise trace built from explicit plan and durable step metadata. It is not hidden model reasoning.</p>
+          <ol id="decision-items" class="decision-items"><li class="muted">No recorded decisions yet.</li></ol>
+          <p id="decision-missing" class="muted small">Reasons and rejected alternatives are unavailable unless explicitly recorded through a shareable, validated source.</p>
+        </section>
+        <section id="agent-steps" class="steps-panel" data-activity-content="tools" hidden>
           <div class="subhead"><strong>Steps</strong><span id="steps-count" class="muted"></span></div>
           <div id="steps-list"></div>
         </section>
-        <section id="agent-retrieval" class="retrieval-panel" hidden>
+        <section id="agent-retrieval" class="retrieval-panel" data-activity-content="activity" hidden>
           <div class="subhead"><strong>Memory retrieval</strong><span id="retrieval-count" class="muted"></span></div>
           <p id="retrieval-note" class="muted small"></p>
           <div id="retrieval-list" aria-label="Memories considered for this answer"></div>
         </section>
-        <section id="agent-changes" class="changes-panel" hidden>
+        <section id="agent-changes" class="changes-panel" data-activity-content="tools" hidden>
           <div class="subhead"><strong>File changes</strong><span id="changes-count" class="muted"></span></div>
           <div id="changes-list"></div>
         </section>
-        <section id="agent-incident" class="incident-panel" hidden>
+        <section id="agent-incident" class="incident-panel" data-activity-content="tools" hidden>
           <div class="incident-head">
             <div class="subhead"><strong>Incident graph</strong><span id="incident-count" class="muted"></span></div>
             <label class="sr-only" for="incident-relation">Filter incident graph by relation</label>
@@ -422,7 +481,11 @@
           <button id="incident-expand" class="secondary wide" type="button" hidden></button>
           <div id="incident-detail" class="incident-detail" hidden></div>
         </section>
-        <section id="agent-overview" class="overview-panel" aria-label="Project and usage overview">
+        <section id="agent-verification" class="verification-panel" data-activity-content="verification">
+          <div class="subhead"><strong>Verification</strong><span id="verification-state" class="muted">Not recorded</span></div>
+          <p id="verification-summary" class="muted small">Verification evidence appears here when a turn records it.</p>
+        </section>
+        <section id="agent-overview" class="overview-panel" data-activity-content="activity" aria-label="Project and usage overview">
           <div class="subhead"><strong>Project</strong><span id="project-overview-scope" class="muted">global</span></div>
           <dl class="overview-grid">
             <div><dt>Tools</dt><dd id="project-overview-tools">Chat only</dd></div>
@@ -432,7 +495,7 @@
           </dl>
           <p id="project-overview-root" class="muted small">No project root · file and command tools are off</p>
         </section>
-        <section class="context-meter">
+        <section class="context-meter" data-activity-content="activity">
           <div class="subhead"><strong>Context</strong><span id="context-tokens" class="muted">—</span></div>
           <div class="meter" aria-hidden="true"><span class="meter-fill"></span></div>
         </section>

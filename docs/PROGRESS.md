@@ -1,5 +1,109 @@
 # PROGRESS — journal
 
+## 2026-09-29 · P22 branch push credential boundary
+
+The first push was rejected because the existing GitHub token lacks `workflow`
+scope. No remote ref changed. Removed the optional workflow-file addition from
+the unpushed UI commit; the existing CI configuration is preserved. All three
+mocked browser suites passed locally in the strict gate, while the existing
+browser-e2e CI job runs the real browser/service flows. No alternate CI trigger,
+credential change or permissions workaround was used. Exact final-commit CI is
+still required after the normal branch push succeeds.
+
+## 2026-09-29 · P22 implementation acceptance; T16 blocked on final visual review
+
+Accepted the inherited implementation sequentially in eligible priority order against
+one shared final-source verification run. No source changed during this acceptance
+pass. `PATH=/root/.cargo/bin:$PATH CARGO_BUILD_JOBS=2 bash scripts/verify_release.sh`
+completed with exit 0 in task `cd5ffaab417a`. Its exact constituent commands include
+`cargo test --locked`, strict all-target/all-feature Clippy, `bash scripts/verify_browser.sh`,
+`bash scripts/verify_e2e.sh` and `python3 scripts/check_docs.py`, satisfying the declared
+verify commands below without repeatedly running identical suites for each UI surface.
+
+| Task | Transition | Acceptance evidence |
+|---|---|---|
+| P22-T07 | doing → done | Active-only sliding browser sessions, 401/SSE expiry, same conversation/view/draft/pending identity, no resend, stale-response discard and Manual Lock passed native, mocked and real recovery E2E. |
+| P22-T03 | todo → doing → done | Recorded streaming chunks remain visible, terminal receipt states, safe message rendering, file evidence cards and composer recovery passed browser and real E2E. |
+| P22-T04 | todo → doing → done | Recorded provider/model/version, timing/usage, permissions and recovery passed mocked and real E2E; admitted provider routing remains pinned. |
+| P22-T05 | todo → doing → done | Native storage test with private summary sentinels and browser Decision Trace hostile/private payload checks passed; absent reasons stay unavailable. |
+| P22-T06 | todo → doing → done | Safe tool previews, applied/reverted change evidence, explicit approval/denial and verification passed browser and real E2E. |
+| P22-T09 | todo → doing → done | Add/edit/test/select/delete, selected state, manual model preservation and secret absence in public API/DOM/storage/SQLite passed browser and real E2E. |
+| P22-T08 | todo → doing → done | Typed drafts, approved roots, breadcrumbs, confirm/cancel, denied browsing and unchanged permission modes passed browser and real E2E. |
+| P22-T14 | todo → doing → done | Context/provider/model/folder failures, lost ACK, offline recovery, interruption, safe/unsafe retry and expiry passed browser and real E2E. |
+| P22-T10 | todo → doing → done | Main/Extraction/Verification roles, manual/discovered/default labels and discovery distinct from capability proof passed browser suites. |
+| P22-T11 | todo → doing → done | Candidate review/edit/reject, evidence, failed approval recovery and imported-inbox semantics passed the browser suite. |
+| P22-T12 | todo → doing → done | Sanitized history/citations, Forget versus Delete Source, privacy audit and digest-pinned export preview passed the browser suite. |
+| P22-T13 | todo → doing → done | Explicit transcript import/consent, job retry and failure, process and Git panels passed the browser suite. |
+| P22-T15 | todo → doing → done | Keyboard trap/Escape/focus restoration, 320/390/768/1440 widths, dark theme, reduced motion, hostile strings and long IDs passed. Status banners do not cover Send. |
+
+P22-T16: todo → doing → blocked. Local qualification is complete: 389 Rust tests,
+Python/contracts/migrations, HTTP integration, properties, 2,000-input bounded fuzz,
+performance budget, rollback fixture, reproducible release archive/SBOM/checksum,
+all three Chromium fixture suites and actual browser→Axum→SQLite→filesystem→provider
+flows passed. Real E2E covers approval, denial, crash/re-auth, cancellation/safe retry
+and hard refusal after an applied side effect. Re-auth dispatches no new generation
+or duplicate side effect. Crash recovery separately processes its one durable memory
+extraction outbox job; the test distinguishes that from replay.
+
+A delayed-initial-session fixture additionally proves navigation stays unavailable
+until restore completes (`3df80f33fa11`, repeated in the full gate). Mobile notice
+geometry is checked so Send remains unobscured. The initial provider timeout is not
+counted as a pass; it preceded the initialization fix and explicit readiness waits.
+
+The existing `pre-p21-final-20260926T082415Z.sqlite` backup was opened read-only with
+`immutable=1`: SHA-256 matched its manifest, integrity was `ok`, schema 24 and
+699/700/699 memory/revision/embedding counts matched. No live database was changed.
+
+CI-only advisory/license scanning, coverage, cross-target builds and Sigstore remain
+pending exact branch-commit CI; local SKIP lines are not passes. Public production
+smoke/deployment is intentionally outside this authorization. Screenshot files were
+regenerated under `docs/qa/p22`; automated layout checks passed, but final desktop,
+tablet, Control Center, re-auth and Decision Trace visual inspection is incomplete:
+automatic approval review refused screenshot export as potentially private. The
+previous mobile image was inspected and led to the status-banner layout correction.
+No attempt was made to bypass the screenshot block. Next: push only the redesign
+branch and check its exact SHA in all four CI jobs, then obtain owner permission for
+remaining screenshot inspection/visual acceptance. Main and production stay unchanged.
+
+## 2026-09-28 · P22-T02 done; P22-T07 doing
+
+Shell focus, responsive drawers and overlay re-auth passed `bash scripts/verify_browser.sh`
+in strict gate task `e9c10c06ccc6`. That gate passed local lanes but failed real E2E
+with a provider-stage timeout, so it is not a release pass. Diagnostic E2E task
+`a6ca395b2921` passed. Inspection found the workspace became interactive before
+initial restore finished, permitting overlapping Settings loads; restoration now
+finishes before reveal. E2E waits for completed Settings/provider-save state.
+Mobile status messages now reserve space instead of covering Send. Branch CI now
+runs all three mocked browser suites as well as real E2E. P22-T07 acceptance and
+fresh complete gate remain pending. Desktop screenshot export was blocked by
+automatic approval review; no production action was taken.
+
+## 2026-09-28 · P22-T01 done; P22-T02 doing
+
+`cargo clippy --locked --all-targets --all-features -- -D warnings && bash scripts/verify_browser.sh`
+passed in background task `c3cf5406f088`: strict Clippy and all three Chromium
+fixtures including 320/390/768/1440 widths, dark theme, and hostile content.
+Foundation acceptance is covered. Continue shell focus/resize audit before
+session, activity and remaining surface acceptance; production is unchanged.
+
+## 2026-09-28 · P22-T01 doing: resumed after MCP reconnection
+
+Both checkouts and remote remain at `7f44067`; dirty changes were preserved in
+`/root/workspace/harness-p22-checkpoints/20260928-resume`. Continue sequentially
+on the owner-required redesign branch. The prior P22 browser run failed on a
+hidden mobile theme control. Fixed its visibility and moved auth unit tests
+after production items to resolve strict Clippy. Final-source gates are pending;
+no completion, CI, main merge or production promotion is claimed.
+
+## 2026-09-26 · P22-T01 doing: inspect inherited redesign
+
+Continuing on owner-required `task/p22-ui-redesign` at `7f44067`. Five inherited
+modified files were inspected and preserved before edits (patch checkpoint in
+`/tmp/harness-p22-inherited-20260926.patch`). P22 tasks will proceed sequentially
+on this one owner-requested branch. No main merge or production deployment is
+authorized. Initial mocked browser verification is running; no pass claimed.
+Next: unify foundation, then shell and session/privacy corrections.
+
 ## 2026-09-26 · P21 UI control center complete and production-verified
 
 Completed P21-T01 through P21-T10. The owner-facing Control center now covers

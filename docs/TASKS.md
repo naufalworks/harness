@@ -1754,7 +1754,7 @@ production fallback. No P22 task may weaken provider-secret handling, scope/path
 durable admission/recovery, memory integrity, or the private-reasoning boundary.
 
 ### P22-T01 · Design system and visual foundation
-- status: todo
+- status: done
 - priority: high
 - lane: ui-foundation
 - parallel: no
@@ -1765,7 +1765,7 @@ durable admission/recovery, memory integrity, or the private-reasoning boundary.
 - verify: bash scripts/verify_browser.sh
 
 ### P22-T02 · New application shell, navigation and responsive layout
-- status: todo
+- status: done
 - priority: high
 - lane: ui-shell
 - parallel: no
@@ -1776,7 +1776,7 @@ durable admission/recovery, memory integrity, or the private-reasoning boundary.
 - verify: bash scripts/verify_browser.sh
 
 ### P22-T03 · Full Chat / Work redesign
-- status: todo
+- status: done
 - priority: high
 - lane: chat-ui
 - parallel: no
@@ -1785,9 +1785,10 @@ durable admission/recovery, memory integrity, or the private-reasoning boundary.
 - files: static/index.html, static/app.js, static/style.css, tests/recording_ui.cjs, tests/ui_smoke.cjs
 - done-when: conversation hierarchy, composer, artifact/file cards, project/model context and terminal states are clear, modern and responsive while durable acknowledgement/recovery behavior remains unchanged.
 - verify: bash scripts/verify_browser.sh && bash scripts/verify_e2e.sh
+- note (2026-09-29): Recorded streaming chunks remain visible, terminal receipt states, safe message rendering, file evidence cards and composer recovery passed browser and real E2E. Verification: final-source strict gate `cd5ffaab417a` (`bash scripts/verify_release.sh`), exit 0.
 
 ### P22-T04 · Runtime Activity panel redesign
-- status: todo
+- status: done
 - priority: high
 - lane: activity-ui
 - parallel: no
@@ -1796,9 +1797,10 @@ durable admission/recovery, memory integrity, or the private-reasoning boundary.
 - files: static/index.html, static/app.js, static/style.css, tests/ui_smoke.cjs, tests/browser_e2e.cjs
 - done-when: provider/model, recorded phase, elapsed time, usage, tool/permission activity, verification and recovery are scannable in the right rail and restore truthfully after reload.
 - verify: bash scripts/verify_browser.sh && bash scripts/verify_e2e.sh
+- note (2026-09-29): Recorded provider/model/version, timing/usage, permissions and recovery passed mocked and real E2E; admitted provider routing remains pinned. Verification: final-source strict gate `cd5ffaab417a` (`bash scripts/verify_release.sh`), exit 0.
 
 ### P22-T05 · Decision Trace / Claude-Code-style work visibility
-- status: todo
+- status: done
 - priority: high
 - lane: activity-ui
 - parallel: no
@@ -1807,9 +1809,10 @@ durable admission/recovery, memory integrity, or the private-reasoning boundary.
 - files: src/storage/turns.rs, static/index.html, static/app.js, src/storage_tests.rs, tests/ui_smoke.cjs
 - done-when: the UI can show goal, recorded plan/action, safe reason/provenance when explicitly available, evidence, next step and result without exposing hidden chain-of-thought, raw provider scratchpad or `think` contents; fabricated reasoning is impossible by contract.
 - verify: cargo test --locked && bash scripts/verify_browser.sh
+- note (2026-09-29): Native storage test with private summary sentinels and browser Decision Trace hostile/private payload checks passed; absent reasons stay unavailable. Verification: final-source strict gate `cd5ffaab417a` (`bash scripts/verify_release.sh`), exit 0.
 
 ### P22-T06 · Tool Calls, Permissions and Verification UX
-- status: todo
+- status: done
 - priority: high
 - lane: activity-ui
 - parallel: no
@@ -1818,9 +1821,10 @@ durable admission/recovery, memory integrity, or the private-reasoning boundary.
 - files: static/index.html, static/app.js, static/style.css, tests/ui_smoke.cjs, tests/browser_e2e.cjs
 - done-when: tool calls, permission requests, changes and verification are grouped, readable and actionable with safe previews, durations, explicit approve/deny states and no private/model payload leakage.
 - verify: bash scripts/verify_browser.sh && bash scripts/verify_e2e.sh
+- note (2026-09-29): Safe tool previews, applied/reverted change evidence, explicit approval/denial and verification passed browser and real E2E. Verification: final-source strict gate `cd5ffaab417a` (`bash scripts/verify_release.sh`), exit 0.
 
 ### P22-T07 · Session expiry, re-authentication and session restore
-- status: todo
+- status: done
 - priority: critical
 - lane: auth-ui
 - parallel: no
@@ -1829,9 +1833,10 @@ durable admission/recovery, memory integrity, or the private-reasoning boundary.
 - files: src/api/auth.rs, src/main.rs, static/index.html, static/api.js, static/app.js, static/style.css, tests/recording_ui.cjs, tests/browser_e2e.cjs
 - done-when: active use can refresh/slide the short-lived browser session without persisting the master token; terminal 401 transitions to a dedicated Session expired first screen; re-entering the Harness access token restores the same workspace/conversation/pending receipt without automatic resend; manual Lock remains a stronger clear operation.
 - verify: cargo test --locked && bash scripts/verify_browser.sh && bash scripts/verify_e2e.sh
+- note (2026-09-29): Active-only sliding browser sessions, 401/SSE expiry, same conversation/view/draft/pending identity, no resend, stale-response discard and Manual Lock passed native, mocked and real recovery E2E. Verification: final-source strict gate `cd5ffaab417a` (`bash scripts/verify_release.sh`), exit 0.
 
 ### P22-T08 · Projects / Folders redesign
-- status: todo
+- status: done
 - priority: medium
 - lane: control-center
 - parallel: no
@@ -1840,9 +1845,10 @@ durable admission/recovery, memory integrity, or the private-reasoning boundary.
 - files: static/index.html, static/app.js, static/style.css, tests/ui_smoke.cjs, tests/browser_e2e.cjs
 - done-when: project scope and approved server folders use the redesigned side panel/modal with breadcrumbs, typed path, selected path preview, explicit confirm/cancel and unchanged permission semantics.
 - verify: bash scripts/verify_browser.sh && bash scripts/verify_e2e.sh
+- note (2026-09-29): Typed drafts, approved roots, breadcrumbs, confirm/cancel, denied browsing and unchanged permission modes passed browser and real E2E. Verification: final-source strict gate `cd5ffaab417a` (`bash scripts/verify_release.sh`), exit 0.
 
 ### P22-T09 · Providers / Secrets redesign
-- status: todo
+- status: done
 - priority: high
 - lane: control-center
 - parallel: no
@@ -1851,9 +1857,10 @@ durable admission/recovery, memory integrity, or the private-reasoning boundary.
 - files: static/index.html, static/app.js, static/style.css, tests/ui_smoke.cjs, tests/browser_e2e.cjs
 - done-when: selected provider, connection/discovery state and add/edit/test/select/delete actions are obvious in the new design while stored keys remain write-only and absent from DOM/storage/API responses.
 - verify: bash scripts/verify_browser.sh && bash scripts/verify_e2e.sh
+- note (2026-09-29): Add/edit/test/select/delete, selected state, manual model preservation and secret absence in public API/DOM/storage/SQLite passed browser and real E2E. Verification: final-source strict gate `cd5ffaab417a` (`bash scripts/verify_release.sh`), exit 0.
 
 ### P22-T10 · Model Roles and capability-status redesign
-- status: todo
+- status: done
 - priority: medium
 - lane: control-center
 - parallel: no
@@ -1862,9 +1869,10 @@ durable admission/recovery, memory integrity, or the private-reasoning boundary.
 - files: static/index.html, static/app.js, static/style.css, tests/ui_smoke.cjs
 - done-when: Main, Extraction and Verification model controls clearly distinguish selected provider, discovered/manual origin, discovery availability and separately tested capabilities.
 - verify: bash scripts/verify_browser.sh
+- note (2026-09-29): Main/Extraction/Verification roles, manual/discovered/default labels and discovery distinct from capability proof passed browser suites. Verification: final-source strict gate `cd5ffaab417a` (`bash scripts/verify_release.sh`), exit 0.
 
 ### P22-T11 · Inbox / Memory redesign
-- status: todo
+- status: done
 - priority: medium
 - lane: memory-ui
 - parallel: no
@@ -1873,9 +1881,10 @@ durable admission/recovery, memory integrity, or the private-reasoning boundary.
 - files: static/index.html, static/app.js, static/style.css, tests/ui_smoke.cjs
 - done-when: memory status, candidates, evidence, confirmation/rejection and empty/loading states match the new design without changing P20 memory semantics.
 - verify: bash scripts/verify_browser.sh
+- note (2026-09-29): Candidate review/edit/reject, evidence, failed approval recovery and imported-inbox semantics passed the browser suite. Verification: final-source strict gate `cd5ffaab417a` (`bash scripts/verify_release.sh`), exit 0.
 
 ### P22-T12 · History / Privacy redesign
-- status: todo
+- status: done
 - priority: medium
 - lane: history-ui
 - parallel: no
@@ -1884,9 +1893,10 @@ durable admission/recovery, memory integrity, or the private-reasoning boundary.
 - files: static/index.html, static/app.js, static/style.css, tests/ui_smoke.cjs
 - done-when: session/history search, privacy actions, forget/source-delete distinctions, export preview and unavailable transcript states use the new design and preserve existing truth boundaries.
 - verify: bash scripts/verify_browser.sh
+- note (2026-09-29): Sanitized history/citations, Forget versus Delete Source, privacy audit and digest-pinned export preview passed the browser suite. Verification: final-source strict gate `cd5ffaab417a` (`bash scripts/verify_release.sh`), exit 0.
 
 ### P22-T13 · Imports / Jobs redesign
-- status: todo
+- status: done
 - priority: medium
 - lane: jobs-ui
 - parallel: no
@@ -1895,9 +1905,10 @@ durable admission/recovery, memory integrity, or the private-reasoning boundary.
 - files: static/index.html, static/app.js, static/style.css, tests/ui_smoke.cjs
 - done-when: import, review, job state, retry and failure UX use the new design with clear progress and no hidden automatic action.
 - verify: bash scripts/verify_browser.sh
+- note (2026-09-29): Explicit transcript import/consent, job retry and failure, process and Git panels passed the browser suite. Verification: final-source strict gate `cd5ffaab417a` (`bash scripts/verify_release.sh`), exit 0.
 
 ### P22-T14 · Loading, empty, error and recovery states
-- status: todo
+- status: done
 - priority: high
 - lane: ux-states
 - parallel: no
@@ -1906,9 +1917,10 @@ durable admission/recovery, memory integrity, or the private-reasoning boundary.
 - files: static/index.html, static/app.js, static/style.css, tests/recording_ui.cjs, tests/ui_smoke.cjs
 - done-when: loading/no-data/offline/context/provider/model/folder/permission/retry/interruption/session-expiry/stale-build states are explicitly designed, source-correct and preserve unsaved safe state.
 - verify: bash scripts/verify_browser.sh && bash scripts/verify_e2e.sh
+- note (2026-09-29): Context/provider/model/folder failures, lost ACK, offline recovery, interruption, safe/unsafe retry and expiry passed browser and real E2E. Verification: final-source strict gate `cd5ffaab417a` (`bash scripts/verify_release.sh`), exit 0.
 
 ### P22-T15 · Accessibility, keyboard, responsive and dark-mode quality gate
-- status: todo
+- status: done
 - priority: high
 - lane: ux-quality
 - parallel: no
@@ -1917,9 +1929,10 @@ durable admission/recovery, memory integrity, or the private-reasoning boundary.
 - files: static/index.html, static/app.js, static/style.css, tests/ui_smoke.cjs, tests/recording_ui.cjs
 - done-when: keyboard/focus, semantic labels, aria-live, no-color-only status, reduced-motion, mobile/tablet/desktop, dark mode, hostile strings and long identifiers pass the browser gate.
 - verify: bash scripts/verify_browser.sh
+- note (2026-09-29): Keyboard trap/Escape/focus restoration, 320/390/768/1440 widths, dark theme, reduced motion, hostile strings and long IDs passed. Status banners do not cover Send. Verification: final-source strict gate `cd5ffaab417a` (`bash scripts/verify_release.sh`), exit 0.
 
 ### P22-T16 · Full browser E2E, approval and production release gate
-- status: todo
+- status: blocked
 - priority: critical
 - lane: release
 - parallel: no
@@ -1928,3 +1941,4 @@ durable admission/recovery, memory integrity, or the private-reasoning boundary.
 - files: scripts/verify_release.sh, tests/browser_e2e.cjs, tests/browser_e2e_failure.cjs, docs/PROGRESS.md
 - done-when: full strict gates and real browser→Axum→SQLite→filesystem→provider flows pass, session-expiry/re-auth restore never resends ambiguous work, Decision Trace never exposes private reasoning, secrets remain absent, a recovery backup exists, exact CI-green commit is reviewable, and production promotion happens only after explicit owner approval.
 - verify: bash scripts/verify_release.sh && python3 scripts/check_docs.py
+- note (2026-09-29): Local strict gate and recovery-backup integrity passed. Exact final-commit CI is the next branch-only qualification. Final screenshot review is blocked because automatic approval review refused exporting private-checkout QA PNGs; owner approval to open those synthetic screenshots is required. Implementation T01–T15 is complete; this status does not authorize merge, deployment, production restart or live database writes.

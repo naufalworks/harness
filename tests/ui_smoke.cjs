@@ -5,7 +5,7 @@ const root=path.resolve(__dirname,'..');const out=process.env.QA_DIR || path.joi
 (async()=>{
  const browser=await chromium.launch({headless:true,executablePath:process.env.CHROMIUM_PATH||'/usr/local/bin/chromium',args:['--no-sandbox']});
  try{
-  const page=await browser.newPage({viewport:{width:1120,height:900},colorScheme:'light'});const errors=[];page.on('pageerror',e=>errors.push(String(e)));
+  const page=await browser.newPage({viewport:{width:1440,height:900},colorScheme:'light'});const errors=[];page.on('pageerror',e=>errors.push(String(e)));
   let importCandidate=true,inlineCandidate=true,inlineData=null,failConfirm=false,chatHistory=[],receipt=null,importCalls=0,retryCalls=0,reverts=0,editCalls=0,savedConfig=null,previewCalls=0;
   let selectedProvider='environment',providerSecret=null,providerPosts=[],modelDiscoveryMode='available';
   let savedProject={root_path:null,permission_mode:'ask',diagnostics_cmd:null,max_steps:40,max_tool_bytes:400000,max_wall_seconds:900};
@@ -150,7 +150,7 @@ const root=path.resolve(__dirname,'..');const out=process.env.QA_DIR || path.joi
     else {savedConfig=JSON.parse(req.postData());result={status:'saved'};}
    }
    else if(p==='/models'){
-    if(modelDiscoveryMode==='unauthorized')return route.fulfill({status:401,json:{error:'Provider refused model discovery',code:'unauthorized',retryable:false}});
+    if(modelDiscoveryMode==='unauthorized')return route.fulfill({json:{providerId:selectedProvider,version:1,connectionStatus:'reached_provider',discovery:{type:'proxy',status:'unavailable',errorCode:'unauthorized',modelCount:0},capabilities:{generation:{status:'untested'},tools:{status:'untested'},streaming:{status:'untested'},usage:{status:'untested'}},manualModelIdAllowed:true,data:[]}});
     const ids=selectedProvider==='ui-provider'?['ui-main','ui-small']:['synthetic-main','synthetic-small','synthetic-verifier',malicious];
     if(modelDiscoveryMode==='empty')result={providerId:selectedProvider,version:1,connectionStatus:'reached_provider',discovery:{type:'proxy',status:'empty',errorCode:null,modelCount:0},capabilities:{generation:{status:'untested'},tools:{status:'untested'},streaming:{status:'untested'},usage:{status:'untested'}},manualModelIdAllowed:true,data:[]};
     else if(modelDiscoveryMode==='timeout')result={providerId:selectedProvider,version:1,connectionStatus:'unreachable',discovery:{type:'proxy',status:'timeout',errorCode:'timeout',modelCount:0},capabilities:{generation:{status:'untested'},tools:{status:'untested'},streaming:{status:'untested'},usage:{status:'untested'}},manualModelIdAllowed:true,data:[]};
@@ -195,7 +195,7 @@ const root=path.resolve(__dirname,'..');const out=process.env.QA_DIR || path.joi
   });
   const shot=async name=>{await page.screenshot({path:path.join(out,name+'.png'),fullPage:true});assert(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),'horizontal overflow: '+name);};
   await page.goto('http://127.0.0.1:8080');await page.fill('#token','test-token');await page.click('#authform button');await page.waitForFunction(()=>!document.getElementById('workspace').hidden);
-   await page.setViewportSize({width:390,height:844});assert.strictEqual(await page.locator('#navtoggle').getAttribute('aria-expanded'),'false');await page.click('#navtoggle');assert.strictEqual(await page.locator('#navtoggle').getAttribute('aria-expanded'),'true');await page.keyboard.press('Escape');assert.strictEqual(await page.locator('#navtoggle').getAttribute('aria-expanded'),'false');await page.setViewportSize({width:1120,height:900});
+   await page.setViewportSize({width:390,height:844});assert.strictEqual(await page.locator('#navtoggle').getAttribute('aria-expanded'),'false');await page.click('#navtoggle');assert.strictEqual(await page.locator('#navtoggle').getAttribute('aria-expanded'),'true');await page.keyboard.press('Escape');assert.strictEqual(await page.locator('#navtoggle').getAttribute('aria-expanded'),'false');await page.setViewportSize({width:1440,height:900});
   assert.strictEqual(await page.locator('#token').inputValue(),'');assert(!await page.evaluate(()=>JSON.stringify({...localStorage,...sessionStorage}).includes('test-token')));
   await page.fill('#prompt','Help me choose the next implementation step.');await page.click('#send');await page.waitForFunction(()=>document.getElementById('notice').textContent.startsWith('Answer saved'));
    assert.strictEqual(await page.locator('#project-overview-scope').innerText(),'global');assert.strictEqual(await page.locator('#project-overview-tools').innerText(),'Chat only');assert.strictEqual(await page.locator('#usage-tokens').innerText(),'18 tokens');assert((await page.locator('#usage-cost').innerText()).includes('Tokens only'));
@@ -208,6 +208,7 @@ const root=path.resolve(__dirname,'..');const out=process.env.QA_DIR || path.joi
   assert.strictEqual(await inline.locator('img').count(),0);await inline.getByRole('button',{name:'Edit'}).click();await inline.locator('textarea').fill('SQLite with WAL');await inline.getByRole('button',{name:'Apply edit'}).click();
   await page.waitForFunction(()=>document.querySelector('.suggestion-tray:not([hidden])')?.textContent.includes('SQLite with WAL'));assert.strictEqual(editCalls,1);
   await page.locator('.suggestion-tray:not([hidden]) .candidate').getByRole('button',{name:'Dismiss'}).click();await page.waitForFunction(()=>document.querySelector('.suggestion-tray')?.hidden===true);
+  await page.click('[data-activity-view="tools"]');
   // P2-T03: the rail's diff card, its per-line colouring and the undo behind it.
   await page.waitForFunction(()=>document.querySelectorAll('#changes-list .diff-card').length===2);
   const diffText=await page.locator('#changes-list .diff-body').first().innerText();
@@ -229,6 +230,7 @@ const root=path.resolve(__dirname,'..');const out=process.env.QA_DIR || path.joi
   // inert. The copy must not claim the answer was caused by the included memory.
   await page.waitForFunction(()=>document.querySelectorAll('#retrieval-list .retrieval-row').length===2);
   assert.strictEqual(await page.locator('#retrieval-count').innerText(),'1 of 2 sent');
+  await page.click('[data-activity-view="activity"]');
   const retrievalText=await page.locator('#agent-retrieval').innerText();
   assert(retrievalText.includes('preferred_language '+malicious),'the memory key renders as text: '+retrievalText);
   assert(retrievalText.includes('sent to the model')&&retrievalText.includes('dropped by the context budget'),'both decisions are explained: '+retrievalText);
@@ -236,6 +238,7 @@ const root=path.resolve(__dirname,'..');const out=process.env.QA_DIR || path.joi
   assert.strictEqual(await page.locator('#agent-retrieval img').count(),0);assert.strictEqual(await page.evaluate(()=>window.INJECTED),undefined);
   assert.strictEqual(await page.locator('#retrieval-list .retrieval-row.included').count(),1);
   await shot('conversation-desktop');
+  await page.click('[data-activity-view="tools"]');
   await modifyCard.locator('.diff-foot button').click();
   await page.waitForFunction(()=>document.getElementById('notice').textContent.startsWith('Reverted'));
   assert.strictEqual(reverts,1);
@@ -264,7 +267,7 @@ const root=path.resolve(__dirname,'..');const out=process.env.QA_DIR || path.joi
   failConfirm=true;await page.locator('#candidates button').first().click();await page.waitForFunction(()=>document.getElementById('notice').textContent.includes('conflicts'));
   assert(await page.locator('#candidates button').first().isEnabled());
   await page.setViewportSize({width:390,height:844});await shot('memory-conflict-mobile');
-  await page.emulateMedia({colorScheme:'dark'});await shot('memory-conflict-dark-mobile');await page.emulateMedia({colorScheme:'light'});await page.setViewportSize({width:1120,height:900});
+  await page.emulateMedia({colorScheme:'dark'});await shot('memory-conflict-dark-mobile');await page.emulateMedia({colorScheme:'light'});await page.setViewportSize({width:1440,height:900});
   failConfirm=false;await page.locator('#candidates button').first().click();await page.waitForSelector('#candidates .empty');
   await page.click('[data-view="imports"]');await page.waitForSelector('.job');await shot('imports-desktop');
   await page.locator('#jobs button').click();assert.strictEqual(retryCalls,1);
@@ -272,8 +275,8 @@ const root=path.resolve(__dirname,'..');const out=process.env.QA_DIR || path.joi
   await page.check('#consent');await page.click('#importbutton');await page.waitForFunction(()=>document.getElementById('notice').textContent.includes('Queued 2'));assert.strictEqual(importCalls,1);
   await page.click('[data-view="settings"]');await page.waitForFunction(()=>document.getElementById('mainmodel').value==='synthetic-main');
   assert.strictEqual((await page.locator('[data-view="settings"]').innerText()).trim(),'Control center');
-  assert.deepStrictEqual(await page.locator('#settings-section-nav a').allTextContents(),['Projects & folders','Providers & secrets','Model roles']);
-  assert.deepStrictEqual(await page.locator('#settings-section-nav a').evaluateAll(nodes=>nodes.map(node=>node.getAttribute('href'))),['#projectform','#settings-providers','#settingsform']);
+  assert.deepStrictEqual(await page.locator('#settings-section-nav a').allTextContents(),['Projects & folders','Providers & secrets','Model roles','Status']);
+  assert.deepStrictEqual(await page.locator('#settings-section-nav a').evaluateAll(nodes=>nodes.map(node=>node.getAttribute('href'))),['#projectform','#settings-providers','#settingsform','#settings-diagnostics']);
   assert((await page.locator('#settings-section-nav a').first().evaluate(node=>node.tabIndex))>=0,'control-center anchors must be keyboard focusable');
   assert.strictEqual(await page.locator('#projectform').getAttribute('aria-labelledby'),'project-settings-title');assert.strictEqual(await page.locator('#settingsform').getAttribute('aria-labelledby'),'model-roles-title');assert.strictEqual(await page.locator('#settings-providers').getAttribute('aria-labelledby'),'provider-title');
   await page.waitForFunction(()=>document.querySelector('#provider-list')?.textContent.includes('environment'));
@@ -337,6 +340,7 @@ const root=path.resolve(__dirname,'..');const out=process.env.QA_DIR || path.joi
   assert.strictEqual(await page.locator('#mainmodel').inputValue(),'manual-main-id');
   modelDiscoveryMode='unauthorized';await page.click('#loadmodels');await page.waitForFunction(()=>document.querySelector('#model-discovery-status')?.textContent.includes('discovery unavailable'));
   assert.strictEqual(await page.locator('#mainmodel').inputValue(),'manual-main-id');
+  assert(await page.locator('#workspace').isVisible(),'provider authorization failure must not expire the Harness session');
   modelDiscoveryMode='available';await page.click('#loadmodels');await page.waitForFunction(()=>document.querySelector('#model-discovery-status')?.textContent.includes('discovered model ID'));
   assert.strictEqual(await page.locator('#mainmodel-origin').innerText(),'Manual exact ID');
   await page.fill('#verificationmodel','synthetic-verifier-2');await page.click('#settingsform button[type="submit"]');
@@ -357,11 +361,12 @@ const root=path.resolve(__dirname,'..');const out=process.env.QA_DIR || path.joi
   await page.waitForFunction(()=>document.querySelector('#folder-current')?.textContent==='/srv/workspaces/alpha');await page.click('#folder-use');
   assert.strictEqual(await page.locator('#rootpath').inputValue(),'/srv/workspaces/alpha');assert.strictEqual(await page.locator('#permissionmode').inputValue(),'auto_edit','folder selection must not alter permission mode');
   if(await page.locator('#rail').isVisible())await page.click('#railclose');
-  await page.click('#folder-open');await page.waitForFunction(()=>!document.querySelector('#folder-browser').hidden);await page.setViewportSize({width:390,height:844});await shot('settings-folder-mobile');await page.setViewportSize({width:1120,height:900});await page.click('#folder-cancel');
+  await page.click('#folder-open');await page.waitForFunction(()=>!document.querySelector('#folder-browser').hidden);await page.setViewportSize({width:390,height:844});await shot('settings-folder-mobile');await page.setViewportSize({width:1440,height:900});await page.click('#folder-cancel');
   await shot('settings-desktop');
   if(!await page.locator('#rail').isVisible())await page.click('#railbtn');
   // ---------------- P16-T01: incident search, timeline and expansion ----------------
   await page.click('[data-view="chat"]');
+  await page.click('[data-activity-view="tools"]');
   await page.waitForSelector('#agent-incident:not([hidden]) .incident-node');
   // Confidence labels must distinguish a recorded dependency from mere co-occurrence, and the
   // panel must count them rather than presenting one blended "provenance" number.
@@ -492,7 +497,7 @@ const root=path.resolve(__dirname,'..');const out=process.env.QA_DIR || path.joi
   await page.click('#history-index');
   await page.waitForFunction(()=>document.getElementById('notice').textContent.includes('Index refreshed'));
   assert.strictEqual(indexCalls,1);
-  await page.setViewportSize({width:390,height:844});await shot('history-privacy-mobile');await page.setViewportSize({width:1120,height:900});
+  await page.setViewportSize({width:390,height:844});await shot('history-privacy-mobile');await page.setViewportSize({width:1440,height:900});
 
   await page.click('[data-view="settings"]');
   // P21-T01: configuration status is visible without promising controls that do not exist.

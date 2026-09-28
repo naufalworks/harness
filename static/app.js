@@ -4,9 +4,17 @@ const EXPECTED_SERVER_COMMIT = '__HARNESS_BUILD_COMMIT__';
 let token = '';
 let scope = sessionStorage.getItem('harness_scope') || 'global';
 let scopeConfig = null;
-let session = sessionStorage.getItem('harness_session') || crypto.randomUUID();
+const storedSessionId = sessionStorage.getItem('harness_session');
+let session = storedSessionId || crypto.randomUUID();
 let busy = false, epoch = 0, historyCursor = null, sessionsCursor = null;
 let pending = null, pendingPrompt = null;
+let currentView = sessionStorage.getItem('harness_view') || 'chat';
+if (!['chat','memory','history','imports','settings'].includes(currentView)) currentView = 'chat';
+let reauthRequired = false;
+let authAttempt = 0, lastInteraction = Date.now();
+let restoreActivity = null;
+for (const type of ['pointerdown','keydown','input']) document.addEventListener(type, () => { lastInteraction = Date.now(); }, {passive:true});
+function activelyUsed() { return !document.hidden && Date.now() - lastInteraction < 60000; }
 try { pending = JSON.parse(sessionStorage.getItem('harness_pending') || 'null'); } catch { sessionStorage.removeItem('harness_pending'); }
 // PENDING_FIELDS is exactly what /chat/submit accepts, so it is also all that goes on the wire: a
 // draft identity stored by another build can carry keys the server rejects, and posting those back
@@ -21,6 +29,44 @@ if (pending && typeof pending === 'object') {
 if (pending && (typeof pending.request_id !== 'string' || pending.session_id !== session || pending.scope !== scope)) { pending = null; sessionStorage.removeItem('harness_pending'); }
 $('scope').value = scope;
 function notice(text, error = false) { $('notice').textContent = text; $('notice').classList.toggle('error', error); }
+function updateAuthRestoreSummary() {
+  $('auth-restore-scope').textContent = scope;
+  $('auth-restore-session').textContent = storedSessionId || reauthRequired ? `Conversation ${session.slice(0,8)}` : 'New conversation';
+  $('auth-restore-pending').textContent = pending?.request_id ? 'Pending request status will be checked' : ($('prompt')?.value?.trim() ? 'Unsent draft stays in this tab' : 'Nothing waiting');
+  $('auth-restore-workspace').textContent = scopeConfig?.root_path ? 'Project workspace' : 'Harness workspace';
+}
+function showAuthScreen(mode = 'connect') {
+  reauthRequired = mode === 'expired';
+  $('auth').dataset.mode = mode;
+  $('auth-kicker').textContent = reauthRequired ? 'SESSION EXPIRED' : 'PRIVATE WORKSPACE';
+  $('auth-title').textContent = reauthRequired ? 'Session expired' : 'Connect to Harness';
+  $('auth-copy').textContent = reauthRequired
+    ? 'Your work is still saved. Re-enter your Harness access token to continue where you left off.'
+    : 'Enter your Harness access token to open this private workspace.';
+  $('auth-submit').textContent = reauthRequired ? 'Reconnect and restore' : 'Continue';
+  updateAuthRestoreSummary();
+  $('auth-restore').hidden = !reauthRequired;
+  $('workspace').hidden = true;
+  $('auth').hidden = false;
+  queueMicrotask(() => $('token').focus());
+}
+function enterReauth(event) {
+  if (event?.detail?.authEpoch !== undefined && event.detail.authEpoch !== epoch) return;
+  if (!token) return;
+  restoreActivity = { sessionId: activityStream.sessionId, cursor: activityStream.cursor };
+  $('providerkey').value = ''; $('providerpaste').value = '';
+  dismissOverlays();
+  token = '';
+  epoch++;
+  setBusy(false);
+  closeGenerationStream();
+  closeActivityStream();
+  setConnectionState('locked', 'Session expired');
+  showAuthScreen('expired');
+  notice('Session expired. Re-enter your Harness access token; saved work will be restored.', true);
+}
+window.addEventListener('harness:auth-expired', enterReauth);
+showAuthScreen(storedSessionId ? 'expired' : 'connect');
 function setConnectionState(state, label) {
   const badge = $('connection');
   badge.dataset.state = state;
@@ -28,6 +74,7 @@ function setConnectionState(state, label) {
 }
 window.addEventListener('harness:connection', event => {
   const state = event.detail?.state;
+  if (!token) return;
   if (state === 'offline') {
     setConnectionState('offline', 'Offline · retrying');
     notice('Connection lost. Requests are not retried automatically; reconnecting…', true);
@@ -58,9 +105,22 @@ function rememberPending(value) {
 // `ApiError` when the server actually answered - an aborted or dropped request is not - so every
 // branch below checks the type before reading a code, and an unrecognised failure keeps the
 // cautious path it had before.
-async function api(path, body) { return apiRequest(path, { token, body }); }
-async function apiPatch(path, body) { return apiRequest(path, { token, body, method: 'PATCH' }); }
-async function apiDelete(path) { return apiRequest(path, { token, method: 'DELETE' }); }
+async function ownerRequest(path, body, method) {
+  const authEpoch = epoch;
+  if (!token) throw new DOMException('Connect to Harness to continue.', 'AbortError');
+  try {
+    const data = await apiRequest(path, { token, body, method, authEpoch, active: activelyUsed() });
+    if (!token || authEpoch !== epoch) throw new DOMException('Workspace changed; response discarded.', 'AbortError');
+    return data;
+  } catch (error) {
+    // Discard both success payloads and error text from an earlier workspace.
+    if (!token || authEpoch !== epoch) throw new DOMException('Workspace changed; response discarded.', 'AbortError');
+    throw error;
+  }
+}
+async function api(path, body) { return ownerRequest(path, body); }
+async function apiPatch(path, body) { return ownerRequest(path, body, 'PATCH'); }
+async function apiDelete(path) { return ownerRequest(path, undefined, 'DELETE'); }
 async function exchangeBrowserSession(masterToken) { return apiExchangeSession(masterToken); }
 function node(tag, text, cls) { const element = document.createElement(tag); if (text !== undefined) element.textContent = text; if (cls) element.className = cls; return element; }
 function persistSession() { sessionStorage.setItem('harness_scope', scope); sessionStorage.setItem('harness_session', session); }
@@ -90,7 +150,7 @@ async function showReceipt(id, content, button) {
       content.append(node('h3', 'Context used for this turn'), node('p', 'What Harness prepared for the model—not proof of delivery or an explanation of the model’s reasoning.', 'muted'));
       for (const m of data.context.memories || []) { const card = node('div', undefined, 'receipt-memory'); card.append(node('strong', `${m.key} · revision ${m.revision}`), node('p', m.value), node('p', m.evidence?.quote || 'Original evidence unavailable', 'muted')); content.append(card); }
       if (!data.context.memories?.length) content.append(node('p', 'No active memories were supplied for this turn.', 'muted'));
-      const detail = node('details'); detail.append(node('summary', 'Inspect prepared model messages'), node('pre', JSON.stringify(data.context.provider_messages, null, 2))); content.append(detail);
+      content.append(node('p', 'Provider message payloads are private. The reviewed memories above and recorded activity are the available evidence.', 'muted'));
     } else content.append(node('p', 'No model context was recorded yet.', 'muted'));
     button.textContent = 'Refresh receipt';
   } catch (error) { if (token && myEpoch === epoch) content.replaceChildren(node('p', `Could not load receipt. ${error.message}`, 'muted')); }
@@ -119,9 +179,25 @@ function boundLog(prepended = false) {
   while (extra-- > 0 && log.childNodes.length) log.removeChild(prepended ? log.lastChild : log.firstChild);
   if (!prepended && historyCursor) $('oldermessages').hidden = false;
 }
+function messageBody(text) {
+  const body = node('div', undefined, 'message-body');
+  const lines = String(text || '').split('\n'); let code = null, list = null;
+  for (const line of lines) {
+    if (/^```/.test(line)) { if (code) code = null; else { code = node('pre'); body.append(code); } list = null; continue; }
+    if (code) { code.textContent += line + '\n'; continue; }
+    const heading = line.match(/^#{1,6}\s+(.+)$/), bullet = line.match(/^[-*]\s+(.+)$/);
+    if (heading) { body.append(node('h3',heading[1])); list = null; }
+    else if (bullet) { if (!list) { list = node('ul'); body.append(list); } list.append(node('li',bullet[1])); }
+    else { body.append(node('p',line || '\u00a0')); list = null; }
+  }
+  return body;
+}
 function message(m, target = $('log')) {
   const box = node('article', undefined, `message ${m.role === 'user' ? 'user' : 'assistant'}`);
-  box.append(node('strong', m.role === 'user' ? 'You' : 'Harness'), node('span', m.content));
+  box.dataset.requestId = m.request_id || '';
+  box.append(node('strong', m.role === 'user' ? 'You' : 'Harness'), m.role === 'user' ? node('span', m.content, 'message-body') : messageBody(m.content));
+  const at = Date.parse(m.created_at || '');
+  if (Number.isFinite(at)) { const time = node('time',new Date(at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})); time.dateTime = new Date(at).toISOString(); box.append(time); }
   if (m.role === 'user') {
     box.append(node('span', stateLabels[m.generation_state] || (m.status === 'complete' ? 'Saved' : 'Saved · no answer'), 'muted'));
     if (m.request_id) {
@@ -162,6 +238,10 @@ async function refreshStatus() {
   if (!token || myEpoch !== epoch) return;
   if (!health.ready) throw new Error('Harness is not ready');
   if (health.commit !== EXPECTED_SERVER_COMMIT) throw new Error(`Stale UI detected (${EXPECTED_SERVER_COMMIT.slice(0, 7)} != ${String(health.commit).slice(0, 7)}); reload this page`);
+  $('diagnostic-server').textContent = health.ready ? 'Ready' : 'Not ready';
+  $('diagnostic-build').textContent = String(health.commit);
+  $('diagnostic-database').textContent = health.database?.ready ? `Ready · schema ${health.schema_version ?? 'unknown'}` : 'Readiness not recorded';
+  $('diagnostic-workers').textContent = health.workers ? Object.entries(health.workers).map(([key,value]) => `${key}: ${value ? 'running' : 'unavailable'}`).join(' · ') : 'Not recorded';
   $('pending').textContent = String(data.pending_confirmations);
   setConnectionState('ready', `Ready · ${health.commit.slice(0, 7)}`);
   $('stats').textContent = `${data.active_memories} memories remembered${data.queued_jobs ? ` · ${data.queued_jobs} jobs queued` : ''}${data.failed_jobs ? ` · ${data.failed_jobs} failed` : ''} · build ${health.commit.slice(0, 7)}`;
@@ -205,7 +285,7 @@ async function loadSessions(older = false) {
     button.append(node('strong', item.title || item.preview || 'Conversation'), node('span', `${item.scope} · ${item.message_count} messages${item.archived_at ? ' · archived' : ''}`, 'muted'));
     button.addEventListener('click', async () => {
       if (busy || pending) return notice('Let the current message finish before switching conversations.', true);
-      session = item.id; scope = item.scope; epoch++; $('scope').value = scope; persistSession();
+      session = item.id; scope = item.scope; epoch++; dismissOverlays(); clearTurnPresentation(); void activateView('chat'); $('scope').value = scope; persistSession();
       // P2-T02: in the wide three-pane layout the sidebar stays put; only the mobile drawer closes.
       if (window.matchMedia('(max-width: 920px)').matches) { $('sessionhistory').open = false; $('sidebar').classList.remove('open'); $('drawerbg').classList.remove('show'); }
       await loadHistory().catch(e => notice(e.message, true)); refreshScopeSetup().catch(() => {}); if (pending) await resumeRecording();
@@ -273,12 +353,13 @@ function generationView(requestId) {
 function renderGenerationEvent(event) {
   if (!event || event.request_id !== generationStream.requestId) return;
   const state = event.state;
-  if (!['generating','complete','failed','interrupted'].includes(state)) return;
+  if (!['generating','chunk','complete','failed','interrupted'].includes(state)) return;
   const box = generationView(event.request_id);
-  box.classList.remove('generating','complete','failed','interrupted'); box.classList.add(state); box.dataset.state = state;
+  const displayState = state === 'chunk' ? 'generating' : state;
+  box.classList.remove('generating','complete','failed','interrupted'); box.classList.add(displayState); box.dataset.state = displayState;
   const content = box.querySelector('.generation-content'); const label = box.querySelector('.generation-state');
   if (state === 'chunk') { if (box.dataset.chunked !== 'true') { content.textContent = ''; box.dataset.chunked = 'true'; } content.textContent += typeof event.content === 'string' ? event.content : ''; label.textContent = 'Generating\u2026'; }
-  if (state === 'complete') { content.textContent = typeof event.content === 'string' ? event.content : ''; label.textContent = 'Done · saved response'; }
+  else if (state === 'complete') { content.textContent = typeof event.content === 'string' ? event.content : ''; label.textContent = 'Done · saved response'; }
   else if (state === 'failed') { content.textContent = generationFailureMessage(event.error_code); label.textContent = `Failed${event.error_code ? ` · ${event.error_code}` : ''}`; }
   else if (state === 'interrupted') { content.textContent = 'The server restarted before an answer was saved. Nothing was resent.'; label.textContent = 'Interrupted'; }
   else { content.textContent = 'Waiting for the recorded answer…'; label.textContent = 'Generating…'; }
@@ -301,7 +382,9 @@ function consumeGenerationFrame(frame) {
 }
 async function pollGeneration(sessionId) {
   if (!token || !sessionId || generationStream.sessionId !== sessionId) return;
+  const requestId = generationStream.requestId;
   const data = await api(`/generation?session_id=${encodeURIComponent(sessionId)}&after_seq=${generationStream.cursor}`);
+  if (sessionId !== generationStream.sessionId || requestId !== generationStream.requestId) return;
   for (const event of data.events || []) applyGenerationEvent(event);
 }
 async function followGenerationStream(sessionId, requestId) {
@@ -316,6 +399,7 @@ async function followGenerationStream(sessionId, requestId) {
   try {
     const response = await fetch(`/generation/stream?session_id=${encodeURIComponent(sessionId)}&after_seq=${generationStream.cursor}`,
       { headers: { 'Authorization': `Bearer ${token}` }, signal: controller.signal });
+    if (response.status === 401 && myEpoch === epoch) enterReauth();
     if (!response.ok || !response.body) throw new Error(`Generation stream unavailable (${response.status})`);
     generationStream.failures = 0;
     const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = '';
@@ -326,6 +410,7 @@ async function followGenerationStream(sessionId, requestId) {
       const frames = buffer.split('\n\n'); buffer = frames.pop();
       for (const frame of frames) consumeGenerationFrame(frame);
     }
+    if (!token || myEpoch !== epoch || pending?.request_id !== requestId) return;
     buffer += decoder.decode();
     for (const frame of buffer.split('\n\n')) consumeGenerationFrame(frame);
   } catch (error) { if (error?.name !== 'AbortError') generationStream.failures++; }
@@ -348,6 +433,7 @@ async function followReceipt(first, myEpoch) {
       await pollGeneration(data.session_id).catch(() => {});
     }
     await refreshAgentTurn(data).catch(() => {});
+    if (!token || myEpoch !== epoch) return;
     if (terminal) {
       closeGenerationStream(false); rememberPending(null); closeActivityStream(); $('retryrequest').hidden = true;
       await loadHistory(); await loadSessions(); closeGenerationStream();
@@ -437,36 +523,50 @@ async function sendAttempt(retry = false) {
   } finally { if (myEpoch === epoch) setBusy(false); }
 }
 $('authform').addEventListener('submit', async event => {
-  event.preventDefault(); let masterToken = $('token').value.trim(); $('token').value = ''; const myEpoch = epoch;
+  event.preventDefault(); let masterToken = $('token').value.trim(); $('token').value = ''; const myEpoch = epoch; const restoring = reauthRequired; const attempt = ++authAttempt;
+  $('auth-submit').disabled = true;
   try {
-    token = await exchangeBrowserSession(masterToken); masterToken = '';
+    const browserToken = await exchangeBrowserSession(masterToken); masterToken = '';
+    if (myEpoch !== epoch || attempt !== authAttempt) return;
+    token = browserToken;
     const health = await api('/health'); if (myEpoch !== epoch) return;
     if (!health.ready) throw new Error('Harness is not ready');
     if (health.commit !== EXPECTED_SERVER_COMMIT) throw new Error('This page is stale; reload before connecting');
-    $('auth').hidden = true; $('workspace').hidden = false; setConnectionState('connected', 'Connected');
-    notice('Connected — pick up where you left off.'); persistSession(); await loadHistory(); await loadSessions(); await refreshStatus(); await refreshScopeSetup();
+    // Finish initial restoration before navigation can start a second, overlapping load.
+    persistSession(); await loadHistory(); await loadSessions(); await refreshStatus(); await refreshScopeSetup();
+    await activateView(currentView, null, false);
+    if (myEpoch !== epoch || attempt !== authAttempt || !token) return;
+    reauthRequired = false; $('auth').hidden = true; $('workspace').hidden = false; setConnectionState('connected', 'Connected');
+    notice(restoring ? 'Session restored — no request was resent.' : 'Connected — pick up where you left off.');
+    if (restoring && restoreActivity?.sessionId === session) Object.assign(activityStream, restoreActivity);
+    restoreActivity = null;
     rememberPending(pending); if (pending) await resumeRecording();
-  } catch (error) { token = ''; $('workspace').hidden = true; $('auth').hidden = false; notice(error.message, true); }
-  finally { masterToken = ''; }
+    else if (restoring && currentView === 'chat') $('prompt').focus();
+  } catch (error) { if (attempt === authAttempt && myEpoch === epoch) { token = ''; showAuthScreen(restoring ? 'expired' : 'connect'); notice(error.message, true); } }
+  finally { masterToken = ''; $('auth-submit').disabled = false; }
 });
 $('lock').addEventListener('click', () => {
-  token = ''; epoch++; setBusy(false); pendingPrompt = null; closeGenerationStream(); closeActivityStream();
-  $('workspace').hidden = true; $('auth').hidden = false; setConnectionState('locked', 'Locked');
+  token = ''; epoch++; authAttempt++; setBusy(false); pendingPrompt = null; closeGenerationStream(); closeActivityStream();
+  setConnectionState('locked', 'Locked');
   for (const id of ['log','candidates','jobs','recalled','sessionlist','retrieval-list']) $(id).replaceChildren();
   $('modelnames').textContent = ''; $('stats').textContent = ''; $('mainmodel').value = ''; $('extractmodel').value = ''; $('verificationmodel').value = ''; $('prompt').value = ''; $('file').value = ''; $('consent').checked = false;
   clearProviderEditor();
   $('provider-list').replaceChildren();
   $('provider-status').textContent = '';
   $('setup-banner').hidden = true; $('scopelist').replaceChildren();
+  clearSensitiveWorkspace();
+  showAuthScreen('connect');
   notice('Locked. Unsaved draft text was cleared; recorded work stays on the server.');
 });
-$('newchat').addEventListener('click', () => {
+function startNewConversation() {
   if (busy || pending) return notice('Let the current message finish before starting another conversation.', true);
   const next = $('scope').value.trim();
   if (!/^[A-Za-z0-9_.:-]{1,80}$/.test(next)) return notice('Use a scope of 1–80 letters, digits, _, -, . or :.', true);
-  scope = next; session = crypto.randomUUID(); epoch++; persistSession(); historyCursor = null; $('oldermessages').hidden = true;
+  scope = next; session = crypto.randomUUID(); epoch++; dismissOverlays(); clearTurnPresentation(); void activateView('chat'); persistSession(); historyCursor = null; $('oldermessages').hidden = true;
   $('log').replaceChildren(node('p', 'New conversation. Earlier work is available in History.', 'empty')); $('recalltrace').hidden = true; captureLabel(''); notice(`New conversation in ${scope}.`); refreshScopeSetup().catch(() => {});
-});
+}
+$('newchat').addEventListener('click', startNewConversation);
+$('newchat-mobile').addEventListener('click', startNewConversation);
 $('chatform').addEventListener('submit', event => { event.preventDefault(); sendAttempt(); });
 $('checkrecording').addEventListener('click', resumeRecording);
 $('retryrequest').addEventListener('click', () => sendAttempt(true));
@@ -633,7 +733,7 @@ function renderProviders(data) {
     return;
   }
   for (const provider of providerState.providers) {
-    const card = node('article', undefined, 'provider-card');
+    const card = node('article', undefined, `provider-card${provider.selected ? ' selected' : ''}`);
     const heading = node('div', undefined, 'provider-card-head');
     const title = node('strong', String(provider.id || 'unnamed provider'));
     heading.append(title);
@@ -759,7 +859,7 @@ function parseProviderPaste(text) {
   return validateProviderPasteObject({ [root[1]]: config });
 }
 $('provider-add').addEventListener('click', () => openProviderEditor());
-$('provider-cancel').addEventListener('click', () => { clearProviderEditor(); providerStatus('Provider edit cancelled.'); });
+$('provider-cancel').addEventListener('click', () => { clearProviderEditor(); providerStatus('Provider edit cancelled.'); $('settings-providers').scrollIntoView({block:'start'}); $('provider-add').focus(); });
 $('provider-parse').addEventListener('click', () => {
   try {
     const parsed = parseProviderPaste($('providerpaste').value);
@@ -840,6 +940,7 @@ function renderModelDiscovery(data) {
   renderModelOrigins();
 }
 async function loadModelDiscovery() {
+  const myEpoch = epoch;
   $('model-discovery-status').textContent = 'Loading model IDs from the selected provider…';
   $('model-discovery-status').classList.remove('error');
   try {
@@ -847,6 +948,7 @@ async function loadModelDiscovery() {
     renderModelDiscovery(data);
     return data;
   } catch (error) {
+    if (!token || myEpoch !== epoch) return null;
     modelDiscoveryState.providerId = providerState.selected;
     modelDiscoveryState.status = 'unavailable';
     modelDiscoveryState.errorCode = error?.code || null;
@@ -872,20 +974,40 @@ $('refreshmemory').addEventListener('click', () => loadCandidates().catch(e => n
 $('refreshjobs').addEventListener('click', () => loadJobs().catch(e => notice(e.message, true)));
 $('refreshprocesses').addEventListener('click', () => loadProcesses().catch(e => notice(e.message, true)));
 $('refreshgit').addEventListener('click', () => loadGitState().catch(e => notice(e.message, true)));
-for (const tab of document.querySelectorAll('[data-view]')) tab.addEventListener('click', async () => {
-  for (const t of document.querySelectorAll('[data-view]')) { const active = t === tab; t.classList.toggle('active', active); t.setAttribute('aria-pressed', String(active)); $(`view-${t.dataset.view}`).hidden = !active; }
+async function activateView(view, sourceTab = null, scrollSection = true) {
+  if (!['chat','memory','history','imports','settings'].includes(view)) return;
+  if (sourceTab) dismissOverlays();
+  const myEpoch = epoch;
+  currentView = view;
+  if (view !== 'chat') setRail(false, false);
+  else if (agentState.requestId && !matchMedia('(max-width:1180px)').matches) setRail(true, false);
+  const section = $(`view-${view}`);
+  section.setAttribute('aria-busy', 'true');
+  sessionStorage.setItem('harness_view', view);
+  for (const section of document.querySelectorAll('.view[id^="view-"]')) section.hidden = section.id !== `view-${view}`;
+  let activeTab = sourceTab;
+  if (!activeTab) activeTab = [...document.querySelectorAll('[data-view], [data-open-view]')].find(t => (t.dataset.view || t.dataset.openView) === view && !t.dataset.section) || document.querySelector(`[data-view="${view}"]`);
+  for (const t of document.querySelectorAll('[data-view], [data-open-view]')) {
+    const active = t === activeTab;
+    t.classList.toggle('active', active);
+    t.setAttribute('aria-pressed', String(active));
+  }
   try {
-    if (tab.dataset.view === 'memory') await loadCandidates();
-    if (tab.dataset.view === 'imports') { await loadJobs(); await loadProcesses(); await loadGitState(); }
-    if (tab.dataset.view === 'settings') {
+    if (view === 'memory') await loadCandidates();
+    if (view === 'imports') { await loadJobs(); await loadProcesses(); await loadGitState(); }
+    if (view === 'settings') {
       const data = await api('/config');
       $('mainmodel').value = data.main || ''; $('extractmodel').value = data.extraction || ''; $('verificationmodel').value = data.verification || '';
       await loadProviders();
       await loadModelDiscovery();
+      await loadProjectSettings();
       renderModelOrigins();
+      if (scrollSection && sourceTab?.dataset.section) requestAnimationFrame(() => $(sourceTab.dataset.section)?.scrollIntoView({behavior:'smooth',block:'start'}));
     }
-  } catch (error) { notice(error.message, true); }
-});
+  } catch (error) { if (token) notice(error.message, true); }
+  finally { section.setAttribute('aria-busy', 'false'); if (token && myEpoch === epoch && currentView === view && sourceTab) $('main').focus({preventScroll:true}); }
+}
+for (const tab of document.querySelectorAll('[data-view], [data-open-view]')) tab.addEventListener('click', () => activateView(tab.dataset.view || tab.dataset.openView, tab));
 // P11-T05: the two always-on clocks are now one tick, installed at the end of this file.
 
 // P1-T13: the agent activity view reads the recorded rows; the durable receipt remains the
@@ -942,6 +1064,7 @@ async function followActivityStream(sessionId) {
     // `fetch` and not `EventSource`: the bearer token belongs in a header, never in a URL.
     const response = await fetch(`/activity/stream?session_id=${encodeURIComponent(sessionId)}&after_seq=${activityStream.cursor}`,
       { headers: { 'Authorization': `Bearer ${token}` }, signal: controller.signal });
+    if (response.status === 401 && myEpoch === epoch) enterReauth();
     if (!response.ok || !response.body) throw new Error(`Activity stream unavailable (${response.status})`);
     activityStream.live = true; activityStream.failures = 0; requestRailRefresh();
     const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = '';
@@ -974,21 +1097,9 @@ function agentIcon(status) {
 }
 
 function agentMeta(step) {
-  if (step.status === 'running') {
-    // Elapsed time from the recorded start; the 1 s turn poll re-renders it.
-    const started = new Date(step.started_at);
-    if (!Number.isNaN(started.getTime())) {
-      const secs = Math.max(0, Math.round((Date.now() - started.getTime()) / 1000));
-      return `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
-    }
-    return 'running';
-  }
-  if (step.status === 'queued') return 'queued';
-  if (step.finished_at) {
-    const date = new Date(step.finished_at);
-    if (!Number.isNaN(date.getTime())) return date.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
-  }
-  return step.status || '';
+  const start = Date.parse(step.started_at), end = step.finished_at ? Date.parse(step.finished_at) : Date.now();
+  const duration = Number.isFinite(start) && Number.isFinite(end) ? ` · ${Math.max(0,(end-start)/1000).toFixed(1)}s` : '';
+  return `${step.status || 'recorded'}${duration}`;
 }
 
 // P5-T01: the verifier is advisory, so the badge only ever reports what the persisted
@@ -1000,6 +1111,8 @@ function renderVerification(verification) {
   badge.className = 'badge verification-badge';
   badge.removeAttribute('title');
   badge.hidden = true;
+  $('verification-state').textContent = 'Not recorded';
+  $('verification-summary').textContent = 'Verification evidence appears here when a turn records it.';
   if (!verification || typeof verification !== 'object') return;
   const status = ['verified', 'unverified', 'skipped', 'unavailable'].includes(verification.status) ? verification.status : 'unavailable';
   const count = Number.isFinite(Number(verification.unverified_claims)) ? Number(verification.unverified_claims) : 0;
@@ -1011,12 +1124,65 @@ function renderVerification(verification) {
     .map(claim => `${String(claim.claim ?? 'Claim')} — ${String(claim.reason ?? 'no supporting evidence in this turn')}`);
   if (Array.isArray(verification.skipped_diagnostics)) details.push(...verification.skipped_diagnostics.map(item => String(item)));
   if (details.length) badge.title = details.join('\n');
+  $('verification-state').textContent = labels[status];
+  $('verification-summary').textContent = details.length
+    ? details.join(' · ')
+    : status === 'verified' ? 'Recorded verification completed without unverified claims.' : 'No additional verification detail was recorded.';
   badge.hidden = false;
 }
+
+function visibleToolStep(step) { return step?.kind === 'tool_call' && step.tool_name !== 'think' && step.preview_visibility !== 'private_hidden'; }
+function renderDecisionTrace(plan, steps, receipt = {}, changes = []) {
+  const list = $('decision-items');
+  list.replaceChildren();
+  const items = [];
+  const sourceMessage = [...$('log').querySelectorAll('.message.user')].find(el => el.dataset.requestId === receipt.request_id);
+  const goal = sourceMessage?.querySelector('.message-body')?.textContent;
+  if (goal) items.push({kind:'Goal', text:goal.slice(0,1200), status:'recorded', source:'Sanitized user message'});
+  for (const item of plan?.items || []) {
+    if (!item || typeof item.text !== 'string') continue;
+    items.push({kind:'Plan', text:item.text, status:item.status || 'pending', source:'Session plan · explicit recorded item'});
+  }
+  for (const step of steps || []) {
+    if (!step || typeof step !== 'object') continue;
+    const visible = visibleToolStep(step);
+    const kind = visible ? 'Action' : step.kind === 'verification' ? 'Verification' : 'Recorded step';
+    const label = visible ? String(step.tool_name || 'tool') : ({model_call:'Model request',verification:'Verification',compaction:'Context compaction',subagent:'Sub-agent',tool_call:'Private step'})[step.kind] || 'Step';
+    const summary = visible && typeof step.summary === 'string' ? ` — ${step.summary.slice(0,2048)}` : '';
+    items.push({kind, text:`${label}${summary}`, status:step.status || 'recorded', source:step.id ? `Step ${step.id}` : 'Step ID unavailable'});
+  }
+  for (const change of changes.slice(0,30)) items.push({kind:'Evidence',text:String(change.path || 'File change'),status:change.reverted_at ? 'reverted' : change.applied ? 'applied' : 'recorded',source:`File change ${change.id || 'ID unavailable'}`});
+  const next = plan?.items?.find(item => item.status === 'pending');
+  if (next) items.push({kind:'Next planned step',text:String(next.text),status:'pending',source:'Session plan · not a prediction'});
+  if (['complete','failed','interrupted'].includes(receipt.state)) items.push({kind:'Result',text:agentStatusLabel(receipt.state),status:receipt.state,source:`Durable receipt ${receipt.request_id || ''}`});
+  if (!items.length) {
+    list.append(node('li', 'No recorded decisions yet.', 'muted'));
+    return;
+  }
+  for (const item of items) {
+    const row = node('li', undefined, `decision-item ${item.status}`);
+    row.append(node('span', item.kind, 'decision-kind'), node('span', item.text, 'decision-text'), node('span', item.status, 'decision-status'), node('span', item.source, 'decision-source'));
+    list.append(row);
+  }
+}
+
+function setActivityView(view) {
+  const allowed = ['activity','decision','tools','verification'];
+  const next = allowed.includes(view) ? view : 'activity';
+  $('agent-turn').dataset.activityView = next;
+  for (const button of document.querySelectorAll('[data-activity-view]')) {
+    const active = button.dataset.activityView === next;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', String(active));
+  }
+}
+for (const button of document.querySelectorAll('[data-activity-view]')) button.addEventListener('click', () => setActivityView(button.dataset.activityView));
+setActivityView('activity');
 
 function renderAgentSteps(steps) {
   const panel = $('agent-steps');
   const list = $('steps-list');
+  const openSteps = new Set([...list.querySelectorAll('details[open]')].map(el => el.dataset.stepId));
   list.replaceChildren();
   if (!steps?.length) { panel.hidden = true; return; }
   panel.hidden = false;
@@ -1024,13 +1190,14 @@ function renderAgentSteps(steps) {
   for (const step of steps) {
     const detail = node('details', undefined, `agent-step ${step.status || ''}`);
     detail.dataset.stepId = step.id || '';
+    detail.open = openSteps.has(detail.dataset.stepId);
     const heading = node('summary');
     heading.append(node('span', agentIcon(step.status), 'step-icon'));
     heading.append(node('strong', step.tool_name || step.kind || 'step', 'step-tool'));
-    heading.append(node('span', step.summary || (step.status === 'running' ? 'working…' : 'step recorded'), 'step-summary'));
+    heading.append(node('span', visibleToolStep(step) ? step.summary || 'Recorded tool action' : 'Private payload hidden', 'step-summary'));
     heading.append(node('span', agentMeta(step), 'step-meta'));
     const body = node('div', undefined, 'step-details');
-    if (step.preview_visibility === 'private_hidden') {
+    if (!visibleToolStep(step)) {
       body.append(node('p', step.tool_name === 'think'
         ? 'Private scratchpad content is intentionally hidden. Only the recorded step status is shown.'
         : 'Provider/model working payload is intentionally hidden. This activity view shows recorded status and usage, not private reasoning.', 'muted'));
@@ -1158,6 +1325,7 @@ function renderActivityRuntime(receipt, steps, permission, verification) {
   $('activity-phase').textContent = activityPhase(receipt, steps, permission, verification);
   $('activity-provider').textContent = provider;
   $('activity-model').textContent = model;
+  $('composer-model').textContent = `Recorded turn · ${provider} / ${model}`;
   $('activity-routing').textContent = Number.isInteger(version) && version > 0 ? `Pinned provider version ${version}` : 'Recorded turn';
   $('activity-elapsed').textContent = activityElapsed(receipt);
 }
@@ -1219,6 +1387,15 @@ function renderAgentChanges(changes) {
     }
     card.append(head, body, foot);
     list.append(card);
+  }
+}
+function renderFileCards(changes, requestId) {
+  $('file-artifacts').replaceChildren(); $('file-artifacts').hidden = !changes.length;
+  for (const change of changes.slice(0,20)) {
+    const button = node('button',undefined,'secondary file-artifact'); button.type = 'button';
+    button.append(node('strong',change.path || 'Recorded file'),node('span',`${change.action || 'Change'} · ${changeWhen(change)}`,'muted small'));
+    button.addEventListener('click',() => { if (agentState.requestId !== requestId) return; setRail(true); setActivityView('tools'); $('changes-list').querySelector(`[data-change-id="${CSS.escape(change.id)}"]`)?.scrollIntoView({block:'nearest'}); });
+    $('file-artifacts').append(button);
   }
 }
 async function revertChange(id, button) {
@@ -1372,6 +1549,7 @@ async function refreshAgentTurn(receipt) {
   const sessionId = receipt?.session_id || pending?.session_id || session;
   const turnScope = receipt?.scope || pending?.scope || scope;
   if (!token || !requestId) return;
+  const myEpoch = epoch;
   const data = await Promise.all([
     api(`/chat/requests/${encodeURIComponent(requestId)}/steps`),
     api(`/sessions/${encodeURIComponent(sessionId)}/plan`),
@@ -1387,20 +1565,23 @@ async function refreshAgentTurn(receipt) {
     // and pinned version, never the provider credential.
     api(`/chat/requests/${encodeURIComponent(requestId)}`).catch(() => receipt || null),
   ]);
-  if (!token || requestId !== (pending?.request_id || requestId) || sessionId !== session) return;
+  if (!token || myEpoch !== epoch || requestId !== (pending?.request_id || requestId) || sessionId !== session) return;
+  const newlySelected = agentState.requestId !== requestId;
   agentState.requestId = requestId; agentState.sessionId = sessionId; agentState.scope = turnScope;
   renderProjectOverview();
   $('agent-turn').hidden = false;
   // P2-T02: the turn record lives in the right rail; auto-open it on wide screens only.
-  if (!window.matchMedia('(max-width: 1100px)').matches) { $('rail').hidden = false; $('railbtn').setAttribute('aria-expanded', 'true'); }
+  if (newlySelected && currentView === 'chat' && !window.matchMedia('(max-width: 1180px)').matches) setRail(true, false);
   $('agent-turn-status').textContent = agentStatusLabel(receipt?.state);
   agentState.verification = data[0].verification || null;
   renderVerification(agentState.verification);
   agentState.steps = data[0].steps || [];
   renderAgentSteps(agentState.steps);
   renderAgentPlan(data[1]);
+  renderDecisionTrace(data[1], agentState.steps, data[6] || receipt || {}, data[3].changes || []);
   agentState.changes = data[3].changes || [];
   renderAgentChanges(agentState.changes);
+  renderFileCards(agentState.changes, requestId);
   renderIncident(data[4]);
   renderRetrieval(data[5]);
   // P2 context meter placeholder: real tokens-so-far from step receipts; the budget bar lands in P3.
@@ -1411,7 +1592,7 @@ async function refreshAgentTurn(receipt) {
   const match = (data[2].permissions || []).find(item => item.request_id === requestId);
   renderAgentPermission(match || null);
   renderActivityRuntime(data[6] || receipt || {}, agentState.steps, match || null, agentState.verification);
-  if (!match && !agentState.steps.length && !(data[1].items || []).length && !agentState.changes.length && !agentState.verification) { $('agent-turn').hidden = true; $('rail').hidden = true; }
+  if (!match && !agentState.steps.length && !(data[1].items || []).length && !agentState.changes.length && !agentState.verification) { $('agent-turn').hidden = true; setRail(false, false); }
 }
 
 async function decideAgentPermission(decision) {
@@ -1449,7 +1630,7 @@ function idleTick() {
   if (!token) return;
   idleClock.ticks++;
   if (pending) {
-    if (activityStream.live) { if (agentState.steps.length) renderAgentSteps(agentState.steps); }
+    if (activityStream.live) { for (const el of $('steps-list').querySelectorAll('[data-step-id]')) { const step = agentState.steps.find(s => s.id === el.dataset.stepId); if (step) el.querySelector('.step-meta').textContent = agentMeta(step); } }
     else refreshAgentTurn().catch(() => {});
   }
   if (idleClock.ticks % STATUS_EVERY_TICKS === 0) { refreshStatus().catch(() => {}); refreshInlineSuggestions().catch(() => {}); }
@@ -1524,6 +1705,7 @@ function renderFolderPage(data, append = false) {
   folderBrowserStatus('Browsing is read-only. Use this folder copies the path into the form; Save project settings is still required.');
 }
 async function browseProjectDirectories(path = null, cursor = null, append = false) {
+  const myEpoch = epoch;
   folderBrowserStatus('Loading approved server folders…');
   try {
     const params = new URLSearchParams({limit:'50'});
@@ -1532,13 +1714,15 @@ async function browseProjectDirectories(path = null, cursor = null, append = fal
     const data = await api(`/project-directories?${params}`);
     renderFolderPage(data, append);
   } catch (error) {
-    folderBrowserStatus(`Could not browse server folders. ${error.message}`, true);
+    if (token && myEpoch === epoch) folderBrowserStatus(`Could not browse server folders. ${error.message}`, true);
   }
 }
 async function openFolderBrowser() {
   folderBrowserState.typedBeforeOpen = $('rootpath').value;
   folderBrowserState.permissionBeforeOpen = $('permissionmode').value;
+  dismissOverlays();
   $('folder-browser').hidden = false;
+  syncOverlays();
   $('folder-open').setAttribute('aria-expanded', 'true');
   await browseProjectDirectories();
   $('folder-browser').querySelector('button')?.focus();
@@ -1547,6 +1731,7 @@ function cancelFolderBrowser() {
   $('rootpath').value = folderBrowserState.typedBeforeOpen;
   $('permissionmode').value = folderBrowserState.permissionBeforeOpen;
   $('folder-browser').hidden = true;
+  syncOverlays();
   $('folder-open').setAttribute('aria-expanded', 'false');
   folderBrowserStatus('Folder selection cancelled. No project setting changed.');
   $('folder-open').focus();
@@ -1559,6 +1744,7 @@ $('folder-use').addEventListener('click', () => {
   if (!folderBrowserState.path) return;
   $('rootpath').value = folderBrowserState.path;
   $('folder-browser').hidden = true;
+  syncOverlays();
   $('folder-open').setAttribute('aria-expanded', 'false');
   $('folder-selection-note').textContent = 'Folder copied into the draft. Review permission/diagnostics settings, then Save project settings to apply it.';
   $('rootpath').focus();
@@ -1604,10 +1790,6 @@ $('projectform').addEventListener('submit', async event => {
   } catch (error) { notice(error.message, true); }
 });
 
-for (const tab of document.querySelectorAll('[data-view]')) tab.addEventListener('click', () => {
-  if (tab.dataset.view === 'settings' && token) loadProjectSettings().catch(error => notice(error.message, true));
-});
-
 // P1-T15 first run. Tools exist only for a scope with a project root, so the chat view has to say
 // that before the model does: a tool-less turn used to come back as "I have no terminal in this
 // conversation", which reads as a broken product rather than one unset field.
@@ -1626,6 +1808,10 @@ async function refreshScopeSetup() {
   }
   $('scopelist').replaceChildren(options);
   const current = scopes.find(item => item.scope === scope);
+  $('header-project-name').textContent = scope;
+  $('composer-scope').textContent = scope;
+  $('header-project-root').textContent = current?.root_path ? String(current.root_path) : 'Chat only · no project root';
+  updateAuthRestoreSummary();
   $('setup-banner').hidden = !!current?.root_path;
   const ready = scopes.filter(item => item.root_path).map(item => item.scope);
   $('setup-banner-text').textContent = `Scope “${scope}” has no project root, so the file and command tools are not attached and the agent can only talk. Set a root path to turn them on.`
@@ -1645,38 +1831,104 @@ $('scope').addEventListener('change', () => refreshScopeSetup().catch(() => {}))
 // sensitive, so it may persist in localStorage; tokens and drafts still never persist.
 try {
   const savedTheme = localStorage.getItem('harness_theme');
-  if (savedTheme === 'light' || savedTheme === 'dark') document.documentElement.dataset.theme = savedTheme;
+  document.documentElement.dataset.theme = savedTheme === 'light' || savedTheme === 'dark' ? savedTheme : (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
 } catch { /* storage unavailable; default theme stays */ }
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', event => { if (!localStorage.getItem('harness_theme')) document.documentElement.dataset.theme = event.matches ? 'dark' : 'light'; });
 $('themebtn').addEventListener('click', () => {
   const next = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
   document.documentElement.dataset.theme = next;
   try { localStorage.setItem('harness_theme', next); } catch { /* ignore */ }
 });
+function overlayRoot() {
+  if (!$('folder-browser').hidden) return $('folder-browser');
+  if ($('sidebar').classList.contains('open') && matchMedia('(max-width:920px)').matches) return $('sidebar');
+  if (!$('rail').hidden && matchMedia('(max-width:1180px)').matches) return $('rail');
+  return null;
+}
+function syncOverlays() {
+  const modal = overlayRoot();
+  $('drawerbg').classList.toggle('show', !!modal);
+  for (const el of [$('main'), $('sidebar'), $('rail'), document.querySelector('.topbar')]) el.inert = !!modal && el !== modal && !el.contains(modal);
+  for (const el of document.querySelectorAll('#view-settings .pagecol > *, #projectform > *')) {
+    el.inert = modal === $('folder-browser') && el !== modal && !el.contains(modal);
+  }
+  for (const id of ['rail','sidebar']) {
+    $(id).setAttribute('role', modal === $(id) ? 'dialog' : 'complementary');
+    if (modal === $(id)) { $(id).setAttribute('aria-modal','true'); $(id).setAttribute('aria-label',id === 'rail' ? 'Runtime activity' : 'Navigation'); }
+    else $(id).removeAttribute('aria-modal');
+  }
+}
+function dismissOverlays() {
+  $('sidebar').classList.remove('open'); $('navtoggle').setAttribute('aria-expanded','false');
+  $('folder-browser').hidden = true; $('folder-open').setAttribute('aria-expanded','false');
+  if (matchMedia('(max-width:1180px)').matches) { $('rail').hidden = true; $('railbtn').setAttribute('aria-expanded','false'); }
+  syncOverlays();
+}
 function setDrawer(open, restoreFocus = false) {
+  if (open) dismissOverlays();
   $('sidebar').classList.toggle('open', open);
-  $('drawerbg').classList.toggle('show', open);
   $('navtoggle').setAttribute('aria-expanded', String(open));
-  if (open) $('sidebar').querySelector('input,button,summary')?.focus();
+  syncOverlays();
+  if (open) $('sidebarclose').focus();
   else if (restoreFocus) $('navtoggle').focus();
 }
-$('navtoggle').addEventListener('click', () => setDrawer(!$('sidebar').classList.contains('open')));
-$('drawerbg').addEventListener('click', () => setDrawer(false, true));
-$('railbtn').addEventListener('click', () => {
-  const open = $('rail').hidden;
+function setRail(open, focus = true) {
+  if (open) dismissOverlays();
   $('rail').hidden = !open;
-  $('railbtn').setAttribute('aria-expanded', String(open));
-  if (open) $('rail').querySelector('button,select')?.focus();
-});
-$('railclose').addEventListener('click', () => {
-  $('rail').hidden = true;
-  $('railbtn').setAttribute('aria-expanded', 'false');
-  $('railbtn').focus();
+  $('railbtn').setAttribute('aria-expanded', String(open)); syncOverlays();
+  if (focus) (open ? ($('agent-turn').hidden ? $('rail-empty-close') : $('railclose')) : $('railbtn')).focus();
+}
+$('navtoggle').addEventListener('click', () => setDrawer(!$('sidebar').classList.contains('open')));
+$('sidebarclose').addEventListener('click', () => setDrawer(false,true));
+$('drawerbg').addEventListener('click', () => { const modal = overlayRoot(); if (modal === $('folder-browser')) cancelFolderBrowser(); else if (modal === $('sidebar')) setDrawer(false,true); else setRail(false); });
+$('railbtn').addEventListener('click', () => setRail($('rail').hidden));
+$('railclose').addEventListener('click', () => setRail(false));
+$('rail-empty-close').addEventListener('click', () => setRail(false));
+window.addEventListener('resize', () => {
+  syncOverlays();
+  const modal = overlayRoot();
+  if (token && modal && !modal.contains(document.activeElement)) modal.querySelector('button:not([disabled])')?.focus();
 });
 document.addEventListener('keydown', event => {
-  if (event.key !== 'Escape') return;
-  if ($('sidebar').classList.contains('open')) { setDrawer(false, true); return; }
-  if (!$('rail').hidden) { $('rail').hidden = true; $('railbtn').setAttribute('aria-expanded', 'false'); $('railbtn').focus(); }
+  const modal = overlayRoot();
+  if (event.key === 'Escape') {
+    if (modal === $('folder-browser')) cancelFolderBrowser();
+    else if (modal === $('sidebar')) setDrawer(false,true);
+    else if (!$('rail').hidden) setRail(false);
+  }
+  if (event.key === 'Tab' && modal) {
+    const focusable = [...modal.querySelectorAll('button,input,select,textarea,a[href],summary')].filter(el => !el.disabled && !el.inert && el.getClientRects().length);
+    const first = focusable[0], last = focusable.at(-1);
+    if (event.shiftKey && (document.activeElement === first || !modal.contains(document.activeElement))) { event.preventDefault(); last?.focus(); }
+    else if (!event.shiftKey && (document.activeElement === last || !modal.contains(document.activeElement))) { event.preventDefault(); first?.focus(); }
+  }
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k' && token) { event.preventDefault(); $('newchat').click(); }
 });
+function clearTurnPresentation() {
+  closeGenerationStream(); closeActivityStream();
+  Object.assign(agentState,{requestId:null,sessionId:null,scope:null,permission:null,busyDecision:false,steps:[],changes:[],verification:null,incident:null,incidentNode:null});
+  $('file-artifacts').hidden = true; $('file-artifacts').replaceChildren();
+  for (const id of ['steps-list','changes-list','plan-items','decision-items','incident-nodes','incident-timeline','incident-detail','retrieval-list','permission-detail','permission-summary']) $(id).replaceChildren();
+  $('agent-turn').hidden = true; $('agent-permission').hidden = true;
+  renderVerification(null); setRail(false,false);
+}
+function clearSensitiveWorkspace() {
+  dismissOverlays(); clearTurnPresentation();
+  scopeConfig = null; providerState = {selected:null,providers:[]};
+  Object.assign(modelDiscoveryState,{providerId:null,status:'unloaded',ids:new Set(),errorCode:null});
+  Object.assign(folderBrowserState,{path:null,nextCursor:null,typedBeforeOpen:'',permissionBeforeOpen:''});
+  Object.assign(historyState,{results:[],selected:null,audit:null,bundle:null});
+  for (const id of ['history-results','history-privacy','history-audit','export-preview','processes','git-status','modelnames']) $(id).replaceChildren();
+  for (const form of document.querySelectorAll('#workspace form')) form.reset();
+  $('scope').value = scope; $('prompt').value = ''; restoreActivity = null;
+  for (const id of ['provider-model-options','model-discovery-status','provider-status']) $(id).replaceChildren();
+  for (const id of ['header-project-root','project-overview-root','project-overview-mode','project-overview-tools','activity-phase','activity-provider','activity-model','activity-routing','activity-elapsed','agent-turn-status','permission-expiry','folder-list','folder-breadcrumbs','folder-current','folder-browser-status']) $(id).replaceChildren();
+  $('composer-model').textContent = 'Model follows your saved configuration';
+  renderModelOrigins();
+  captureLabel(''); $('retryrequest').hidden = true;
+  // Retain safe durable identity only. Prompts and credential values never enter storage.
+}
+
 // CLI-style composer: Enter sends, Shift+Enter keeps the newline (design: ui.md#keyboard).
 $('prompt').addEventListener('keydown', event => {
   if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); $('chatform').requestSubmit(); }

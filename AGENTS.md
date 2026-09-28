@@ -41,7 +41,7 @@ P0–P10 are historical, completed phases. P11–P19 remain the tracked continua
 | Rust tests | `cargo test --locked` | Native unit/integration behavior |
 | Migration chain | `python3 tests/test_migrations.py` | Applies 001 through the latest migration with SQLite FTS5 |
 | Fault injection | `python3 tests/fault_injection.py` | Disposable crash, WAL, disk, queue, and replay boundaries |
-| Browser UI fixtures | `scripts/verify_browser.sh` | Both mocked-browser suites |
+| Browser UI fixtures | `scripts/verify_browser.sh` | Mocked-browser suites, including P22 session and layout contracts |
 | Frontend syntax | `node --check static/api.js static/app.js` | JavaScript parser check |
 
 Do not copy historical test counts or deployment IDs into current claims. Report evidence from the command actually run.

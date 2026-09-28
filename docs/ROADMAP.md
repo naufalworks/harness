@@ -24,6 +24,7 @@ A task may run in parallel only when its `parallel: yes` metadata is present, ev
 | J | Record external development history | P19 | contract, capture, delivery, history UX |
 | K | Make Harness reliable as the long-term brain | P20 | backup, restore, health, continuation, multi-agent |
 | L | Expose safe configuration and feature coverage in the UI | P21 | providers, model picker, server folder chooser, activity, navigation |
+| M | Redesign the complete owner experience and safe session restoration | P22 | shell, chat, activity, Decision Trace, control center, responsive and accessibility |
 
 Critical tasks in Wave A start first. Independent CI/docs/backup work may proceed beside runtime work. Schema-writing tasks never run in parallel with another schema-writing task.
 

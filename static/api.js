@@ -45,7 +45,7 @@ const API_ERROR_CODES = Object.freeze([
 const REQUEST_STATES = Object.freeze(['captured', 'generating', 'complete', 'failed', 'interrupted']);
 const REQUEST_STATE_LABELS = Object.freeze({
   captured: 'Sent · waiting for answer',
-  generating: 'Thinking…',
+  generating: 'Generating…',
   complete: 'Done',
   failed: 'Saved · answer failed',
   interrupted: 'Saved · answer interrupted',
@@ -88,6 +88,12 @@ function signalApiConnection(state) {
   }
 }
 
+function signalAuthExpired(authEpoch) {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('harness:auth-expired', { detail: { authEpoch } }));
+  }
+}
+
 // Read the envelope without trusting it. A failure body can be missing, truncated, or not JSON at
 // all - an intermediary can answer for the server - so each field is taken only when it has the
 // documented type, and the sentence falls back to something that still names the status.
@@ -108,7 +114,7 @@ async function apiReadBody(response) {
 // One request path for every authenticated JSON route: GET when there is no body, POST when there
 // is, bearer auth in the header so no token reaches a URL or a log, and a hard timeout so a hung
 // connection cannot leave the composer disabled forever.
-async function apiRequest(path, { token, body, method, timeoutMs = 20000 } = {}) {
+async function apiRequest(path, { token, body, method, authEpoch, active = false, timeoutMs = 20000 } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -117,12 +123,16 @@ async function apiRequest(path, { token, body, method, timeoutMs = 20000 } = {})
       signal: controller.signal,
       headers: {
         'Authorization': `Bearer ${token}`,
+        ...(active ? { 'X-Harness-Active': '1' } : {}),
         ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
       },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     const payload = await apiReadBody(response);
-    if (!response.ok) throw apiError(response.status, payload);
+    if (!response.ok) {
+      if (response.status === 401) signalAuthExpired(authEpoch);
+      throw apiError(response.status, payload);
+    }
     signalApiConnection('reachable');
     return payload;
   } catch (error) {

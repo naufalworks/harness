@@ -1,6 +1,7 @@
 # P22 · Full UI/UX Redesign & Session Experience
 
-Status: planned. This phase redesigns the owner-facing Harness experience without weakening the
+Status: implemented on `task/p22-ui-redesign`; local strict verification passed; exact-commit CI and visual acceptance
+are tracked in `docs/PROGRESS.md`. Production promotion is not authorized. This phase redesigns the owner-facing Harness experience without weakening the
 P21 security, provider, project-scope, memory, recovery, or activity guarantees.
 
 ## Product direction
@@ -152,7 +153,7 @@ Explicit designs and tests for:
 
 ## Release boundary
 
-P22 is approved only when:
+The redesign branch is ready for owner review only when:
 - mocked browser and real browser→Axum→SQLite→filesystem→provider E2E pass;
 - re-auth expiry/restore does not resend ambiguous work;
 - manual Lock still clears sensitive state;
@@ -160,5 +161,9 @@ P22 is approved only when:
 - provider secret scans pass;
 - Rust/Python/contracts/docs/supply-chain/release-evidence are green;
 - verified recovery backup exists;
-- exact CI-green commit is deployed and live verified;
-- owner explicitly accepts the redesign.
+- the exact branch commit passes quality, browser-e2e, supply-chain and release-evidence CI.
+
+Owner visual acceptance and production promotion are separate from branch implementation.
+After the owner explicitly accepts the finished design and authorizes promotion, the
+approved CI-green commit may be deployed and live verified. Until then, main and
+production remain unchanged. Missing visual or CI evidence is never counted as a pass.

@@ -7,16 +7,17 @@ const root=path.resolve(__dirname,'..'), out=path.join(root,'docs/qa');fs.mkdirS
  try {
   const page=await browser.newPage({viewport:{width:1120,height:900},colorScheme:'light'});
   const errors=[];page.on('pageerror',e=>errors.push(String(e)));
-  const records=new Map();let submits=0, nextState='complete', nextError='provider_failed', abortSubmit=false, offline=false, hold=false, polls=0, streams=0, generationStreams=0, generationSeq=0, generationReady=false,cancels=0, retries=0;const generationAfter=[];
+  const records=new Map();let submits=0, nextState='complete', nextError='provider_failed', abortSubmit=false, offline=false, hold=false, expireSession=false, polls=0, streams=0, generationStreams=0, generationSeq=0, generationReady=false,cancels=0, retries=0;const generationAfter=[];
   const hostile='<img src=x onerror="window.INJECTED=1">';
   function receipt(item){return {request_id:item.request_id,session_id:item.session_id,scope:item.scope,model:'synthetic-main',state:hold?'generating':item.final,error_code:item.final==='failed'?item.error_code:null,response:hold?null:item.final==='complete'?'Keep the conversation. Be selective about what becomes memory.':null,memory_status:'deferred',redacted:false,recalled:[],events:[{kind:'captured',at:'2026-09-08T13:01:00Z'},{kind:'generation_started',at:'2026-09-08T13:01:01Z'},{kind:'context_saved',at:'2026-09-08T13:01:01Z'},...(!hold&&item.final==='complete'?[{kind:'answer_saved',at:'2026-09-08T13:01:03Z'}]:[])],context:{model:'synthetic-main',provider_messages:[{role:'user',content:item.prompt}],memories:[{key:'explanation_style',value:'Concise, with runnable examples. '+hostile,revision:4,scope:'global',evidence:{quote:'I like concise explanations with runnable examples.'}}]}};}
-  function generationEvents(item){const state=generationReady&&item.final==='complete'?'complete':receipt(item).state;const events=[{seq:item.generation_start,request_id:item.request_id,state:'generating',content:null,error_code:null,created_at:'2026-09-08T13:01:01Z'}];if(state!=='generating')events.push({seq:item.generation_terminal,request_id:item.request_id,state,content:state==='complete'?'Keep the conversation. Be selective about what becomes memory.':null,error_code:state==='failed'?item.error_code:state==='interrupted'?'process_restarted':null,created_at:'2026-09-08T13:01:03Z'});return events;}
+  function generationEvents(item){const state=generationReady&&item.final==='complete'?'complete':receipt(item).state;const events=[{seq:item.generation_start,request_id:item.request_id,state:'generating',content:null,error_code:null,created_at:'2026-09-08T13:01:01Z'}];events.push({seq:item.generation_chunk,request_id:item.request_id,state:'chunk',content:'Durable partial answer\n',created_at:'2026-09-08T13:01:02Z'});if(state!=='generating')events.push({seq:item.generation_terminal,request_id:item.request_id,state,content:state==='complete'?'Keep the conversation. Be selective about what becomes memory.':null,error_code:state==='failed'?item.error_code:state==='interrupted'?'process_restarted':null,created_at:'2026-09-08T13:01:03Z'});return events;}
   function generationRows(sessionId,after){return [...records.values()].filter(v=>v.session_id===sessionId).flatMap(generationEvents).filter(v=>v.seq>after).sort((a,b)=>a.seq-b.seq);}
   await page.route('http://127.0.0.1:8080/**',async route=>{
    const req=route.request(),u=new URL(req.url()),p=u.pathname;
    const staticFiles={'/':'index.html','/api.js':'api.js','/app.js':'app.js','/style.css':'style.css'};
    if(staticFiles[p])return route.fulfill({contentType:p.endsWith('.js')?'text/javascript':p.endsWith('.css')?'text/css':'text/html',body:fs.readFileSync(path.join(root,'static',staticFiles[p]),'utf8')});
    if(p==='/auth/session'&&req.headers().authorization==='Bearer fixture-token')return route.fulfill({status:201,json:{session_token:'fixture-session',expires_in:900}});
+   if(expireSession&&req.headers().authorization==='Bearer fixture-session'){expireSession=false;return route.fulfill({status:401,json:{error:'Bearer token required',code:'unauthorized',retryable:false}});}
    if(req.headers().authorization!=='Bearer fixture-session')return route.fulfill({status:401,json:{error:'Bearer token required'}});
    if(offline&&p.startsWith('/chat/requests/'))return route.abort('failed');
    if(p==='/external-history/sessions')return route.fulfill({json:{sessions:[{project_id:'proj-harness',producer_id:'development-mcp',logical_session_id:'sess-01',event_count:4}],next_cursor:1,has_more:false}});
@@ -39,7 +40,7 @@ const root=path.resolve(__dirname,'..'), out=path.join(root,'docs/qa');fs.mkdirS
    }
    if(p==='/chat/submit'){
     submits++;const body=JSON.parse(req.postData());
-    if(!records.has(body.request_id))records.set(body.request_id,{...body,final:nextState,error_code:nextState==='failed'?nextError:null,generation_start:++generationSeq,generation_terminal:++generationSeq});
+    if(!records.has(body.request_id))records.set(body.request_id,{...body,final:nextState,error_code:nextState==='failed'?nextError:null,generation_start:++generationSeq,generation_chunk:++generationSeq,generation_terminal:++generationSeq});
     if(abortSubmit){abortSubmit=false;return route.abort('failed');}
     return route.fulfill({status:202,json:receipt(records.get(body.request_id))});
    }
@@ -51,7 +52,7 @@ const root=path.resolve(__dirname,'..'), out=path.join(root,'docs/qa');fs.mkdirS
     if(!item)return route.fulfill({status:404,json:{error:'Recording receipt not found'}});
     if(action[2]==='cancel'){cancels++;item.final='interrupted';return route.fulfill({status:200,json:receipt(item)});}
     retries++;const rid='retry-'+id;
-    if(!records.has(rid))records.set(rid,{request_id:rid,session_id:item.session_id,scope:item.scope,prompt:item.prompt,final:'complete',generation_start:++generationSeq,generation_terminal:++generationSeq});
+    if(!records.has(rid))records.set(rid,{request_id:rid,session_id:item.session_id,scope:item.scope,prompt:item.prompt,final:'complete',generation_start:++generationSeq,generation_chunk:++generationSeq,generation_terminal:++generationSeq});
     return route.fulfill({status:202,json:{...receipt(records.get(rid)),retry_of:id}});
    }
    if(p.startsWith('/chat/requests/')){polls++;const id=p.split('/')[3];if(!records.has(id))return route.fulfill({status:404,json:{error:'Recording receipt not found'}});return route.fulfill({json:receipt(records.get(id))});}
@@ -64,6 +65,7 @@ const root=path.resolve(__dirname,'..'), out=path.join(root,'docs/qa');fs.mkdirS
    return route.fulfill({status:404,json:{error:'Unmocked route '+p}});
   });
   const connect=async()=>{await page.fill('#token','fixture-token');await page.click('#authform button');await page.waitForFunction(()=>!document.getElementById('workspace').hidden);};
+  const newChat=async()=>{const mobile=page.locator('#newchat-mobile');if(await mobile.isVisible())await mobile.click();else await page.click('#newchat');};
   const shot=async(name)=>{
    assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),name+' overflow');
    await page.screenshot({path:path.join(out,name+'.png'),fullPage:true});
@@ -79,8 +81,9 @@ const root=path.resolve(__dirname,'..'), out=path.join(root,'docs/qa');fs.mkdirS
   await page.goto('http://127.0.0.1:8080');await connect();
   // Durable acknowledgement before answer; no misleading "saved answer" label.
   hold=true;await page.fill('#prompt','How should we separate chat history from memory?');await page.click('#send');
-  await page.waitForFunction(()=>document.getElementById('capturestatus').textContent==='Thinking…');assert.strictEqual(await page.locator('#prompt').inputValue(),'');
+  await page.waitForFunction(()=>document.getElementById('capturestatus').textContent==='Generating…');assert.strictEqual(await page.locator('#prompt').inputValue(),'');
   assert(!await page.evaluate(()=>JSON.stringify({...localStorage,...sessionStorage}).includes('How should we')));
+  await page.waitForFunction(()=>document.querySelector('.generation-message[data-state="generating"] .generation-content')?.textContent==='Durable partial answer\n');
   generationReady=true;await page.waitForFunction(()=>document.querySelector('.generation-message[data-state="complete"]')?.textContent.includes('Keep the conversation.'));
   assert((await page.locator('.generation-message[data-state="complete"] .generation-state').innerText()).includes('saved response'));
   assert(Number(JSON.parse(await page.evaluate(()=>sessionStorage.getItem('harness_pending'))).generation_cursor)>0);
@@ -90,24 +93,35 @@ const root=path.resolve(__dirname,'..'), out=path.join(root,'docs/qa');fs.mkdirS
   assert.strictEqual(await page.locator('.receipt-content img').count(),0);assert.strictEqual(await page.evaluate(()=>window.INJECTED),undefined);
   await shot('receipt-desktop');await page.setViewportSize({width:390,height:844});await page.emulateMedia({colorScheme:'dark'});await shot('receipt-dark-mobile');
   // Response lost AFTER the mock commits. Checking recovers without a second POST.
-  await page.emulateMedia({colorScheme:'light'});await page.click('#newchat');abortSubmit=true;
+  await page.emulateMedia({colorScheme:'light'});await newChat();abortSubmit=true;
   await page.fill('#prompt','Keep this even if the connection drops.');const before=submits;await page.click('#send');
   await page.waitForFunction(()=>document.getElementById('capturestatus').textContent==='Needs checking');assert.strictEqual(submits,before+1);
   assert.strictEqual(await page.locator('#prompt').inputValue(),'Keep this even if the connection drops.');
-  await shot('recording-unknown-mobile');await page.click('#checkrecording');await page.waitForFunction(()=>document.getElementById('notice').textContent.startsWith('Answer saved'));assert.strictEqual(submits,before+1);assert.strictEqual(await page.locator('#prompt').inputValue(),'');
+  await shot('recording-unknown-mobile');
+  const ambiguousId=await page.evaluate(()=>JSON.parse(sessionStorage.getItem('harness_pending')).request_id);
+  expireSession=true;await page.evaluate(()=>api('/health').catch(()=>{}));await page.waitForFunction(()=>document.getElementById('auth-title').textContent==='Session expired');
+  assert.strictEqual(await page.evaluate(()=>JSON.parse(sessionStorage.getItem('harness_pending')).request_id),ambiguousId);
+  await connect();await page.waitForFunction(()=>document.getElementById('notice').textContent.startsWith('Answer saved'));assert.strictEqual(submits,before+1);assert.strictEqual(await page.locator('#prompt').inputValue(),'');
   // Reload restores only request identity, never a bearer token or raw draft; no resend.
-  await page.click('#newchat');hold=true;await page.fill('#prompt','Recover after reloading this tab.');await page.click('#send');await page.waitForFunction(()=>document.getElementById('capturestatus').textContent==='Thinking…');const beforeReload=submits;
+  await newChat();hold=true;await page.fill('#prompt','Recover after reloading this tab.');await page.click('#send');await page.waitForFunction(()=>document.getElementById('capturestatus').textContent==='Generating…');const beforeReload=submits;
   await page.reload();assert(await page.locator('#auth').isVisible());hold=false;await connect();await page.waitForFunction(()=>document.getElementById('notice').textContent.startsWith('Answer saved'));assert.strictEqual(submits,beforeReload);
   assert(!await page.evaluate(()=>JSON.stringify({...localStorage,...sessionStorage}).includes('fixture-token')));
+  // P22-T07: an expired browser session returns to the first screen, preserves safe tab state,
+  // and re-authentication restores without replaying the unsent draft or any request.
+  await page.fill('#prompt','unsent draft survives re-auth');const beforeReauth=submits;expireSession=true;await page.evaluate(()=>api('/memory/status').catch(()=>null));
+  await page.waitForFunction(()=>!document.getElementById('auth').hidden&&document.getElementById('auth-title').textContent==='Session expired');
+  assert.strictEqual(await page.locator('#prompt').inputValue(),'unsent draft survives re-auth');assert((await page.locator('#auth-copy').innerText()).includes('work is still saved'));
+  assert(!await page.evaluate(()=>JSON.stringify({...localStorage,...sessionStorage}).includes('unsent draft survives re-auth')));
+  await connect();assert.strictEqual(submits,beforeReauth,'re-auth must not resend');assert.strictEqual(await page.locator('#prompt').inputValue(),'unsent draft survives re-auth');await page.fill('#prompt','');
   // A context-building failure is not a provider failure, live or after history reload.
-  nextState='failed';nextError='context_failed';await page.click('#newchat');await page.fill('#prompt','Context setup failure fixture.');await page.click('#send');
+  nextState='failed';nextError='context_failed';await newChat();await page.fill('#prompt','Context setup failure fixture.');await page.click('#send');
   await page.waitForFunction(()=>document.querySelector('.generation-message[data-state="failed"]')?.textContent.includes('could not prepare the request context'));
   assert(!(await page.locator('.generation-message[data-state="failed"]').last().innerText()).includes('provider failed'));
   await page.reload();await connect();await page.waitForFunction(()=>document.getElementById('log').textContent.includes('could not prepare the request context'));
   assert(!(await page.locator('.generation-message[data-state="failed"]').last().innerText()).includes('provider failed'));nextError='provider_failed';
   // Provider failure and restart interruption retain the captured user message.
   for(const state of ['failed','interrupted']){
-   nextState=state;await page.click('#newchat');await page.fill('#prompt','This message survives '+state+'.');await page.click('#send');
+   nextState=state;await newChat();await page.fill('#prompt','This message survives '+state+'.');await page.click('#send');
    await page.waitForFunction(s=>document.getElementById('capturestatus').textContent.includes(s==='failed'?'answer failed':'answer interrupted')&&document.getElementById('log').textContent.includes('This message survives'),state);
    assert((await page.locator('#log').innerText()).includes('This message survives'));
    assert(await page.locator(`.generation-message[data-state="${state}"]`).count()>0);
@@ -120,9 +134,9 @@ const root=path.resolve(__dirname,'..'), out=path.join(root,'docs/qa');fs.mkdirS
   await page.waitForFunction(()=>document.getElementById('notice').textContent.length>0);await page.waitForTimeout(300);
   assert.strictEqual(retries,beforeRetry+1,'the retry control must POST /retry exactly once');
   // P14-T01: Stop while a turn is running records cancellation and lands on a terminal state.
-  await page.click('#newchat');hold=false;nextState='generating';const beforeCancel=cancels;
+  await newChat();hold=false;nextState='generating';const beforeCancel=cancels;
   await page.fill('#prompt','Stop this turn.');await page.click('#send');
-  await page.waitForFunction(()=>document.getElementById('capturestatus').textContent==='Thinking\u2026');
+  await page.waitForFunction(()=>document.getElementById('capturestatus').textContent==='Generating\u2026');
   await page.click('#cancelrequest');
   await page.waitForFunction(()=>document.getElementById('capturestatus').textContent.includes('interrupted'));
   assert.strictEqual(cancels,beforeCancel+1,'Stop must POST /cancel exactly once');hold=false;
