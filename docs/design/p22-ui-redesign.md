@@ -1,8 +1,10 @@
 # P22 · Full UI/UX Redesign & Session Experience
 
-Status: implemented on `task/p22-ui-redesign`; local strict verification passed; exact-commit CI and visual acceptance
-are tracked in `docs/PROGRESS.md`. Production promotion is not authorized. This phase redesigns the owner-facing Harness experience without weakening the
-P21 security, provider, project-scope, memory, recovery, or activity guarantees.
+Status: review-ready on `task/p22-ui-redesign`. P22-T01–T16 implementation,
+visual review and non-deploying qualification are complete. Source commit
+`e720dca06ccf1c06a5496ffa09f63acdd3f2f5f6` passed strict local verification and
+all four required CI jobs in run `36510264353`. Production promotion remains a
+separate owner-authorized action. See `docs/PROGRESS.md` for acceptance evidence.
 
 ## Product direction
 

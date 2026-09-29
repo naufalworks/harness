@@ -1932,7 +1932,7 @@ durable admission/recovery, memory integrity, or the private-reasoning boundary.
 - note (2026-09-29): Keyboard trap/Escape/focus restoration, 320/390/768/1440 widths, dark theme, reduced motion, hostile strings and long IDs passed. Status banners do not cover Send. Verification: final-source strict gate `cd5ffaab417a` (`bash scripts/verify_release.sh`), exit 0.
 
 ### P22-T16 · Full browser E2E, approval and production release gate
-- status: doing
+- status: done
 - priority: critical
 - lane: release
 - parallel: no
@@ -1941,4 +1941,4 @@ durable admission/recovery, memory integrity, or the private-reasoning boundary.
 - files: scripts/verify_release.sh, tests/browser_e2e.cjs, tests/browser_e2e_failure.cjs, docs/PROGRESS.md
 - done-when: full strict gates and real browser→Axum→SQLite→filesystem→provider flows pass, session-expiry/re-auth restore never resends ambiguous work, Decision Trace never exposes private reasoning, secrets remain absent, a recovery backup exists, exact CI-green commit is reviewable, and production promotion happens only after explicit owner approval.
 - verify: bash scripts/verify_release.sh && python3 scripts/check_docs.py
-- note (2026-09-29): Local strict gate and recovery-backup integrity passed. Exact final-commit CI is the next branch-only qualification. Final screenshot review is blocked because automatic approval review refused exporting private-checkout QA PNGs; owner approval to open those synthetic screenshots is required. Implementation T01–T15 is complete; this status does not authorize merge, deployment, production restart or live database writes.
+- note (2026-09-29): Non-deploying qualification complete. Strict gate `f11a1f4edaa3` passed; source `e720dca06ccf1c06a5496ffa09f63acdd3f2f5f6` passed all four required CI jobs in run `36510264353`. Owner-authorized screenshot inspection is complete, including regenerated tablet evidence after the header-overlap correction. Recovery-backup checksum/integrity is verified. This closes T01–T16 on the redesign branch; merge, deployment, production restart and live database writes remain separate owner-authorized actions.

@@ -1,5 +1,38 @@
 # PROGRESS — journal
 
+## 2026-09-29 · P22-T16 doing → done: development qualification complete
+
+Completed the owner-delegated visual review and all non-deploying P22 acceptance.
+Inspected `connect-desktop`, `session-expired-desktop`, `control-center-desktop`,
+`decision-trace-desktop`, `activity-768`, `folder-390` and `chat-dark-mobile` PNGs
+from the synthetic fixture under `docs/qa/p22`. The 768 px header collision was
+fixed and its regenerated screenshot inspected. All reviewed surfaces retain
+readable hierarchy, visible primary actions, safe long-content wrapping, distinct
+focus and dark-mode contrast; status messages reserve space above/below controls.
+
+`PATH=/root/.cargo/bin:$PATH CARGO_BUILD_JOBS=2 bash scripts/verify_release.sh`
+passed with exit 0 in `f11a1f4edaa3` on source
+`e720dca06ccf1c06a5496ffa09f63acdd3f2f5f6`: 389 Rust tests, strict Clippy/build,
+Python/contracts/HTTP, property/fuzz/performance/rollback/reproducible-artifact checks,
+three mocked Chromium suites and all real browser-to-server E2E paths. Same-session
+re-auth preserves safe draft/identity and never resends; crash recovery produces no
+duplicate generation, receipt or tool side effect; provider credentials and private
+reasoning stay withheld. Manual Lock and delayed-response rejection remain covered.
+
+Exact-source GitHub run `36510264353` is successful for `quality`, `browser-e2e`,
+`supply-chain` and `release-evidence`, including coverage, both architectures,
+byte-identical independent release builds and keyless Sigstore signing. Public
+production smoke was intentionally skipped. The validated recovery backup remains
+`pre-p21-final-20260926T082415Z.sqlite` (manifest checksum, integrity `ok`, schema 24,
+699/700/699 memory/revision/embedding baseline).
+
+All P22-T01–T16 tasks are now done for the redesign branch. This closing change only
+updates the task/design/journal records; its own branch CI will also be observed.
+There is no remaining implementation or screenshot-review blocker. Main and
+production remain unchanged: production promotion still requires explicit owner
+authorization and the deployment/live-verification procedure. Next eligible work
+for P22 is that separate owner-directed promotion, not another implementation task.
+
 ## 2026-09-29 · P22-T16 blocked → doing: authorized screenshot review
 
 Owner approved completing the previously blocked screenshot review. Exported only
