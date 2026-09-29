@@ -1932,7 +1932,7 @@ durable admission/recovery, memory integrity, or the private-reasoning boundary.
 - note (2026-09-29): Keyboard trap/Escape/focus restoration, 320/390/768/1440 widths, dark theme, reduced motion, hostile strings and long IDs passed. Status banners do not cover Send. Verification: final-source strict gate `cd5ffaab417a` (`bash scripts/verify_release.sh`), exit 0.
 
 ### P22-T16 · Full browser E2E, approval and production release gate
-- status: blocked
+- status: doing
 - priority: critical
 - lane: release
 - parallel: no

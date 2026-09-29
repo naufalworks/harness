@@ -732,6 +732,7 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
   #rail{position:fixed;top:64px;right:0;bottom:0;z-index:45;width:min(390px,94vw);box-shadow:var(--shadow)}
 }
 @media(max-width:920px){
+  .topbar .brand{display:none}
   .header-project{min-width:0;max-width:46vw}
   #newchat-mobile{display:grid}
   #sidebar{top:0;width:276px;padding-top:18px}

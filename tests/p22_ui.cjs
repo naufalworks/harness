@@ -41,7 +41,14 @@ fs.mkdirSync(out,{recursive:true});
    else if(p==='/chat/submit'){submits++;data={};}
    return route.fulfill({json:data});
   });
-  const noOverflow=async label=>assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),label);
+  const noOverflow=async label=>{
+   assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),label);
+   assert(await page.evaluate(()=>{
+    const brand=document.querySelector('.topbar .brandname').getBoundingClientRect();
+    const project=document.querySelector('.header-project').getBoundingClientRect();
+    return !brand.width || !project.width || brand.right<=project.left;
+   }),label+' header brand must not overlap project context');
+  };
   const shot=async name=>{await noOverflow(name);await page.screenshot({path:path.join(out,name+'.png'),fullPage:true});};
   const connect=async()=>{expired=false;
    const restoringSessions=initialRestore?page.waitForRequest(r=>new URL(r.url()).pathname==='/sessions'):null;
@@ -114,7 +121,7 @@ fs.mkdirSync(out,{recursive:true});
   assert.strictEqual(await page.locator('#model-discovery-status').textContent(),'','late failures cannot repopulate locked panels');
   assert(!(await page.locator('body').textContent()).includes('LATE-MODEL-SECRET'));
   assert.deepStrictEqual(errors,[]);
-  fs.writeFileSync(path.join(out,'ui-result.json'),JSON.stringify({passed:true,checks:['initial-restore-before-navigation','active-only-session-header','resize-focus-transfer','reauth-dismisses-folder-modal','lock-discards-late-error','session-reauth-same-view-conversation','no-auto-resend','draft-memory-only','late-response-discarded','provider-secrets-cleared','decision-trace-private-fields-hidden','hostile-text-inert','drawer-focus-trap-escape','folder-focus-trap-escape','320-390-768-1440-no-overflow','dark-mode','notice-keeps-composer-reachable','reduced-motion','manual-lock-clears']},null,2));
+  fs.writeFileSync(path.join(out,'ui-result.json'),JSON.stringify({passed:true,checks:['initial-restore-before-navigation','active-only-session-header','resize-focus-transfer','reauth-dismisses-folder-modal','lock-discards-late-error','session-reauth-same-view-conversation','no-auto-resend','draft-memory-only','late-response-discarded','provider-secrets-cleared','decision-trace-private-fields-hidden','hostile-text-inert','drawer-focus-trap-escape','folder-focus-trap-escape','320-390-768-1440-no-overflow','header-brand-project-no-overlap','dark-mode','notice-keeps-composer-reachable','reduced-motion','manual-lock-clears']},null,2));
   console.log('P22 UI passed: re-auth, stale response, privacy, focus, responsive and dark-mode contracts');
  }finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exit(1);});
