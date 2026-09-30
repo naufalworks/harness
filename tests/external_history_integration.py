@@ -49,7 +49,7 @@ class ExternalHistory(unittest.TestCase):
         with (self.root / 'server.log').open('ab') as log:
             self.app = subprocess.Popen([str(ROOT/'target/debug/harness')], cwd=self.root,
                                         env=self.env, stdout=subprocess.DEVNULL, stderr=log)
-        for _ in range(100):
+        for _ in range(300):
             if self.app.poll() is not None:
                 self.fail('disposable server exited on startup')
             try:
@@ -58,6 +58,7 @@ class ExternalHistory(unittest.TestCase):
             except (OSError, urllib.error.URLError):
                 pass
             time.sleep(.05)
+        self.stop()
         self.fail('disposable server startup timeout')
 
     def stop(self):

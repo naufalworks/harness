@@ -416,7 +416,7 @@ impl DbStore {
             let branch=active_branch(&tx,&scope)?;
             let revision:i64=tx.query_row("SELECT revision FROM memories WHERE scope=?1 AND key='turn_summary' AND branch=?2",params![scope,branch],|r|r.get(0)).optional()?.unwrap_or(0);
             let candidate=uid();
-            let evidence=json!({"source_id":source_id,"request_id":request,"step_id":step,"kind":"compaction","quote":summary});
+            let evidence=json!({"source_id":source_id,"request_id":request,"step_id":step,"kind":"compaction","quote":summary,"branch":branch});
             tx.execute("INSERT INTO candidates(id,scope,key,value,category,source_id,evidence,expected_revision,status,created_at,expires_at) VALUES(?1,?2,'turn_summary',?3,'episodic',?4,?5,?6,'pending',?7,?8)",
                 params![candidate,scope,summary,source_id,evidence.to_string(),revision,stamp,Utc::now().timestamp()+30*86400])?;
             tx.commit()?;
@@ -437,20 +437,19 @@ impl DbStore {
     ) -> Result<Value> {
         self.run(move|c|{
             c.execute("UPDATE candidates SET status='expired',resolved_at=?1 WHERE status='pending' AND expires_at<=?2",params![now(),Utc::now().timestamp()])?;
-            let mut stmt=c.prepare("SELECT c.id,c.scope,c.key,c.value,c.category,c.evidence,c.expected_revision,m.value,c.source_id,c.created_at FROM candidates c LEFT JOIN memories m ON m.scope=c.scope AND m.key=c.key WHERE c.scope=?1 AND c.status='pending' ORDER BY c.created_at LIMIT 500")?;
-            let raw=stmt.query_map([scope],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?,r.get::<_,String>(5)?,r.get::<_,i64>(6)?,r.get::<_,Option<String>>(7)?,r.get::<_,String>(8)?,r.get::<_,String>(9)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            let branch=active_branch(c,&scope)?;
+            let request_expr="COALESCE(CASE WHEN json_valid(c.evidence) THEN json_extract(c.evidence,'$.request_id') END,CASE WHEN c.source_id LIKE 'chat:%' THEN substr(c.source_id,6) END)";
+            let priority_expr="CASE WHEN json_valid(c.evidence) THEN json_extract(c.evidence,'$.priority') END";
+            let sql=format!("SELECT c.id,c.scope,c.key,c.value,c.category,c.evidence,c.expected_revision,m.value,c.created_at,{request_expr} FROM candidates c LEFT JOIN memories m ON m.scope=c.scope AND m.key=c.key AND m.branch=COALESCE(CASE WHEN json_valid(c.evidence) THEN json_extract(c.evidence,'$.branch') END,?2) AND m.status='active' WHERE c.scope=?1 AND c.status='pending' AND (?3 IS NULL OR {request_expr}=?3) AND (?4=0 OR {request_expr} IS NULL) AND (?5=0 OR {request_expr} IS NOT NULL) ORDER BY CASE WHEN {priority_expr}='high' THEN 0 ELSE 1 END,c.created_at,c.id LIMIT 100");
+            let mut stmt=c.prepare(&sql)?;
+            let raw=stmt.query_map(params![scope,branch,request,imports_only,chat_only],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?,r.get::<_,String>(5)?,r.get::<_,i64>(6)?,r.get::<_,Option<String>>(7)?,r.get::<_,String>(8)?,r.get::<_,Option<String>>(9)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
             let mut items=Vec::new();
-            for (id,row_scope,key,value,category,evidence_text,expected_revision,old_value,source_id,created_at) in raw {
+            for (id,row_scope,key,value,category,evidence_text,expected_revision,old_value,created_at,request_id) in raw {
                 let evidence=serde_json::from_str::<Value>(&evidence_text).unwrap_or(Value::Null);
-                let request_id=evidence.get("request_id").and_then(Value::as_str).map(str::to_string).or_else(||source_id.strip_prefix("chat:").map(str::to_string));
-                if request.as_ref().is_some_and(|wanted|request_id.as_ref()!=Some(wanted)){continue;}
-                if imports_only && request_id.is_some(){continue;}
-                if chat_only && request_id.is_none(){continue;}
                 let priority=evidence.get("priority").and_then(Value::as_str).unwrap_or("normal");
                 items.push(json!({"id":id,"scope":row_scope,"key":key,"value":value,"category":category,"evidence":evidence,"expected_revision":expected_revision,"old_value":old_value,"request_id":request_id,"priority":priority,"created_at":created_at}));
             }
-            items.sort_by(|a,b|(b["priority"]==json!("high")).cmp(&(a["priority"]==json!("high"))).then_with(||a["created_at"].as_str().cmp(&b["created_at"].as_str())).then_with(||a["id"].as_str().cmp(&b["id"].as_str())));
-            items.truncate(100);Ok(json!({"candidates":items}))
+            Ok(json!({"candidates":items}))
         }).await
     }
     pub async fn edit_candidate(
@@ -479,11 +478,16 @@ impl DbStore {
     pub async fn resolve(&self, id: String, scope: String, confirm: bool) -> Result<String> {
         self.run(move|c|{
             let tx=c.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            let row:Option<(String,String,String,i64,String,i64)>=tx.query_row("SELECT key,value,category,expected_revision,status,expires_at FROM candidates WHERE id=?1 AND scope=?2",params![id,scope],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional()?;
-            let Some((key,value,category,expected,status,expiry))=row else{return Ok("not_found".into())};
+            let row:Option<(String,String,String,i64,String,i64,String)>=tx.query_row("SELECT key,value,category,expected_revision,status,expires_at,evidence FROM candidates WHERE id=?1 AND scope=?2",params![id,scope],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional()?;
+            let Some((key,value,category,expected,status,expiry,evidence_text))=row else{return Ok("not_found".into())};
             if status!="pending" {return Ok("already_resolved".into());}
             if expiry<=Utc::now().timestamp(){tx.execute("UPDATE candidates SET status='expired',resolved_at=?1 WHERE id=?2",params![now(),id])?;tx.commit()?;return Ok("expired".into());}
-            let branch=active_branch(&tx,&scope)?;
+            let evidence:Value=serde_json::from_str(&evidence_text)?;
+            let branch=match evidence.get("branch").and_then(Value::as_str) {
+                Some(value) if !value.is_empty() && value.chars().count()<=60 => value.to_string(),
+                Some(_) => bail!("candidate branch is invalid"),
+                None => active_branch(&tx,&scope)?,
+            };
             if !confirm {
                 let stamp=now();
                 tx.execute("UPDATE candidates SET status='rejected',resolved_at=?1 WHERE id=?2 AND status='pending'",params![stamp,id])?;

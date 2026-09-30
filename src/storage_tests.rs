@@ -1556,6 +1556,91 @@ async fn extraction_corrections_are_high_priority_and_candidate_feeds_are_scoped
     );
 }
 
+#[tokio::test]
+async fn candidate_feed_filters_and_prioritizes_before_its_result_bound() {
+    let db = DbStore::init(":memory:").unwrap();
+    let request = uid();
+    let target = uid();
+    db.run({
+        let request=request.clone();
+        let target=target.clone();
+        move|c|{
+            for i in 0..505 {
+                let id=format!("old-{i}");
+                let key=format!("old_{i}");
+                c.execute("INSERT INTO candidates(id,scope,key,value,category,source_id,evidence,expected_revision,status,created_at,expires_at) VALUES(?1,'global',?2,'old','fact','import','{}',0,'pending','2000-01-01',2000000000)",params![id,key])?;
+            }
+            let evidence=json!({"request_id":request,"priority":"high"});
+            c.execute("INSERT INTO candidates(id,scope,key,value,category,source_id,evidence,expected_revision,status,created_at,expires_at) VALUES(?1,'global','latest_choice','current','decision',?2,?3,0,'pending','2026-09-29T00:00:00Z',2000000000)",params![target,format!("chat:{request}"),evidence.to_string()])?;
+            Ok(())
+        }
+    }).await.unwrap();
+    let filtered = db
+        .candidate_feed("global".into(), Some(request), false, true)
+        .await
+        .unwrap();
+    assert_eq!(filtered["candidates"].as_array().unwrap().len(), 1);
+    assert_eq!(filtered["candidates"][0]["id"], target);
+    let all = db
+        .candidate_feed("global".into(), None, false, false)
+        .await
+        .unwrap();
+    assert_eq!(all["candidates"].as_array().unwrap().len(), 100);
+    assert_eq!(
+        all["candidates"][0]["id"], target,
+        "priority ordering must happen before the SQL result cap"
+    );
+}
+
+#[tokio::test]
+async fn extraction_revision_and_old_value_are_read_from_the_active_branch() {
+    let db = DbStore::init(":memory:").unwrap();
+    db.run(|c|{
+        let stamp=now();
+        c.execute("INSERT INTO candidates(id,scope,key,value,category,source_id,evidence,expected_revision,status,created_at,expires_at,resolved_at) VALUES('main-candidate','proj','database_choice','Postgres','decision','seed','{}',0,'approved',?1,2000000000,?1)",[&stamp])?;
+        c.execute("INSERT INTO memories(id,scope,key,value,branch,category,status,revision,candidate_id,created_at,updated_at) VALUES('main-memory','proj','database_choice','Postgres','main','decision','active',4,'main-candidate',?1,?1)",[&stamp])?;
+        Ok(())
+    }).await.unwrap();
+    db.checkout_memory_branch("proj".into(), "review".into(), None, true)
+        .await
+        .unwrap();
+    db.ingest(
+        "proj".into(),
+        "branch review".into(),
+        "jsonl".into(),
+        "Use SQLite.".into(),
+        "review-source".into(),
+        vec![],
+        vec![vec![Event {
+            id: "event-review".into(),
+            role: "user".into(),
+            content: "Use SQLite.".into(),
+        }]],
+    )
+    .await
+    .unwrap();
+    let job = db.claim_job().await.unwrap().unwrap();
+    db.finish_job(
+        job,
+        vec![Proposal {
+            key: "database_choice".into(),
+            value: "SQLite".into(),
+            category: "decision".into(),
+            evidence_id: "event-review".into(),
+            quote: "Use SQLite.".into(),
+            priority: None,
+        }],
+    )
+    .await
+    .unwrap();
+    let candidate = db
+        .candidate_feed("proj".into(), None, true, false)
+        .await
+        .unwrap();
+    assert_eq!(candidate["candidates"][0]["expected_revision"], 0);
+    assert!(candidate["candidates"][0]["old_value"].is_null());
+}
+
 fn scope_dir() -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("harness-scope-{}", uid()));
     std::fs::create_dir_all(&dir).unwrap();

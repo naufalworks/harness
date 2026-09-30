@@ -1,5 +1,62 @@
 # PROGRESS — journal
 
+## 2026-09-30 · P19-T07 blocked: safe extraction slice verified in isolation
+
+Rechecked the review-first external memory path after formatting and corrected the
+queue-full receipt to say `retry_required_queue_full`. Its regression now proves
+that the durable event keeps one failed job and that an explicit retry after capacity
+frees returns the same event receipt with extraction queued. No tool output enters
+the extractor, and no pending candidate enters active recall without approval.
+
+Final isolated verification passed: `cargo test --locked` (394 passed),
+`python3 tests/external_history_integration.py` (8 passed),
+`bash scripts/verify_browser.sh` (all mocked browser suites),
+`cargo fmt --all -- --check`, `cargo clippy --locked --all-targets -- -D warnings`,
+and `git diff --check`. A concurrent gate attempt had overloaded the host and
+timed out one unrelated cancellation lease test; that test and the complete suite
+passed when run alone. P19-T07 remains blocked only at producer-facing retrieval:
+automatic approval review rejected sending approved private memories to an external
+client without explicit recipient and project-scope authorization. No endpoint,
+main-branch change, deployment, restart, or live database write was made.
+
+## 2026-09-29 · P19-T07 doing → blocked: review-first extraction is ready; retrieval needs approval
+
+Implemented a bounded, replay-safe extraction outbox for complete client-supplied user
+messages up to 8 KiB. Jobs retain only the immutable event receipt reference. When the
+1,000-job queue is full, the receipt is durable and the job awaits explicit retry; tool
+and assistant output never become extraction instructions. Candidate review remains
+human-gated; only approved active memories enter
+recall. Candidate-feed filtering and priority ordering now happen before the SQL result cap,
+branch revisions are read in scope, and merged external evidence is capped at 32 references
+with an explicit truncation marker.
+
+Exact verification passed: `cargo test --locked && python3
+tests/external_history_integration.py && scripts/verify_browser.sh` — 394 Rust tests,
+8 external-history integration tests, and both mocked Chromium suites. The first post-change
+integration run exposed a 5-second disposable-server startup timeout and leaked its process
+when setup failed. The fixture now waits up to 15 seconds and stops the process on timeout;
+the full gate passed on rerun.
+
+The producer-facing approved-memory retrieval endpoint is not implemented. Automatic review
+rejected that endpoint because it would disclose private approved memories to an external
+producer client, and the broad review request did not explicitly authorize that destination.
+I did not try another path. P19-T07 stays blocked until the owner approves the recipient and
+scope for this disclosure; main, production, and live databases remain unchanged.
+
+## 2026-09-29 · P19-T07 todo → doing: external evidence memory review
+
+Selected as the highest-priority eligible task after P19-T06. Working in the isolated
+`task/p19-t07-external-memory` worktree. Initial review found that the external event
+receipt is durable and replay-safe but intentionally has no extraction intent yet; the
+existing candidate feed also applies filters after its 500-row SQL cap, which can hide
+recent or high-priority candidates. Extraction completion reads memory revisions without
+the active branch, risking stale or cross-branch approval conflicts. Planned changes will
+reuse the durable extraction worker and human approval flow, keep tool payloads out of
+instruction context, scope retrieval to the producer's exact project grant, and avoid
+adding unreviewed active memory. Exact verification: `cargo test --locked && python3
+tests/external_history_integration.py && scripts/verify_browser.sh`. No production
+database, main branch, or deployment will be changed.
+
 ## 2026-09-29 · P22-T16 doing → done: development qualification complete
 
 Completed the owner-delegated visual review and all non-deploying P22 acceptance.
