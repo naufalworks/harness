@@ -1,6 +1,9 @@
 # External development history contract — v1
 
-Status: contract for P19-T01. Enforcement lands in P19-T02 (scope/privacy) and P19-T03 (ingestion).
+Status: v1 contract, with P19-T02 authorization/privacy, P19-T03 ingestion,
+P19-T04/T05 producer capture/delivery, P19-T06 reads, P19-T07 reviewed memory,
+and P19-T08 disposable recovery qualification. The sections retain their task
+labels to identify the source of each guarantee.
 
 Harness accepts development activity observed by an external producer (`development-mcp`) as
 durable history. This document defines the envelope, the deterministic meaning of every
@@ -89,7 +92,7 @@ the producer; retry redelivers the record and never re-executes the development 
 External ingestion does not submit chat turns, invoke tools, or call a provider. It is not an
 encrypted exact-original archive; that surface stays opt-in and separate.
 
-## Offline conformance profile
+## Offline conformance profile (P19-T01)
 
 P19-T01 checks structural conformance only. It does not enforce authentication,
 redaction, durable commit, or actual receipt deduplication. Those belong to later tasks.
@@ -266,3 +269,57 @@ use `Cache-Control: no-store`. Reads do not call a provider or mutate recall cou
 
 This surface makes approved context available to a development client. It does not
 claim the client automatically calls the endpoint or that tool output becomes memory.
+
+## P19-T08 integration and recovery qualification
+
+The strict, non-deploying `scripts/verify_release.sh` requires a matching
+`development-mcp` source checkout via `HARNESS_DEVELOPMENT_MCP_ROOT`. A missing
+checkout fails the gate with `[BLOCKED]`; the fixture is never a skipped pass.
+`tests/development_mcp_integration.py` calls the producer's decorated filesystem,
+patch, shell and background-task tools against disposable paths, captures them
+in its local SQLite journal, and delivers their bounded envelopes to a real
+disposable Harness HTTP server and database. Two bound client sessions also
+exercise concurrent capture. The command's result text is returned to the
+caller; the journal and exported event retain counts and status, not raw output.
+
+The failure fixture exercises an admission left unresolved at process crash:
+startup records `unknown`, and no development action is replayed. It then
+stops Harness, observes pending delivery, resumes delivery, drops the HTTP
+acknowledgement after commit and retries the identical envelope. Harness keeps
+one receipt. A project outside the grant is rejected and counted. Simulated
+SQLite exhaustion blocks a filesystem write before its side effect. An online
+SQLite backup restored to a fresh disposable database retains receipt identity;
+an ordinary event deletion is refused by the append-only trigger. These tests
+do not prove power-loss safety beyond SQLite, OS and filesystem guarantees.
+
+`server_info` exposes content-free `capture_health` (enabled, available,
+process-local failure count, unfinished admissions and recovered-unknown count)
+and `history_exporter` (durable delivered/rejected/pending counts, age in seconds
+of the oldest committed pending event, pending above the per-drain cap,
+unfinished/recovered counts, assigned-sequence gaps and a static error code).
+These values are diagnostic signals: a gap in assigned delivery sequence is not
+proof of a lost conversation turn or client acknowledgement. Transport errors,
+HTTP bodies and exception messages are not put in exporter error telemetry.
+Check capture availability and pending age before assuming the destination has
+current evidence; reconcile permanent rejections with the grant and schema.
+
+The producer scans committed admissions for delivery and sends at most 10,000
+pending events per drain by default. A single envelope is capped at 65,536
+bytes, and the HTTP request has a 10-second timeout. Harness activity pages
+return at most 100 records, while reviewed-memory reads scan at most 500 rows
+per request. Three disposable, single-host samples of 100 synthetic events
+measured capture at 0.478–2.643 s and capture through HTTP delivery at
+1.494–7.430 s; the derived delivery rates ranged from 20.9 to 98.5 events/s.
+One slower run overlapped another full test suite. These are observations,
+not a throughput guarantee or production sizing limit; run the fixture on
+the target host and monitor backlog age under the actual workload.
+
+Conversation text remains `unavailable` unless a supported client explicitly
+supplies it; tool activity does not reconstruct a transcript. The capture and
+external-history event tables are append-only. No automatic retention expiry,
+audited external-event deletion or quota enforcement exists yet. The fixture
+verifies that ordinary deletion fails and restored evidence remains visible;
+operators must size storage and preserve privacy through the existing backup
+policy. A future retention implementation must delete source, derived/indexed
+material and exports together with audited tombstone/replay rules described
+above. Do not treat an immutable table as a deletion mechanism.

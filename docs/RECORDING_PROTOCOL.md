@@ -39,11 +39,18 @@ No raw artifact encryption, streaming chunks, tamper-proof log, power-loss proof
 Frontend keeps only request/session/scope identifiers in sessionStorage. It does not persist raw unsent drafts or bearer tokens. Lost-response recovery polls instead of resending. Same-tab explicit Retry same message reuses the original ID and prompt. Leave for later starts a new session without cancelling/resending the old request; saved work remains discoverable in History. Unknown save status is never displayed as successful capture.
 
 
-## External development history (P19-T01 contract only)
+## External development history
 
-The versioned envelope and offline fixture contract are specified in
-[External development history](design/external-development-history.md).
-This is not a deployed ingestion API. P19-T02 and P19-T03 own producer policy
-and durable ingestion respectively. External records must not enter `/chat/submit`
-or trigger provider generation or development-action replay. Fixture conformance
-is not evidence of authentication, redaction, durable commit or network delivery.
+The v1 envelope, producer grants, privacy boundary, durable
+`POST /external-history/events` receipts, scoped reads and recovery qualification are
+specified in [External development history](design/external-development-history.md).
+Producer admission precedes execution in its own append-only SQLite journal.
+After a crash, an unresolved action is recorded `unknown`; delivery retries
+the same durable envelope, never the action. Harness acknowledges only after
+commit, and an identical lost-ack retry receives the original receipt.
+Command output is omitted from bounded capture summaries; operational counters
+contain no submitted text. Other summaries may retain path/identifier metadata;
+conversation text is `unavailable` unless a supported client supplied it.
+External records never enter `/chat/submit` or trigger provider generation.
+Automatic retention expiry and audited external-event deletion are not yet
+implemented; backup/restore and ordinary deletion refusal are tested.

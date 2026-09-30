@@ -102,20 +102,50 @@ scripts/verify_browser.sh        # run both fixtures
 and root for Chromium's system libraries. `verify_browser.sh` resolves the browser from
 Playwright itself, so no path is hard-coded; override with `CHROMIUM_PATH` if needed.
 `verify_local.sh` reports the browser suites as skipped when `node_modules` is absent.
-`verify_release.sh` fails closed unless browser dependencies exist, runs both mocked-browser suites,
-and also runs the real browser-to-Rust-to-SQLite/filesystem E2E lane.
+`verify_release.sh` fails closed unless browser dependencies and a matching
+`development-mcp` checkout exist. It runs the producer-to-Harness disposable
+integration fixture, both mocked-browser suites, and the real
+browser-to-Rust-to-SQLite/filesystem E2E lane.
 
 
 ## Verify
 
 ```sh
 bash scripts/verify_local.sh     # permissive developer check; skipped suites are explicit
-bash scripts/verify_release.sh   # strict, non-deploying gate including mocked and real E2E browser lanes
+HARNESS_DEVELOPMENT_MCP_ROOT=/absolute/path/to/development-mcp bash scripts/verify_release.sh
 ```
 
 HTTP suites use temporary DBs and a synthetic loopback provider — no paid
 inference. The suites spawn real server processes, including SIGKILL/restart
 recovery checks.
+
+### External development history
+
+To accept producer history, configure `HARNESS_HISTORY_PRODUCERS` with a JSON
+array containing `producer_id`, a separate high-entropy Bearer `token`, and an
+exact `projects` allowlist. Set the matching producer URL, token and project as
+described in the development-mcp README. The producer posts sanitized events
+to `POST /external-history/events`; owner/browser reads use the scoped
+external-history routes. No chat turn or provider call is created by ingestion.
+
+Check the producer `server_info` for `capture_health.available`,
+`capture_health.failures`, `history_exporter.pending`,
+`history_exporter.backlog_oldest_seconds`, `rejected`, `sequence_gaps` and
+`last_error` when investigating missing evidence. A failed admission refuses
+the tool before a side effect in required mode. An unresolved crash admission
+becomes `unknown`, and a lost delivery acknowledgement retries the saved
+envelope without repeating the tool. Raw command output and transcript text
+are not exported; conversation coverage is `unavailable` by default.
+
+The backlog drain defaults to 10,000 per pass; requests have a 10-second
+timeout and a 65,536-byte envelope limit. Three 100-event disposable samples
+measured 20.9–98.5 deliveries/s on one host, varying with competing work.
+These are measurements, not guaranteed capacity. The
+append-only event tables have no automatic retention expiry, audited deletion
+or quota enforcement. Size storage and make consistent online SQLite backups;
+do not copy a live DB file without its WAL state. See the
+[external history design](docs/design/external-development-history.md) for
+recovery evidence and limits.
 
 ## Deploy
 

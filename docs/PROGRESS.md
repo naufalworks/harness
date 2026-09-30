@@ -1,5 +1,42 @@
 # PROGRESS — journal
 
+## 2026-09-30 · P19-T08 doing → done: disposable recovery and strict gate passed
+
+The producer's command, patch, title and task summaries omit free-form shell
+content and output; capture/storage failures and delivery errors use static
+or class-only diagnostics. `server_info` exposes content-free failure,
+backlog-age, rejection and completeness counters. The real producer-to-Harness
+fixture exercised filesystem edits, an actual Python unittest via the shell,
+background completion, two bound clients, crash-unknown recovery, outage,
+lost acknowledgement, refused scope, storage exhaustion, oversized output,
+online Harness SQLite restore and append-only deletion refusal. No tool side
+effect is replayed. Unsupported transcript coverage and absent automatic
+retention/deletion remain explicit limitations.
+
+`python3 tests/fault_injection.py` passed, and the ten external-history tests
+passed. The producer branch `task/p19-t08-operability` at `f1ae2ae` passed its
+clean-environment full pytest run with 227 tests (two dependency deprecation
+warnings). Four cross-repository integration tests passed. The strict
+non-deploying `scripts/verify_release.sh` passed its local contracts,
+cross-repository integration, mocked browsers, real browser-to-server E2E and
+documentation checks. With no producer checkout specified, it returned
+`[BLOCKED]` (exit 2) as intended. `ruff check` on the new integration fixture
+and `git diff --check` passed. Three disposable 100-event samples ranged from
+20.9 to 98.5 deliveries/s under different host load; they are not production
+capacity claims. No production service or live database was changed.
+
+## 2026-09-30 · P19-T08 todo → doing: cross-repo recovery qualification
+
+P19-T07 was pushed as `origin/task/p19-t07-external-memory` at `972995f` after
+the strict local release gate and all 10 external-history integration tests
+passed. P19-T08 starts in isolated Harness and development-mcp worktrees.
+The qualification will exercise real producer capture/export against a disposable
+Harness server/database, failures and recovery without replaying tools, and
+secret-safe delivery health; it will then make the strict gate require this
+fixture and document measured operating limits. No production service, live
+database, or main branch is being changed. Exact verification remains the
+P19-T08 command in `docs/TASKS.md`.
+
 ## 2026-09-30 · P19-T07 doing → done: strict release audit passed
 
 The route-to-UI inventory now classifies `GET /external-history/memory` as an

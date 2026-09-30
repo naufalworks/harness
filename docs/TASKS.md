@@ -1532,15 +1532,15 @@ Approved direction: development-mcp records server-observed activity locally and
 - verify: cargo test --locked && python3 tests/external_history_integration.py && scripts/verify_browser.sh
 
 ### P19-T08 · Qualify integration recovery and operational readiness
-- status: todo
+- status: done
 - priority: medium
 - lane: history-reliability
 - parallel: no
 - depends: P19-T07
 - design: docs/design/external-development-history.md
-- files: tests/fault_injection.py, tests/external_history_integration.py, scripts/verify_release.sh, docs/design/external-development-history.md, docs/RECORDING_PROTOCOL.md, README.md
+- files: tests/fault_injection.py, tests/external_history_integration.py, tests/development_mcp_integration.py, scripts/verify_release.sh, docs/design/external-development-history.md, docs/RECORDING_PROTOCOL.md, README.md
 - done-when: disposable end-to-end fixtures demonstrate filesystem inspection, edits, commands, test results and background completion flowing through development-mcp into Harness without production changes. Evidence covers simultaneous clients, process crashes, Harness outages, lost acknowledgements, storage exhaustion, oversized output, retention and restore. Capture failures, export backlog age, rejected events and completeness gaps are observable without secret-bearing telemetry. Measured capacity and operating limits are documented; no automatic side-effect replay occurs and unsupported transcript coverage is explicit. The strict non-deploying release gate includes integration coverage and reports missing prerequisites as failures rather than passes.
-- verify: python3 tests/fault_injection.py && python3 tests/external_history_integration.py && bash scripts/verify_release.sh && (cd /root/workspace/development-mcp && python3 -m pytest)
+- verify: python3 tests/fault_injection.py && python3 tests/external_history_integration.py && bash scripts/verify_release.sh && (cd "$HARNESS_DEVELOPMENT_MCP_ROOT" && PYTHONPATH=src python3 -m pytest)
 
 ## P20 · Harness as the long-term brain
 

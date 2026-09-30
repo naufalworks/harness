@@ -21,7 +21,13 @@ command -v python3 >/dev/null || { echo '[BLOCKED] release: python3 is required'
 command -v node >/dev/null || { echo '[BLOCKED] release: node is required' >&2; exit 2; }
 [ -d node_modules ] || { echo '[BLOCKED] release: browser dependencies are required; run scripts/setup_browser_tests.sh' >&2; exit 2; }
 
+producer_root=${HARNESS_DEVELOPMENT_MCP_ROOT:-}
+if [ -z "$producer_root" ] || [ ! -f "$producer_root/src/notion_local_ops_mcp/exporter.py" ]; then
+  echo '[BLOCKED] development-mcp integration: set HARNESS_DEVELOPMENT_MCP_ROOT to the matching producer checkout' >&2
+  exit 2
+fi
 run_suite local-contract env HARNESS_REQUIRE_BROWSER=1 scripts/verify_local.sh
+run_suite development-mcp-integration env HARNESS_DEVELOPMENT_MCP_ROOT="$producer_root" python3 tests/development_mcp_integration.py
 run_suite real-browser-to-server scripts/verify_e2e.sh
 run_suite documentation-claims python3 scripts/check_docs.py
 
