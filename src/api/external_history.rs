@@ -31,7 +31,10 @@ pub(crate) struct ProducerMemoryQuery {
 /// producer token never gains access to history, approvals, archives or other owner APIs.
 pub(crate) async fn producer_memory(
     State(h): State<Harness>,
-    axum::extract::Query(q): axum::extract::Query<ProducerMemoryQuery>,
+    query: Result<
+        axum::extract::Query<ProducerMemoryQuery>,
+        axum::extract::rejection::QueryRejection,
+    >,
     request: Request,
 ) -> Response {
     let token = request
@@ -43,6 +46,10 @@ pub(crate) async fn producer_memory(
     if !h.auth.is_external_producer(token) {
         return memory_failure(StatusCode::UNAUTHORIZED, "producer_unauthorized");
     }
+    let q = match query {
+        Ok(axum::extract::Query(q)) => q,
+        Err(_) => return memory_failure(StatusCode::BAD_REQUEST, "invalid_memory_query"),
+    };
     if !crate::storage::valid_external_id(&q.project_id)
         || q.after
             .as_ref()

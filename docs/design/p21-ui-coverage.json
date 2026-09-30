@@ -131,10 +131,11 @@
       "status": "api_only",
       "surface": "producer integration",
       "anchor": null,
-      "detail": "Raw chat submission and external producer event ingestion are authenticated integration surfaces used by clients/producers rather than standalone owner configuration actions. Their user-visible effects are covered by the Chat and External development sessions UI rather than exposing raw request builders.",
+      "detail": "Raw chat submission and external producer event ingestion are authenticated client integration surfaces. Reviewed-memory retrieval is available only to the authorized development producer; no browser control or automatic client fetch is claimed. The Chat and External development sessions UI covers the visible chat/history rather than exposing raw request builders.",
       "operations": [
         "POST /chat",
-        "POST /external-history/events"
+        "POST /external-history/events",
+        "GET /external-history/memory"
       ]
     },
     {

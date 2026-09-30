@@ -1,5 +1,34 @@
 # PROGRESS — journal
 
+## 2026-09-30 · P19-T07 doing → done: strict release audit passed
+
+The route-to-UI inventory now classifies `GET /external-history/memory` as an
+API-only producer integration. Malformed query parameters return the shared JSON
+error envelope after producer authentication. Real-server tests cover exact
+project/token grants, omitted credentials and sensitive text, no-store responses,
+and an empty page that advances through 500 filtered rows to a later visible
+memory. No unreviewed content is returned.
+
+`PATH=/root/.cargo/bin:$PATH CARGO_BUILD_JOBS=2 RUST_TEST_THREADS=2 bash
+scripts/verify_release.sh` passed the strict non-deploying local gate: Rust,
+Clippy, Python contracts/integration, release artifact/reproducibility, browser
+fixtures, and real browser-to-server E2E. The separately declared
+`python3 tests/external_history_integration.py` passed all 10 tests on the
+final code, and `git diff --check` passed. The release gate labels cross-target,
+signature/coverage CI evidence and public production smoke as outside this
+local run; it did not restart or deploy a service. Main and live databases
+remain unchanged. P19-T08 is the next eligible recovery/operations task.
+
+## 2026-09-30 · P19-T07 done → doing: strict audit correction
+
+The non-deploying `scripts/verify_release.sh` passed Rust and reached Python
+contracts, where `test_ui_coverage.py` found that the new producer memory route
+was absent from the exact route-to-UI inventory. It is an API-only producer
+integration; the inventory is being updated. The audit also identified an Axum
+query-rejection path that could return a plain-text 400 before the producer
+handler formed its JSON error. Malformed-query and filtered scan-window tests
+are being added before the full strict gate is rerun. No production changes.
+
 ## 2026-09-30 · P19-T07 doing → done: scoped reviewed memory retrieval verified
 
 The producer-only `GET /external-history/memory` reads at most 500 candidate rows

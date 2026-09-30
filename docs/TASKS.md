@@ -1521,7 +1521,7 @@ Approved direction: development-mcp records server-observed activity locally and
 
 ### P19-T07 · Derive reviewed memory from external development evidence
 - status: done
-- note (2026-09-30): the owner approved read-only access for private/development-mcp to approved active memories in the exact project grant, without unrelated history. The isolated branch implements and verifies that bounded retrieval surface.
+- note (2026-09-30): strict non-deploying release verification and all 10 external-history integration tests passed after adding the API-only UI inventory classification, JSON query errors and filtered scan-window regression.
 - priority: medium
 - lane: history-memory
 - parallel: no

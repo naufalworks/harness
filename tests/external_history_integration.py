@@ -146,11 +146,36 @@ class ExternalHistory(unittest.TestCase):
                                    token=TOKEN, method='GET')[0], 403)
         self.assertEqual(self.call(route+'&limit=21', token=TOKEN, method='GET')[0], 400)
         self.assertEqual(self.call(route+'&after=%27', token=TOKEN, method='GET')[0], 400)
+        status, error = self.call('/external-history/memory', token=TOKEN, method='GET')
+        self.assertEqual((status, error['code']), (400, 'invalid_memory_query'))
+        self.assertEqual(self.call('/external-history/memory', token='invalid', method='GET')[0], 401)
+        status, error = self.call(route+'&unknown=1', token=TOKEN, method='GET')
+        self.assertEqual((status, error['code']), (400, 'invalid_memory_query'))
         self.assertEqual(self.call('/external-history/activity?project_id=proj-harness',
                                    token=TOKEN, method='GET')[0], 401)
+        request = urllib.request.Request(self.base+route,
+                    headers={'Authorization': 'Bearer '+TOKEN})
+        with urllib.request.urlopen(request, timeout=15) as response:
+            self.assertEqual(response.headers['Cache-Control'], 'no-store')
         with closing(sqlite3.connect(self.db)) as db:
             self.assertEqual(db.execute('SELECT count(*) FROM memory_embeddings').fetchone()[0], 0)
             self.assertEqual(db.execute('SELECT count(*) FROM provider_calls').fetchone()[0], 0)
+
+    def test_producer_memory_resumes_after_fully_filtered_scan_window(self):
+        for number in range(501):
+            self.seed_memory(f'z-{number:04}', 'proj-harness', 'password: test fixture')
+        self.seed_memory('z-0501', 'proj-harness', 'Visible reviewed decision.')
+        route = '/external-history/memory?project_id=proj-harness&limit=1'
+        status, first = self.call(route, token=TOKEN, method='GET')
+        self.assertEqual(status, 200)
+        self.assertEqual(first['memories'], [])
+        self.assertEqual(first['next_cursor'], 'z-0499')
+        self.assertTrue(first['has_more'])
+        status, second = self.call(route+'&after='+first['next_cursor'],
+                                   token=TOKEN, method='GET')
+        self.assertEqual(status, 200)
+        self.assertEqual([item['id'] for item in second['memories']], ['z-0501'])
+        self.assertFalse(second['has_more'])
 
     def test_restart_replay_conflict_and_no_execution(self):
         e = self.event()
