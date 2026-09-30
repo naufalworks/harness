@@ -1520,8 +1520,8 @@ Approved direction: development-mcp records server-observed activity locally and
 - verify: python3 tests/external_history_integration.py && scripts/verify_browser.sh && scripts/verify_e2e.sh
 
 ### P19-T07 · Derive reviewed memory from external development evidence
-- status: blocked
-- note (2026-09-30): bounded extraction/review and explicit queue-full retry behavior are implemented and verified in an isolated branch. The required producer retrieval surface was rejected by automatic review because it would disclose private approved memories to external producer clients without explicit destination authorization. No endpoint was added. Resume only after the owner approves the recipient and exact project scope.
+- status: done
+- note (2026-09-30): the owner approved read-only access for private/development-mcp to approved active memories in the exact project grant, without unrelated history. The isolated branch implements and verifies that bounded retrieval surface.
 - priority: medium
 - lane: history-memory
 - parallel: no

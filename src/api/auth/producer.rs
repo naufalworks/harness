@@ -81,6 +81,29 @@ impl Producers {
         self.0.iter().any(|g| valid_token(&g.token, token))
     }
 
+    pub(super) fn authorize_memory_project(
+        &self,
+        token: &str,
+        project: &str,
+    ) -> Result<(), &'static str> {
+        let grant = self
+            .0
+            .iter()
+            .find(|g| valid_token(&g.token, token))
+            .ok_or("producer_unauthorized")?;
+        // The owner approved this read for the private development-mcp producer only.
+        if grant.producer_id != "development-mcp" {
+            return Err("scope_not_permitted");
+        }
+        ExternalScope::bind(&grant.producer_id, project, &grant.projects).map(|_| ())
+    }
+
+    pub(super) fn contains_in_value(&self, value: &Value) -> bool {
+        self.0
+            .iter()
+            .any(|grant| safety::external_contains(value, &grant.token))
+    }
+
     pub(super) fn authorize(
         &self,
         token: &str,
@@ -118,11 +141,7 @@ impl Producers {
             }
         }
         // Credentials known to this process must not enter otherwise innocuous text.
-        if self
-            .0
-            .iter()
-            .any(|g| safety::external_contains(&value, &g.token))
-        {
+        if self.contains_in_value(&value) {
             return Err("redaction_missing");
         }
         Ok(AuthorizedEvidence {

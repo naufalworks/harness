@@ -93,6 +93,65 @@ class ExternalHistory(unittest.TestCase):
         with closing(sqlite3.connect(self.db)) as db:
             return db.execute('SELECT count(*) FROM external_history_events').fetchone()[0]
 
+    def seed_memory(self, memory_id, scope, value, *, candidate_status='approved',
+                    memory_status='active', branch='main', expired=False):
+        stamp = '2026-09-30T00:00:00Z'
+        candidate_id = f'candidate-{memory_id}'
+        key = f'choice_{memory_id.replace("-", "_")}'
+        with closing(sqlite3.connect(self.db)) as db:
+            db.execute('INSERT INTO candidates(id,scope,key,value,category,source_id,evidence,expected_revision,status,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+                       (candidate_id, scope, key, value, 'decision', 'fixture', '{}', 0,
+                        candidate_status, stamp, 2000000000))
+            db.execute('INSERT INTO memories(id,scope,key,value,branch,category,status,revision,candidate_id,expires_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
+                       (memory_id, scope, key, value, branch, 'decision', memory_status, 1,
+                        candidate_id, int(time.time())-1 if expired else None, stamp, stamp))
+            db.commit()
+
+    def test_producer_memory_requires_exact_grant_and_exposes_only_reviewed_active_scope(self):
+        self.seed_memory('m-01', 'proj-harness', 'Use SQLite.')
+        self.seed_memory('m-02', 'proj-harness', 'Use Rust.')
+        self.seed_memory('m-03', 'other', 'Other project decision.')
+        self.seed_memory('m-04', 'global', 'Global preference.')
+        self.seed_memory('m-05', 'proj-harness', 'Pending decision.', candidate_status='pending')
+        self.seed_memory('m-06', 'proj-harness', 'Archived decision.', memory_status='archived')
+        self.seed_memory('m-07', 'proj-harness', 'Expired decision.', expired=True)
+        self.seed_memory('m-08', 'proj-harness', 'Review branch decision.', branch='review')
+        self.seed_memory('m-09', 'proj-harness', OWNER)
+        self.seed_memory('m-10', 'proj-harness', TOKEN)
+        route = '/external-history/memory?project_id=proj-harness'
+        status, page = self.call(route, token=TOKEN, method='GET')
+        self.assertEqual(status, 200)
+        self.assertEqual([m['id'] for m in page['memories']], ['m-01', 'm-02'])
+        self.assertEqual(page['project_id'], 'proj-harness')
+        self.assertFalse(page['has_more'])
+        self.assertFalse(any('evidence' in m or 'source_id' in m for m in page['memories']))
+        self.assertNotIn(OWNER, json.dumps(page))
+        self.assertNotIn(TOKEN, json.dumps(page))
+        status, first = self.call(route+'&limit=1', token=TOKEN, method='GET')
+        self.assertEqual(status, 200)
+        self.assertEqual([m['id'] for m in first['memories']], ['m-01'])
+        self.assertTrue(first['has_more'])
+        status, second = self.call(route+'&limit=1&after='+first['next_cursor'],
+                                   token=TOKEN, method='GET')
+        self.assertEqual(status, 200)
+        self.assertEqual([m['id'] for m in second['memories']], ['m-02'])
+        self.assertFalse(second['has_more'])
+        status, other = self.call('/external-history/memory?project_id=other',
+                                  token=TOKEN, method='GET')
+        self.assertEqual(status, 200)
+        self.assertEqual([m['id'] for m in other['memories']], ['m-03'])
+        for token, expected in [(OWNER, 401), ('invalid', 401), ('q'*40, 403)]:
+            self.assertEqual(self.call(route, token=token, method='GET')[0], expected)
+        self.assertEqual(self.call('/external-history/memory?project_id=ungranted',
+                                   token=TOKEN, method='GET')[0], 403)
+        self.assertEqual(self.call(route+'&limit=21', token=TOKEN, method='GET')[0], 400)
+        self.assertEqual(self.call(route+'&after=%27', token=TOKEN, method='GET')[0], 400)
+        self.assertEqual(self.call('/external-history/activity?project_id=proj-harness',
+                                   token=TOKEN, method='GET')[0], 401)
+        with closing(sqlite3.connect(self.db)) as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM memory_embeddings').fetchone()[0], 0)
+            self.assertEqual(db.execute('SELECT count(*) FROM provider_calls').fetchone()[0], 0)
+
     def test_restart_replay_conflict_and_no_execution(self):
         e = self.event()
         code, first = self.call(body=e)

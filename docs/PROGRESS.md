@@ -1,5 +1,35 @@
 # PROGRESS — journal
 
+## 2026-09-30 · P19-T07 doing → done: scoped reviewed memory retrieval verified
+
+The producer-only `GET /external-history/memory` reads at most 500 candidate rows
+per request and returns only approved, active, nonexpired `main` memories for the
+exact project on the `development-mcp` token grant. Runtime credential and sensitive
+text checks precede disclosure. Pagination advances past filtered rows; owner tokens,
+other producer identities and unrelated projects cannot use this endpoint. Existing
+owner history routes remain inaccessible to producer tokens. The OpenAPI contract and
+HTTP inventory now list the route.
+
+Exact verification passed: `cargo test --locked` (394 passed), `python3
+tests/external_history_integration.py` (9 passed), and `scripts/verify_browser.sh`
+(all mocked browser suites). `python3 tests/test_api_schema.py`, `python3
+scripts/check_docs.py`, `cargo fmt --all -- --check`, strict all-targets Clippy,
+and `git diff --check` also passed. The schema check initially exposed two existing
+receipt fields missing from `docs/api.yaml`; `provider_id` and `provider_version`
+were documented and the check passed on rerun. No production database, service,
+main branch, or deployment changed. Next eligible task: P19-T08 integration recovery
+and operating readiness.
+
+## 2026-09-30 · P19-T07 blocked → doing: scoped producer retrieval approved
+
+The owner explicitly approved a read-only memory surface for private/development-mcp,
+limited to approved active memories in projects listed on its existing producer grant.
+This work stays on `task/p19-t07-external-memory`. The endpoint will require the
+producer token and exact project ID, expose no evidence/history/global memories,
+and bound pagination. Main, deployment, service and live database stay unchanged.
+Verification remains `cargo test --locked && python3 tests/external_history_integration.py
+&& scripts/verify_browser.sh`, plus format and strict Clippy.
+
 ## 2026-09-30 · P19-T07 blocked: safe extraction slice verified in isolation
 
 Rechecked the review-first external memory path after formatting and corrected the

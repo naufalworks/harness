@@ -243,3 +243,26 @@ Harness commit is known; producer receipt of acknowledgement and local undeliver
 remain unknown. No provider, extraction, tool execution, archive activation or retention
 change is introduced. Arrival cursors rely on the append-only rowid table; future deletion,
 rebuild or VACUUM work must preserve cursor identity or version the resume contract.
+
+## P19-T07 reviewed memory retrieval
+
+`GET /external-history/memory?project_id=<exact>&limit=1..20&after=<cursor>` is a
+read-only endpoint for the configured `development-mcp` producer token. The exact
+`project_id` must be on that token's owner-configured grant. Owner/browser credentials,
+other producer identities, and projects outside the grant cannot use this endpoint.
+The existing owner history, approval, archive and session routes remain inaccessible
+to producer tokens.
+
+Each page contains only `id`, `key`, `value`, `category` and `revision` for memories
+whose scope equals the requested project, branch is `main`, status is `active`, expiry
+has not passed, and linked candidate is still `approved` with matching scope/key/value.
+Global memories, review branches, pending/rejected candidates, expired or archived
+memories, evidence, source content, and external session history are excluded. Stored
+text is checked again for sensitive patterns and known runtime credentials before
+disclosure. Pagination uses an exclusive memory-ID cursor and scans at most 500 rows
+per request, including rows omitted for privacy; `has_more` and `next_cursor` let
+the client continue without treating an empty filtered page as completion. Responses
+use `Cache-Control: no-store`. Reads do not call a provider or mutate recall counters.
+
+This surface makes approved context available to a development client. It does not
+claim the client automatically calls the endpoint or that tool output becomes memory.

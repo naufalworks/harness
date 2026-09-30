@@ -11,6 +11,97 @@ use serde_json::{json, Value};
 fn failure(status: StatusCode, code: &'static str) -> Response {
     (status,Json(json!({"error":"External history was not acknowledged.","code":code,"retryable":status==StatusCode::SERVICE_UNAVAILABLE}))).into_response()
 }
+fn memory_failure(status: StatusCode, code: &'static str) -> Response {
+    (
+        status,
+        Json(json!({"error":"Memory context unavailable.","code":code,"retryable":status==StatusCode::SERVICE_UNAVAILABLE})),
+    )
+        .into_response()
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ProducerMemoryQuery {
+    project_id: String,
+    after: Option<String>,
+    limit: Option<usize>,
+}
+
+/// Producer-only, read-only approved context. This route is outside the owner router so a
+/// producer token never gains access to history, approvals, archives or other owner APIs.
+pub(crate) async fn producer_memory(
+    State(h): State<Harness>,
+    axum::extract::Query(q): axum::extract::Query<ProducerMemoryQuery>,
+    request: Request,
+) -> Response {
+    let token = request
+        .headers()
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .unwrap_or("");
+    if !h.auth.is_external_producer(token) {
+        return memory_failure(StatusCode::UNAUTHORIZED, "producer_unauthorized");
+    }
+    if !crate::storage::valid_external_id(&q.project_id)
+        || q.after
+            .as_ref()
+            .is_some_and(|after| !crate::storage::valid_external_id(after))
+        || !(1..=20).contains(&q.limit.unwrap_or(20))
+    {
+        return memory_failure(StatusCode::BAD_REQUEST, "invalid_memory_query");
+    }
+    if let Err(code) = h.auth.authorize_memory_project(token, &q.project_id) {
+        return memory_failure(StatusCode::FORBIDDEN, code);
+    }
+    if !h.auth.allow("development-mcp", "producer-memory", 60) {
+        return memory_failure(StatusCode::TOO_MANY_REQUESTS, "rate_limited");
+    }
+    let Ok(_permit) = h.api_limit.clone().try_acquire_owned() else {
+        return memory_failure(StatusCode::SERVICE_UNAVAILABLE, "memory_busy");
+    };
+    let rows = match h
+        .store
+        .producer_memory_rows(q.project_id.clone(), q.after.clone())
+        .await
+    {
+        Ok(rows) => rows,
+        Err(_) => return memory_failure(StatusCode::SERVICE_UNAVAILABLE, "storage_unavailable"),
+    };
+    let mut safe = Vec::new();
+    let mut next_cursor = q.after;
+    let mut has_more = false;
+    for (scanned, row) in rows.into_iter().enumerate() {
+        if scanned == 500 {
+            has_more = true;
+            break;
+        }
+        let (Some(id), Some(key), Some(value)) = (
+            row["id"].as_str(),
+            row["key"].as_str(),
+            row["value"].as_str(),
+        ) else {
+            return memory_failure(StatusCode::SERVICE_UNAVAILABLE, "storage_unavailable");
+        };
+        match h.auth.memory_output_safe(key, value) {
+            Ok(true) if safe.len() == q.limit.unwrap_or(20) => {
+                has_more = true;
+                break;
+            }
+            Ok(true) => safe.push(row.clone()),
+            Ok(false) => {}
+            Err(code) => return memory_failure(StatusCode::SERVICE_UNAVAILABLE, code),
+        }
+        next_cursor = Some(id.to_owned());
+    }
+    let page = json!({
+        "project_id":q.project_id,
+        "memories":safe,
+        "next_cursor":next_cursor,
+        "has_more":has_more,
+    });
+    (StatusCode::OK, Json(page)).into_response()
+}
 pub(crate) async fn ingest(State(h): State<Harness>, request: Request) -> Response {
     let token = request
         .headers()

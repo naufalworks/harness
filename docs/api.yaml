@@ -103,6 +103,8 @@ components:
         - session_id
         - scope
         - model
+        - provider_id
+        - provider_version
         - redacted
         - state
         - error_code
@@ -133,6 +135,11 @@ components:
           type: string
         model:
           type: string
+        provider_id:
+          type: string
+        provider_version:
+          type: integer
+          minimum: 1
         redacted:
           type: boolean
         state:
@@ -246,6 +253,32 @@ paths:
           description: Existing immutable receipt replayed.
         '201':
           description: Evidence and receipt durably committed.
+        '4XX':
+          $ref: '#/components/responses/Error'
+        '5XX':
+          $ref: '#/components/responses/Error'
+  /external-history/memory:
+    get:
+      operationId: producerReviewedMemory
+      summary: Page through approved active project memories for the development producer.
+      description: Only the development-mcp producer token with an exact project grant can read this bounded, filtered context. No evidence or external history is included. An empty page can carry a continuation cursor after filtered rows.
+      parameters:
+        - name: project_id
+          in: query
+          required: true
+          schema: {type: string, minLength: 1, maxLength: 128}
+        - name: after
+          in: query
+          schema: {type: string, minLength: 1, maxLength: 128}
+          description: Exclusive memory-ID cursor.
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 20, default: 20}
+      responses:
+        '200':
+          description: Project ID, filtered memories, next cursor and continuation flag.
+          content:
+            application/json: {}
         '4XX':
           $ref: '#/components/responses/Error'
         '5XX':

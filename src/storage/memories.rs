@@ -501,6 +501,43 @@ impl DbStore {
             tx.commit()?;Ok(outcome.into())
         }).await
     }
+    /// A bounded, read-only list for the explicitly authorized development producer. This
+    /// never inherits global memories or a checked-out review branch, and it omits candidate
+    /// evidence and source history. The HTTP boundary checks the exact project grant first.
+    pub async fn producer_memory_rows(
+        &self,
+        scope: String,
+        after: Option<String>,
+    ) -> Result<Vec<Value>> {
+        self.read(move |c| {
+            let mut stmt = c.prepare(
+                "SELECT m.id,m.key,m.value,m.category,m.revision FROM memories m \
+                 JOIN candidates c ON c.id=m.candidate_id AND c.scope=m.scope \
+                   AND c.key=m.key AND c.value=m.value AND c.status='approved' \
+                 WHERE m.scope=?1 AND m.branch='main' AND m.status='active' \
+                   AND (m.expires_at IS NULL OR m.expires_at>?3) AND m.id>?2 \
+                 ORDER BY m.id LIMIT 501",
+            )?;
+            let mut rows = stmt.query(params![
+                scope,
+                after.as_deref().unwrap_or(""),
+                Utc::now().timestamp()
+            ])?;
+            let mut rows_out = Vec::new();
+            while let Some(row) = rows.next()? {
+                let id: String = row.get(0)?;
+                let key: String = row.get(1)?;
+                let value: String = row.get(2)?;
+                rows_out.push(json!({
+                    "id":id,"key":key,"value":value,
+                    "category":row.get::<_,String>(3)?,"revision":row.get::<_,i64>(4)?
+                }));
+            }
+            Ok(rows_out)
+        })
+        .await
+    }
+
     /// Hybrid local recall: union lexical and vector top-20s, then rerank deterministically.
     /// The final context payload retains the original 6,000-byte hard ceiling.
     /// Kept as the narrow payload-only entry point: the turn uses `recall_explained`, while the

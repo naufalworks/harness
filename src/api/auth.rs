@@ -101,6 +101,36 @@ impl AuthState {
         self.producers.contains_token(token)
     }
 
+    pub(crate) fn authorize_memory_project(
+        &self,
+        token: &str,
+        project: &str,
+    ) -> Result<(), &'static str> {
+        self.producers.authorize_memory_project(token, project)
+    }
+
+    /// A reviewed row is checked again at disclosure time against credentials known to this
+    /// process. A poisoned session lock fails closed rather than returning stored text.
+    pub(crate) fn memory_output_safe(&self, key: &str, value: &str) -> Result<bool, &'static str> {
+        if crate::safety::sensitive(key) || crate::safety::sensitive(value) {
+            return Ok(false);
+        }
+        let content = json!({"key":key,"value":value});
+        if crate::safety::external_contains(&content, &self.current)
+            || self
+                .previous
+                .as_ref()
+                .is_some_and(|previous| crate::safety::external_contains(&content, previous))
+            || self.producers.contains_in_value(&content)
+        {
+            return Ok(false);
+        }
+        let sessions = self.sessions.lock().map_err(|_| "privacy_check_failed")?;
+        Ok(!sessions
+            .keys()
+            .any(|token| crate::safety::external_contains(&content, token)))
+    }
+
     pub(crate) fn identify(&self, token: &str) -> Option<AuthKind> {
         if self.producers.contains_token(token) {
             return None;

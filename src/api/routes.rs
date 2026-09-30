@@ -2276,6 +2276,10 @@ pub(crate) fn router(state: Harness) -> Router {
             "/external-history/events",
             post(crate::api::external_history::ingest),
         )
+        .route(
+            "/external-history/memory",
+            get(crate::api::external_history::producer_memory),
+        )
         .merge(api)
         .layer(DefaultBodyLimit::max(64 * 1024))
         .layer(middleware::from_fn_with_state(state.clone(), headers))
